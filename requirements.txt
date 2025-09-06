@@ -1,0 +1,12 @@
+flask==3.1.2
+dotenv==0.9.9
+langchain==0.3.27
+langchain_huggingface==0.3.1
+langchain_pinecone==0.2.12
+langgraph==0.6.6
+firebase_admin==7.1.0
+langchain_community==0.3.29
+pymupdf==1.26.4
+gunicorn==23.0.0
+sentence-transformers==5.1.0
+-e .
