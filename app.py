@@ -32,7 +32,7 @@ load_dotenv()
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")  # ✅ OpenRouter API Key
 FIREBASE_WEB_API_KEY = os.environ.get("FIREBASE_WEB_API_KEY")
-FIREBASE_CRED_PATH = os.environ.get("FIREBASE_CRED_PATH", "firebase_key.json")
+FIREBASE_CRED_PATH = os.environ.get("FIREBASE_CRED_PATH", "app/firebase_key.json")
 
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY or ""
 os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY or ""
