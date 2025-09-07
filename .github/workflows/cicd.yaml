@@ -68,5 +68,5 @@ jobs:
             -e FIREBASE_WEB_API_KEY="${{ secrets.FIREBASE_WEB_API_KEY }}" \
             -e FIREBASE_CRED_PATH="${{ secrets.FIREBASE_CRED_PATH }}" \
             -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
-            -p 8080:8080 \
+            -p 80:80 \
             "${{ steps.login-ecr.outputs.registry }}"/"${{ secrets.ECR_REPO }}":latest
