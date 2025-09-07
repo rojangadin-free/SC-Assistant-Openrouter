@@ -14,6 +14,8 @@ import requests
 import datetime
 import concurrent.futures
 import tempfile
+import base64
+import json
 
 # -------- Firebase Admin --------
 import firebase_admin
@@ -32,20 +34,29 @@ load_dotenv()
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")  # ✅ OpenRouter API Key
 FIREBASE_WEB_API_KEY = os.environ.get("FIREBASE_WEB_API_KEY")
-FIREBASE_CRED_PATH = os.environ.get("FIREBASE_CRED_PATH", "app/firebase_key.json")
+FIREBASE_CRED_PATH = os.environ.get("FIREBASE_CRED_PATH", "firebase_key.json")
 
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY or ""
 os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY or ""
 
-# ====== Firebase Init ======
 db = None
 if not firebase_admin._apps:
     try:
-        cred = credentials.Certificate(FIREBASE_CRED_PATH)
+        if os.getenv("FIREBASE_KEY_JSON_B64"):
+            # ✅ Decode base64 secret into dict
+            firebase_json = base64.b64decode(os.getenv("FIREBASE_KEY_JSON_B64")).decode("utf-8")
+            cred = credentials.Certificate(json.loads(firebase_json))
+        else:
+            # ✅ Fallback: file path method (for local dev)
+            cred = credentials.Certificate(FIREBASE_CRED_PATH)
+
         firebase_admin.initialize_app(cred)
         db = firestore.client()
+        print("✅ Firebase initialized successfully")
+
     except Exception as e:
         print("❌ Firebase init failed:", e)
+
 
 # ====== Vector Store ======
 embeddings = get_local_embeddings()
