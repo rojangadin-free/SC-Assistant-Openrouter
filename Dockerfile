@@ -1,14 +1,24 @@
-# Use an official Python runtime as a parent image
+# Use slim Python base
 FROM python:3.10-slim-buster
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
+# Install system dependencies (needed by some doc loaders)
+RUN apt-get update && apt-get install -y \
+    build-essential libmagic1 poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install any needed packages specified in requirements.txt
-RUN pip install -r requirements.txt
+# Copy requirements first for layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Run app.py when the container launches
-CMD ["python3", "app.py"]
+# Copy app source code
+COPY . .
+
+# Expose container port
+EXPOSE 5000
+
+# Run with Gunicorn in production
+# Assumes your Flask app instance is named `app` in app.py
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
