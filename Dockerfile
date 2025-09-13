@@ -1,24 +1,24 @@
-# Use slim Python base
-FROM python:3.10-slim-buster
+# Use latest stable Python 3.11 on Debian Bookworm (Debian 12)
+FROM python:3.11-slim-bookworm
 
-# Set working directory
+# Set working directory inside container
 WORKDIR /app
 
-# Install system dependencies (needed by some doc loaders)
+# Copy project files
+COPY . /app
+
+# Install system dependencies (needed for some Python packages / document loaders)
 RUN apt-get update && apt-get install -y \
-    build-essential libmagic1 poppler-utils \
+    build-essential \
+    libmagic1 \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for layer caching
-COPY requirements.txt .
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app source code
-COPY . .
-
-# Expose container port
+# Expose port (use 5000 if Flask default, change if you mapped differently in docker run)
 EXPOSE 5000
 
-# Run with Gunicorn in production
-# Assumes your Flask app instance is named `app` in app.py
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
+# Start the application
+CMD ["python", "app.py"]
