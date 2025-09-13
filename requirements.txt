@@ -11,4 +11,3 @@ sentence-transformers           # Underlying model for HuggingFaceEmbeddings
 boto3                            # AWS Cognito & DynamoDB
 python-jose==3.3.0               # JWT decoding
 gunicorn                        # For production server
--e .
