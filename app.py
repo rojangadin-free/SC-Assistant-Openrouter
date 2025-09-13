@@ -490,4 +490,4 @@ def delete_conversation(conv_id):
     return jsonify({"status": "success", "message": "Conversation deleted"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8080)

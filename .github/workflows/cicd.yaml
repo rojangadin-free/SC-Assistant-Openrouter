@@ -53,6 +53,30 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Run Docker Image to serve users
+      # 🔽 MODIFIED STEP 🔽
+      - name: Stop, Remove, and Run New Docker Container
         run: |
-         docker run -d -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" -e AWS_DEFAULT_REGION="${{ secrets.AWS_DEFAULT_REGION }}" -e AWS_REGION="${{ secrets.AWS_REGION }}" -e PINECONE_API_KEY="${{ secrets.PINECONE_API_KEY }}" -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" -e COGNITO_USER_POOL_ID="${{ secrets.COGNITO_USER_POOL_ID }}" -e COGNITO_CLIENT_ID="${{ secrets.COGNITO_CLIENT_ID }}" -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" -p 8080:8080 "${{ steps.login-ecr.outputs.registry }}"/"${{ secrets.ECR_REPO }}":latest
+          CONTAINER_NAME="rag-app-container"
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest"
+
+          # Stop and remove the existing container if it's running
+          # The '|| true' part prevents the workflow from failing if the container doesn't exist yet
+          docker stop $CONTAINER_NAME || true
+          docker rm $CONTAINER_NAME || true
+
+          # Explicitly pull the latest version of the image from ECR
+          docker pull $IMAGE_URI
+
+          # Run the new container with a specific name and restart policy
+          docker run -d --name $CONTAINER_NAME --restart always \
+            -p 8080:8080 \
+            -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -e AWS_DEFAULT_REGION="${{ secrets.AWS_DEFAULT_REGION }}" \
+            -e AWS_REGION="${{ secrets.AWS_REGION }}" \
+            -e PINECONE_API_KEY="${{ secrets.PINECONE_API_KEY }}" \
+            -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+            -e COGNITO_USER_POOL_ID="${{ secrets.COGNITO_USER_POOL_ID }}" \
+            -e COGNITO_CLIENT_ID="${{ secrets.COGNITO_CLIENT_ID }}" \
+            -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
+            $IMAGE_URI

@@ -4,11 +4,18 @@ FROM python:3.10-slim-buster
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
+# Copy the requirements first to leverage Docker layer caching
+COPY requirements.txt .
 
 # Install any needed packages specified in requirements.txt
 RUN pip install -r requirements.txt
 
-# Run app.py when the container launches
-CMD ["python3", "app.py"]
+# Copy the rest of the application code
+COPY . /app
+
+# ⭐ ADDED STEP ⭐
+# Run the model download script during the build process
+RUN python3 download_model.py
+
+# Run gunicorn when the container launches, binding to the correct port
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "app:app"]
