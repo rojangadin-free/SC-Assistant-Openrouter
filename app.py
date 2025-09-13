@@ -1,80 +1,73 @@
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from dotenv import load_dotenv
 from src.helper import get_local_embeddings
-from src.prompt import * # expects a `system_prompt` variable
+from src.prompt import *
 from langchain_pinecone import PineconeVectorStore
-from langchain_openai import ChatOpenAI   # ✅ Use ChatOpenAI with base_url
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict
 import os
 import uuid
-import requests
 import datetime
-import concurrent.futures
 import tempfile
-import base64
-import json
 
-# -------- Firebase Admin --------
-import firebase_admin
-from firebase_admin import credentials, auth, firestore
+# -------- AWS --------
+import boto3
+from botocore.exceptions import ClientError
+from jose import jwt
+from boto3.dynamodb.conditions import Key
 
-# -------- Import store_index --------
-from store_index import append_file_to_index   # ✅ use append instead of build
+from store_index import append_file_to_index
 
 # ====== Flask App ======
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-in-production")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "Clone_rev1")
 
-load_dotenv()
+# ====== Load .env ======
+BASE_DIR = os.path.dirname(__file__)
+env_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(dotenv_path=env_path)
+
+# ====== AWS Config ======
+COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID")
+COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+cognito_client = boto3.client("cognito-idp", region_name=AWS_REGION)
+dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+files_table = dynamodb.Table("Files")
+conversations_table = dynamodb.Table("Conversations")
 
 # ====== API KEYS ======
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")  # ✅ OpenRouter API Key
-FIREBASE_WEB_API_KEY = os.environ.get("FIREBASE_WEB_API_KEY")
-FIREBASE_CRED_PATH = os.environ.get("FIREBASE_CRED_PATH", "firebase_key.json")
-
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY or ""
 os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY or ""
-
-db = None
-if not firebase_admin._apps:
-    try:
-        if os.getenv("FIREBASE_KEY_JSON_B64"):
-            # ✅ Decode base64 secret into dict
-            firebase_json = base64.b64decode(os.getenv("FIREBASE_KEY_JSON_B64")).decode("utf-8")
-            cred = credentials.Certificate(json.loads(firebase_json))
-        else:
-            # ✅ Fallback: file path method (for local dev)
-            cred = credentials.Certificate(FIREBASE_CRED_PATH)
-
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ Firebase initialized successfully")
-
-    except Exception as e:
-        print("❌ Firebase init failed:", e)
-
 
 # ====== Vector Store ======
 embeddings = get_local_embeddings()
 index_name = "rag-database3"
 docsearch = PineconeVectorStore.from_existing_index(index_name=index_name, embedding=embeddings)
-retriever = docsearch.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 4}
-)
+retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 7})
 
 # ====== LLM ======
-# ✅ Switched to ChatOpenAI with OpenRouter base_url
 chatModel = ChatOpenAI(
     model="openrouter/sonoma-dusk-alpha",
     openai_api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
     temperature=0.7,
-    max_tokens=1024
+    max_tokens=2048
+)
+
+# 🔹 Summarizer LLM (lighter/faster)
+summarizer = ChatOpenAI(
+    model="openrouter/sonoma-dusk-alpha",
+    openai_api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
+    temperature=0.3,
+    max_tokens=512
 )
 
 # ====== Chat State ======
@@ -84,11 +77,11 @@ class ChatState(TypedDict):
     answer: str
 
 checkpointer = InMemorySaver()
-
 contextualized_prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     ("human", "{input}")
 ])
+contextualized_prompt.input_variables.append("retrieved_docs")
 
 def docs_to_context(docs) -> str:
     if not docs:
@@ -111,21 +104,61 @@ def get_session_id():
         session["session_id"] = str(uuid.uuid4())
     return session["session_id"]
 
+# 🔹 Summarization Helper
+def summarize_history(history: List[Dict[str, str]]) -> str:
+    if not history:
+        return ""
+    transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+    summary_prompt = [
+        {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts, questions, and answers."},
+        {"role": "user", "content": transcript}
+    ]
+    response = summarizer.invoke(summary_prompt)
+    return response.content
+
 # ====== Graph ======
 graph = StateGraph(ChatState)
 
 def call_llm(state: ChatState):
+    # 1. Retrieve documents
     docs = retriever.invoke(state["input"])
-    context = docs_to_context(docs)
+    retrieved_docs_context = docs_to_context(docs)
 
-    msg_with_context = f"{state['input']}\n\n[Context for reference:]\n{context}"
-    history_list = state.get("chat_history", [])
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
+    # 2. Get the user-facing history and create a temporary copy for the LLM
+    history_for_state = state.get("chat_history", [])
+    history_for_llm = list(history_for_state)
 
-    prompt_messages = contextualized_prompt.format_messages(chat_history=history_text, input=msg_with_context)
-    response = chatModel.invoke(prompt_messages)
+    # 3. Summarize the temporary copy if the conversation is long
+    X = 8  # threshold
+    if len(history_for_llm) > X:
+        summary = summarize_history(history_for_llm[:-5])
+        history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
 
-    updated_history = history_list + [
+    # 4. ⭐ CORRECTED PROMPT BUILDING LOGIC
+    # Instead of flattening the history into a string, we build a proper message list.
+    
+    # First, create the main system prompt with the retrieved documents.
+    # Note: We pass an empty string for chat_history here because we will add it as separate messages.
+    final_system_prompt = system_prompt.format(
+        retrieved_docs=retrieved_docs_context,
+        chat_history="" 
+    )
+    
+    # Start the final list of messages for the AI
+    final_messages_for_llm = [("system", final_system_prompt)]
+
+    # Add the (potentially summarized) chat history messages
+    for msg in history_for_llm:
+        final_messages_for_llm.append((msg['role'], msg['content']))
+
+    # Add the user's current input
+    final_messages_for_llm.append(("human", state["input"]))
+
+    # 5. Invoke the model with the correctly structured message list
+    response = chatModel.invoke(final_messages_for_llm)
+
+    # 6. Update the state using the original, clean history
+    updated_history = history_for_state + [
         {"role": "user", "content": state["input"]},
         {"role": "assistant", "content": response.content}
     ]
@@ -136,76 +169,49 @@ graph.set_entry_point("llm")
 graph.add_edge("llm", END)
 app_graph = graph.compile(checkpointer=checkpointer)
 
-# ====== Firestore Helpers ======
-def safe_get_user_doc(uid, timeout=5):
-    if not db or not uid:
-        return None
-    try:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(lambda: db.collection("users").document(uid).get())
-            return future.result(timeout=timeout)
-    except Exception as e:
-        print(f"⚠️ Firestore lookup failed for uid={uid}: {e}")
-        return None
+# ====== Cognito Helpers ======
+def get_user_role_from_claims(id_token):
+    decoded = jwt.get_unverified_claims(id_token)
+    return decoded.get("custom:role", "user")
 
-def safe_set_user_doc(uid, data):
-    if not db or not uid:
+def is_admin():
+    return session.get("role") == "admin"
+
+# ====== DynamoDB Helpers ======
+def save_file_metadata(filename, uid):
+    files_table.put_item(Item={
+        "filename": filename,
+        "uploaded_by": uid,
+        "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+    })
+
+# ⭐ MODIFIED: This function now creates or updates a conversation (upsert).
+def upsert_conversation(uid, conv_id, history, created_at):
+    if not history:
         return
-    try:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            executor.submit(lambda: db.collection("users").document(uid).set(data))
-    except Exception as e:
-        print("⚠️ Firestore write failed:", e)
+    title = next((m["content"][:40] for m in history if m["role"] == "user"), "Untitled Chat")
+    item = {
+        "conv_id": conv_id,
+        "uid": uid,
+        "messages": history,
+        "title": title,
+        "created_at": created_at,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+    }
+    conversations_table.put_item(Item=item)
 
-def get_user_role(uid):
-    doc = safe_get_user_doc(uid)
-    if doc and doc.exists:
-        return doc.to_dict().get("role", "user")
-    return "user"
-
-def is_admin(uid):
-    return get_user_role(uid) == "admin"
-
-# ---- Conversation Helpers ----
-def save_conversation(uid, history):
-    if not db or not uid or not history:
-        return
-    try:
-        title = None
-        for m in history:
-            if m["role"] == "user":
-                title = m["content"][:40]
-                break
-        conv_ref = db.collection("users").document(uid).collection("conversations").document()
-        conv_ref.set({
-            "title": title or "Untitled Chat",
-            "messages": history,
-            "created_at": datetime.datetime.utcnow()
-        })
-    except Exception as e:
-        print("⚠️ Failed to save conversation:", e)
 
 def list_conversations(uid):
-    if not db or not uid:
-        return []
-    try:
-        docs = db.collection("users").document(uid).collection("conversations").order_by(
-            "created_at", direction=firestore.Query.DESCENDING
-        ).stream()
-        return [{"id": d.id, **d.to_dict()} for d in docs]
-    except Exception as e:
-        print("⚠️ Failed to list conversations:", e)
-        return []
+    resp = conversations_table.query(
+        IndexName="uid-index",  # GSI required on uid
+        KeyConditionExpression=Key("uid").eq(uid),
+        ScanIndexForward=False
+    )
+    return resp.get("Items", [])
 
 def get_conversation(uid, conv_id):
-    if not db or not uid or not conv_id:
-        return None
-    try:
-        doc = db.collection("users").document(uid).collection("conversations").document(conv_id).get()
-        return doc.to_dict() if doc.exists else None
-    except Exception as e:
-        print("⚠️ Failed to fetch conversation:", e)
-        return None
+    resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid})
+    return resp.get("Item")
 
 # ====== Auth Routes ======
 @app.route("/auth")
@@ -219,82 +225,86 @@ def signup():
     email = request.form.get("email")
     password = request.form.get("password")
     username = request.form.get("username")
-
     if not email or not password or not username:
         return jsonify({"success": False, "message": "All fields are required."})
-
+    if "@" in username:
+        return jsonify({"success": False, "message": "Username cannot be an email."})
     try:
-        user = auth.create_user(email=email, password=password)
-        safe_set_user_doc(user.uid, {
-            "email": user.email,
-            "username": username,
-            "created_at": datetime.datetime.utcnow(),
-            "role": "user",
-            "active": True
-        })
+        resp = cognito_client.sign_up(
+            ClientId=COGNITO_CLIENT_ID,
+            Username=username,
+            Password=password,
+            UserAttributes=[
+                {"Name": "email", "Value": email},
+                {"Name": "name", "Value": username},
+                {"Name": "custom:role", "Value": "user"}
+            ]
+        )
+        try:
+            cognito_client.admin_confirm_sign_up(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=username
+            )
+        except ClientError:
+            pass
+        
+        try:
+            cognito_client.admin_update_user_attributes(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=username,
+                UserAttributes=[
+                    {'Name': 'email_verified', 'Value': 'true'}
+                ]
+            )
+        except ClientError as e:
+            print(f"Could not verify email for {username}: {e}")
+            pass
+        
         session.update({
             "user": email,
-            "uid": user.uid,
+            "uid": resp.get("UserSub"),
             "username": username,
             "role": "user"
         })
         return jsonify({"success": True, "redirect": url_for("chat_page")})
-    except firebase_admin._auth_utils.EmailAlreadyExistsError:
-        return jsonify({"success": False, "message": "Email already registered."})
-    except Exception as e:
-        print("❌ Signup failed:", e)
-        return jsonify({"success": False, "message": "Signup failed. Try again."})
+    except ClientError as e:
+        err_code = e.response["Error"]["Code"]
+        if err_code == "UsernameExistsException":
+            friendly = "Username or email already registered."
+        elif err_code == "InvalidPasswordException":
+            friendly = "Password must have Uppercase, Lowercase, Number, SpecialChar and be 8+ chars long."
+        else:
+            friendly = str(e)
+        return jsonify({"success": False, "message": friendly})
 
 @app.route("/login", methods=["POST"])
 def login():
-    email = request.form.get("email")
+    identifier = request.form.get("email")
     password = request.form.get("password")
-
-    if not email or not password:
+    if not identifier or not password:
         return jsonify({"success": False, "message": "All fields are required."})
-
-    if not FIREBASE_WEB_API_KEY:
-        return jsonify({"success": False, "message": "Server misconfigured: missing FIREBASE_WEB_API_KEY."})
-
     try:
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
-        payload = {"email": email, "password": password, "returnSecureToken": True}
-        r = requests.post(url, json=payload, timeout=15)
-
-        if r.status_code != 200:
-            msg = r.json().get("error", {}).get("message", "Login failed")
-            friendly = {
-                "EMAIL_NOT_FOUND": "Email not found.",
-                "INVALID_PASSWORD": "Invalid password.",
-                "USER_DISABLED": "This account has been disabled."
-            }.get(msg, msg)
-            return jsonify({"success": False, "message": friendly})
-
-        data = r.json()
-        uid = data.get("localId")
-
-        role = "user"
-        username = email.split("@")[0]
-        doc = safe_get_user_doc(uid)
-        if doc and doc.exists:
-            u = doc.to_dict()
-            role = u.get("role", "user")
-            username = u.get("username", username)
-
+        resp = cognito_client.initiate_auth(
+            ClientId=COGNITO_CLIENT_ID,
+            AuthFlow="USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": identifier, "PASSWORD": password}
+        )
+        auth_result = resp["AuthenticationResult"]
+        id_token = auth_result["IdToken"]
+        uid = jwt.get_unverified_claims(id_token)["sub"]
+        username = jwt.get_unverified_claims(id_token).get("name", identifier.split("@")[0])
+        role = get_user_role_from_claims(id_token)
         session.update({
-            "user": email,
+            "user": identifier,
             "uid": uid,
-            "id_token": data.get("idToken"),
+            "id_token": id_token,
             "username": username,
             "role": role
         })
-
         redirect_url = url_for("dashboard") if role == "admin" else url_for("chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
-
-    except Exception as e:
-        print("❌ Login error:", e)
-        return jsonify({"success": False, "message": "Login failed. Try again."})
+    except ClientError as e:
+        return jsonify({"success": False, "message": e.response["Error"]["Message"]})
 
 @app.route("/logout")
 def logout():
@@ -304,140 +314,133 @@ def logout():
 # ====== Role-based Routes ======
 @app.route("/dashboard")
 def dashboard():
-    if not session.get("user"):
-        return redirect(url_for("auth_page"))
-    if not is_admin(session.get("uid")):
+    if not session.get("user") or not is_admin():
         return redirect(url_for("chat_page"))
-    doc = safe_get_user_doc(session.get("uid"))
-    return render_template("dashboard.html", user=session["user"], profile=(doc.to_dict() if doc else {}))
+    return render_template("dashboard.html", user=session["user"])
 
 @app.route("/chat")
 def chat_page():
     if not session.get("user"):
         return redirect(url_for("auth_page"))
-    doc = safe_get_user_doc(session.get("uid"))
-    return render_template("chat.html", user=session["user"], profile=(doc.to_dict() if doc else {}))
+    return render_template("chat.html", user=session["user"])
 
 @app.route("/")
 def index():
     if not session.get("user"):
         return redirect(url_for("auth_page"))
-    return redirect(url_for("dashboard") if is_admin(session.get("uid")) else url_for("chat_page"))
+    return redirect(url_for("dashboard") if is_admin() else url_for("chat_page"))
 
+# ====== File Upload / Delete ======
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    if not session.get("user") or not is_admin(session.get("uid")):
+    if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
-
     if "files[]" not in request.files:
         return jsonify({"success": False, "message": "No file part"}), 400
-
     files = request.files.getlist("files[]")
     processed_files = []
-
     for file in files:
-        if file.filename == "":
+        if not file.filename:
             continue
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             file.save(tmp.name)
             temp_path = tmp.name
-
         try:
-            append_file_to_index(
-                temp_path,
-                index_name="rag-database3",
-                real_name=file.filename,  # ✅ use original filename
-                embeddings=embeddings
-            )
-
-            db.collection("files").document(file.filename).set({
-                "file_name": file.filename,
-                "uploaded_by": session.get("uid"),
-                "uploaded_at": datetime.datetime.utcnow()
-            })
+            append_file_to_index(temp_path, index_name=index_name, real_name=file.filename, embeddings=embeddings)
+            save_file_metadata(file.filename, session.get("uid"))
             processed_files.append(file.filename)
-
-        except Exception as e:
-            print("❌ Append failed:", e)
-            return jsonify({"success": False, "message": f"File {file.filename} indexing failed"}), 500
         finally:
             os.remove(temp_path)
-
     if processed_files:
-        return jsonify({
-            "success": True,
-            "files": processed_files,
-            "message": "Files uploaded & indexed successfully"
-        })
-    else:
-        return jsonify({"success": False, "message": "No files uploaded"}), 400
+        return jsonify({"success": True, "files": processed_files, "message": "Files uploaded & indexed successfully"})
+    return jsonify({"success": False, "message": "No files uploaded"}), 400
 
 @app.route("/files", methods=["GET"])
 def list_files():
-    if not session.get("user") or not is_admin(session.get("uid")):
+    if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
-    try:
-        files_data = []
-        docs = db.collection("files").stream()
-        for d in docs:
-            file_info = d.to_dict()
-            upload_date = file_info.get("uploaded_at")
-            files_data.append({
-                "name": file_info["file_name"],
-                "size": 0,
-                "uploaded_at": upload_date.isoformat() if upload_date else None
-            })
-        return jsonify({"success": True, "files": files_data})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-from pinecone import Pinecone
-PINECONE_INDEX_NAME = "rag-database3"
+    
+    resp = files_table.scan()
+    items = resp.get("Items", [])
+    
+    formatted_files = [
+        {**item, 'name': item.pop('filename')} 
+        for item in items if 'filename' in item
+    ]
+    
+    return jsonify({"success": True, "files": formatted_files})
 
 @app.route("/delete/<filename>", methods=["DELETE"])
 def delete_file(filename):
-    if not session.get("user") or not is_admin(session.get("uid")):
+    if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
-
     try:
+        from pinecone import Pinecone
         pc = Pinecone(api_key=PINECONE_API_KEY)
-        index = pc.Index(PINECONE_INDEX_NAME)
-
+        index = pc.Index(index_name)
         index.delete(filter={"source": {"$eq": filename}})
-        db.collection("files").document(filename).delete()
-
+        files_table.delete_item(Key={"filename": filename})
         return jsonify({"success": True, "message": f"Deleted {filename} and its vectors"})
-
     except Exception as e:
-        print(f"❌ Error deleting file {filename}: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 # ====== Chat API ======
+# ⭐ MODIFIED: This route now saves the chat history after every message.
 @app.route("/get", methods=["POST"])
 def chat():
     if not session.get("user"):
-        return "Please log in to use the chatbot."
+        return jsonify({"error": "Please log in to use the chatbot."}), 401
     try:
         msg = request.form["msg"]
-        result = app_graph.invoke({"input": msg}, config={"configurable": {"thread_id": get_session_id()}})
-        return str(result["answer"])
-    except Exception as e:
-        print(f"❌ Chat error: {e}")
-        return f"Sorry, error: {str(e)}"
+        session_id = get_session_id()
+        config = {"configurable": {"thread_id": session_id}}
 
+        result = app_graph.invoke({"input": msg}, config=config)
+        answer = result.get("answer", "Sorry, I encountered an issue.")
+        updated_history = result.get("chat_history", [])
+        
+        new_conversation_created = False
+        conv_id = session.get("current_conv_id")
+        created_at = session.get("created_at")
+
+        # If there's no conversation ID in the session, this is the first message.
+        if not conv_id:
+            conv_id = str(uuid.uuid4())
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+            session["current_conv_id"] = conv_id
+            session["created_at"] = created_at
+            new_conversation_created = True
+
+        # Save the updated history to DynamoDB on every message.
+        if updated_history:
+            upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
+
+        response_data = {"answer": answer}
+        if new_conversation_created:
+            response_data["new_conversation_created"] = True
+            response_data["conv_id"] = conv_id
+        
+        return jsonify(response_data)
+
+    except Exception as e:
+        print(f"Error in /get endpoint: {e}")
+        return jsonify({"answer": f"Sorry, an error occurred."}), 500
+
+# ⭐ MODIFIED: This route now clears the conversation from the user's session.
 @app.route("/clear", methods=["POST"])
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
     try:
         session_id = get_session_id()
-        snapshot = app_graph.get_state(config={"configurable": {"thread_id": session_id}})
-        history = getattr(snapshot, "values", {}).get("chat_history", [])
-        if history:
-            save_conversation(session.get("uid"), history)
+        # The conversation is already saved, so we just clear the state.
         app_graph.update_state(config={"configurable": {"thread_id": session_id}}, values={"chat_history": []})
-        return jsonify({"status": "success", "message": "Conversation saved & memory cleared"})
+        
+        # Clear the specific conversation details from the Flask session
+        session.pop("current_conv_id", None)
+        session.pop("created_at", None)
+
+        return jsonify({"status": "success", "message": "Memory cleared for new conversation"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -456,33 +459,35 @@ def conversation(conv_id):
         return jsonify({"error": "Not found"}), 404
     return jsonify(conv)
 
+# ⭐ MODIFIED: This route now sets the session to the restored conversation's context.
 @app.route("/conversation/<conv_id>/restore", methods=["POST"])
 def restore_conversation(conv_id):
     if not session.get("user"):
         return jsonify({"error": "Not authenticated"}), 401
+    
     conv = get_conversation(session.get("uid"), conv_id)
     if not conv or "messages" not in conv:
         return jsonify({"error": "Conversation not found"}), 404
-    try:
-        session_id = get_session_id()
-        app_graph.update_state(
-            config={"configurable": {"thread_id": session_id}},
-            values={"chat_history": conv["messages"]}
-        )
-        return jsonify({"status": "success", "message": "Conversation restored"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    
+    # Restore the message history into the graph's memory
+    session_id = get_session_id()
+    app_graph.update_state(
+        config={"configurable": {"thread_id": session_id}},
+        values={"chat_history": conv["messages"]}
+    )
+    
+    # Set the current conversation context in the Flask session
+    session["current_conv_id"] = conv_id
+    session["created_at"] = conv.get("created_at", datetime.datetime.now(datetime.timezone.utc).isoformat()) # ⭐ FIXED
+
+    return jsonify({"status": "success", "message": "Conversation restored"})
 
 @app.route("/conversation/<conv_id>/delete", methods=["DELETE"])
 def delete_conversation(conv_id):
     if not session.get("user"):
         return jsonify({"error": "Not authenticated"}), 401
-    try:
-        db.collection("users").document(session["uid"]).collection("conversations").document(conv_id).delete()
-        return jsonify({"status": "success", "message": "Conversation deleted"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+    conversations_table.delete_item(Key={"conv_id": conv_id, "uid": session.get("uid")})
+    return jsonify({"status": "success", "message": "Conversation deleted"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    app.run(host="0.0.0.0", port=443)

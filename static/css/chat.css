@@ -238,7 +238,6 @@ body {
 
 .logout-section {
   padding: 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: var(--dark-bg);
   flex-shrink: 0;
 }
@@ -629,6 +628,17 @@ body {
   box-sizing: border-box;
 }
 
+/* Add this to the end of your chat.css file */
+
+.conversation-item.active-conversation {
+  background-color: var(--menu-hover);
+  color: white;
+}
+
+.conversation-item.active-conversation .conv-main i {
+  color: white;
+}
+
 .new-chat-btn:hover { background: var(--menu-hover); color: white; }
 .new-chat-btn i { color: var(--accent); font-size: 1.1rem; transition: color 0.2s ease; }
 .new-chat-btn:hover i { color: white; }
@@ -729,9 +739,9 @@ body {
   }
   
   .chat-input-area {
-    padding: 0.5rem 0.8rem;
-    background: var(--card-bg);
-    border-top: 1px solid var(--border);
+    /* Make container transparent and remove horizontal padding */
+    background: transparent;
+    padding: 0.5rem 0;
     max-width: 100%;
     /* Add padding for device notches and nav bars */
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
@@ -744,6 +754,8 @@ body {
   }
   
   .message-form {
+    /* Add margin to create the floating bubble effect */
+    margin: 0 0.8rem;
     padding: 6px 6px 6px 16px;
   }
   
@@ -758,11 +770,12 @@ body {
   }
 
   .typing-indicator {
-      bottom: calc(75px + env(safe-area-inset-bottom));
+      /* Adjust position to account for new floating form layout */
+      bottom: calc(85px + env(safe-area-inset-bottom));
   }
 
   body.keyboard-open .typing-indicator {
-      bottom: 75px;
+      bottom: 85px;
   }
 
   .notification {
