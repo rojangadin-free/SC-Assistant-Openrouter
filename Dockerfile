@@ -1,24 +1,14 @@
-# Use latest stable Python 3.11 on Debian Bookworm (Debian 12)
-FROM python:3.11-slim-bookworm
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim-buster
 
-# Set working directory inside container
+# Set the working directory in the container
 WORKDIR /app
 
-# Copy project files
+# Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install system dependencies (needed for some Python packages / document loaders)
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libmagic1 \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+# Install any needed packages specified in requirements.txt
+RUN pip install -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Expose port (use 5000 if Flask default, change if you mapped differently in docker run)
-EXPOSE 5000
-
-# Start the application
-CMD ["python", "app.py"]
+# Run app.py when the container launches
+CMD ["python3", "app.py"]
