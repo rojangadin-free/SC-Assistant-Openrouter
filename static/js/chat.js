@@ -13,6 +13,10 @@ $(document).ready(function() {
   const confirmLogoutButton = $('#confirmLogoutButton');
   const conversationList = $("#conversationList");
 
+  let isNewConversation = true;
+  // ⭐ 1. Add a variable to track the active conversation ID.
+  let activeConversationId = null;
+
   // Enhanced viewport height handling for mobile
   function adjustViewportHeight() {
     const vh = window.innerHeight * 0.01;
@@ -28,14 +32,12 @@ $(document).ready(function() {
     function viewportHandler() {
       const heightDifference = window.innerHeight - viewport.height;
       
-      // A threshold of 150px is a good heuristic for keyboard appearance
       if (heightDifference > 150) { 
         document.body.classList.add('keyboard-open');
       } else {
         document.body.classList.remove('keyboard-open');
       }
       
-      // Scroll to bottom when keyboard opens/closes to keep view consistent
       setTimeout(() => {
         messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
       }, 100);
@@ -117,15 +119,7 @@ $(document).ready(function() {
     }
   }
   
-  messageForm.on('submit', function(e) {
-    e.preventDefault();
-    const message = messageInput.val().trim();
-    if (!message) return;
-    
-    addMessage(message, true);
-    messageInput.val('').css('height', 'auto');
-    sendButton.prop('disabled', true);
-    
+  function sendMessage(message) {
     typingIndicator.removeClass('fade-out').show();
     
     $.ajax({
@@ -134,16 +128,54 @@ $(document).ready(function() {
       url: "/get",
       timeout: 30000
     }).done(function(data) {
-      addMessage(data);
+      addMessage(data.answer || "Sorry, I couldn't get a response.");
+      // ⭐ 2. If a new conversation was created, update the active ID.
+      if (data.new_conversation_created) {
+        activeConversationId = data.conv_id;
+        loadConversations();
+      }
     }).fail(function() {
-      addMessage("⚠️ Error: Couldn't connect. Please try again.");
+      addMessage("Can you ask the question again? I am having trouble finding an answer to that question.");
     }).always(function() {
       typingIndicator.addClass('fade-out');
       setTimeout(() => typingIndicator.hide(), 300);
       sendButton.prop('disabled', false);
+      messageInput.prop('disabled', false);
     });
+  }
+
+  messageForm.on('submit', function(e) {
+    e.preventDefault();
+    const message = messageInput.val().trim();
+    if (!message) return;
+    
+    addMessage(message, true);
+    messageInput.val('').css('height', 'auto');
+    sendButton.prop('disabled', true);
+    messageInput.prop('disabled', true);
+    
+    if (isNewConversation) {
+      $.post("/clear", {}, function() {
+        sendMessage(message);
+        isNewConversation = false;
+      }).fail(function() {
+        console.error("Could not save previous session, proceeding with new chat.");
+        sendMessage(message);
+        isNewConversation = false;
+      });
+    } else {
+      sendMessage(message);
+    }
   });
   
+  // ⭐ 3. Create a helper function to apply the highlight.
+  function applyActiveHighlight() {
+    $('.conversation-item').removeClass('active-conversation');
+    if (activeConversationId) {
+      $(`.conversation-item[data-id="${activeConversationId}"]`).addClass('active-conversation');
+    }
+  }
+
   function loadConversations() {
     $.getJSON("/conversations", function(convs) {
       conversationList.empty();
@@ -151,10 +183,13 @@ $(document).ready(function() {
         conversationList.append("<div class='conversation-item' style='pointer-events:none;'>No past chats</div>");
         return;
       }
+      
+      convs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      
       convs.forEach(c => {
         const safeTitle = (c.title || 'Untitled Chat').replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const item = $(`
-          <div class="conversation-item" data-id="${c.id}">
+          <div class="conversation-item" data-id="${c.conv_id}">
             <div class="conv-main">
               <i class="fas fa-comment-alt"></i>
               <span>${safeTitle}</span>
@@ -166,27 +201,44 @@ $(document).ready(function() {
         `);
         conversationList.append(item);
       });
+      // ⭐ 4. Apply the highlight every time the list is reloaded.
+      applyActiveHighlight();
     });
   }
   
   $(document).on('click', '.conversation-item', function(e) {
-    if ($(e.target).closest('.delete-btn').length) return;
+    if ($(e.target).closest('.delete-btn').length) {
+      return;
+    }
     const convId = $(this).data('id');
-    $.post(`/conversation/${convId}/restore`)
-      .done(function() {
-        $.getJSON(`/conversation/${convId}`, function(data) {
-          messagesContainer.empty();
-          if (data.messages) {
-            data.messages.forEach(m => addMessage(m.content, m.role === "user", false));
-            messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
-          }
-        });
+
+    // ⭐ 5. When an old chat is clicked, set it as active.
+    activeConversationId = convId;
+    applyActiveHighlight();
+    isNewConversation = false; 
+
+    $.post(`/conversation/${convId}/restore`).done(function() {
+      $.getJSON(`/conversation/${convId}`, function(data) {
+        messagesContainer.empty();
+        if (data.messages) {
+          data.messages.forEach(m => addMessage(m.content, m.role === "user", false));
+          messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
+        }
       });
+    });
+
+    $.post(`/conversation/${convId}/touch`).done(function() {
+      loadConversations();
+    });
   });
   
   $(document).on('click', '.delete-btn', function(e) {
     e.stopPropagation();
     const convId = $(this).closest('.conversation-item').data('id');
+    // ⭐ 6. If the deleted chat was active, clear the active ID.
+    if (activeConversationId === convId) {
+        activeConversationId = null;
+    }
     if (confirm("Delete this conversation permanently?")) {
       $.ajax({ url: `/conversation/${convId}/delete`, type: "DELETE" }).done(loadConversations);
     }
@@ -196,7 +248,10 @@ $(document).ready(function() {
     $.post("/clear", {}, function() {
       messagesContainer.empty();
       addMessage("👋 New conversation started. How can I help you today?");
+      // ⭐ 7. When starting a new chat, clear the active ID.
+      activeConversationId = null;
       loadConversations();
+      isNewConversation = true;
     });
   });
 

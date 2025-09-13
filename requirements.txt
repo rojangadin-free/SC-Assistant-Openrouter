@@ -1,12 +1,21 @@
-flask==3.1.2
-dotenv==0.9.9
-langchain==0.3.27
-langchain_huggingface==0.3.1
-langchain_pinecone==0.2.12
-langgraph==0.6.6
-firebase_admin==7.1.0
-langchain_community==0.3.29
-pymupdf==1.26.4
-gunicorn==23.0.0
-sentence-transformers==5.1.0
+Flask==3.1.2                      # Web framework
+python-dotenv==0.9.9             # Load .env file support
+
+langchain==0.3.27                # Core LangChain library
+langchain_huggingface==0.3.1     # Embeddings & HuggingFace integrations
+
+langchain_pinecone              # Pinecone vector store integration (no need to pin version unless issues)
+pinecone==7.0.2                  # Official Pinecone Python SDK
+
+langgraph==0.6.7                 # For stateful workflows & graph orchestration
+
+langchain_community             # Needed for document loaders (PyMuPDFLoader etc.)
+pymupdf==1.26.4                  # For PDF loading via PyMuPDFLoader
+
+sentence-transformers           # Underlying model for HuggingFaceEmbeddings
+
+boto3                            # AWS Cognito & DynamoDB
+python-jose==3.3.0               # JWT decoding
+
+gunicorn                        # For production server
 -e .
