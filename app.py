@@ -137,7 +137,7 @@ def call_llm(state: ChatState):
     # 4. PROMPT BUILDING LOGIC
     final_system_prompt = system_prompt.format(
         retrieved_docs=retrieved_docs_context,
-        chat_history="" 
+        chat_history=""
     )
     final_messages_for_llm = [("system", final_system_prompt)]
     for msg in history_for_llm:
@@ -230,10 +230,10 @@ def signup():
     email = request.form.get("email")
     password = request.form.get("password")
     username = request.form.get("username")
-    
+
     if not email or not password or not username:
         return jsonify({"success": False, "message": "All fields (username, email, and password) are required."})
-    
+
     if "@" in username:
         return jsonify({"success": False, "message": "Username cannot be an email address."})
 
@@ -251,15 +251,15 @@ def signup():
                 {"Name": "custom:role", "Value": "user"}
             ]
         )
-        
+
         try:
             cognito_client.admin_confirm_sign_up(
                 UserPoolId=COGNITO_USER_POOL_ID,
                 Username=username
             )
         except ClientError:
-            pass 
-        
+            pass
+
         try:
             cognito_client.admin_update_user_attributes(
                 UserPoolId=COGNITO_USER_POOL_ID,
@@ -271,7 +271,7 @@ def signup():
         except ClientError as e:
             print(f"Could not verify email for {username}: {e}")
             pass
-        
+
         session.update({
             "user": email,
             "uid": resp.get("UserSub"),
@@ -283,7 +283,7 @@ def signup():
     except ClientError as e:
         err_code = e.response.get("Error", {}).get("Code")
         friendly_message = COGNITO_ERROR_MESSAGES.get(
-            err_code, 
+            err_code,
             "An unexpected error occurred during signup. Please try again."
         )
         print(f"Cognito Signup Error: {err_code} - {e}")
@@ -293,7 +293,7 @@ def signup():
 def login():
     identifier = request.form.get("email")
     password = request.form.get("password")
-    
+
     if not identifier or not password:
         return jsonify({"success": False, "message": "Both identifier and password are required."})
 
@@ -303,7 +303,7 @@ def login():
             AuthFlow="USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": identifier, "PASSWORD": password}
         )
-        
+
         auth_result = resp["AuthenticationResult"]
         id_token = auth_result["IdToken"]
         uid = jwt.get_unverified_claims(id_token)["sub"]
@@ -316,14 +316,14 @@ def login():
             "username": username,
             "role": role
         })
-        
+
         redirect_url = url_for("dashboard") if role == "admin" else url_for("chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
 
     except ClientError as e:
         err_code = e.response.get("Error", {}).get("Code")
         friendly_message = COGNITO_ERROR_MESSAGES.get(
-            err_code, 
+            err_code,
             "An authentication error occurred. Please try again."
         )
         print(f"Cognito Login Error: {err_code} - {e}")
@@ -348,15 +348,15 @@ def forgot_password():
     except ClientError as e:
         err_code = e.response.get("Error", {}).get("Code")
         print(f"Cognito Forgot Password Error: {err_code} - {e}")
-        
+
         if err_code == "UserNotFoundException":
             return jsonify({
                 "success": True,
                 "message": "If an account with that email exists, you will receive a code to reset your password."
             })
-        
+
         friendly_message = COGNITO_ERROR_MESSAGES.get(
-            err_code, 
+            err_code,
             "An unexpected error occurred. Please try again."
         )
         return jsonify({"success": False, "message": friendly_message})
@@ -437,15 +437,15 @@ def upload_file():
 def list_files():
     if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
-    
+
     resp = files_table.scan()
     items = resp.get("Items", [])
-    
+
     formatted_files = [
-        {**item, 'name': item.pop('filename')} 
+        {**item, 'name': item.pop('filename')}
         for item in items if 'filename' in item
     ]
-    
+
     return jsonify({"success": True, "files": formatted_files})
 
 @app.route("/delete/<filename>", methods=["DELETE"])
@@ -485,7 +485,7 @@ def chat():
         result = app_graph.invoke({"input": msg}, config=config)
         answer = result.get("answer", "Sorry, I encountered an issue.")
         updated_history = result.get("chat_history", [])
-        
+
         new_conversation_created = False
         if not conv_id:
             conv_id = str(uuid.uuid4())
@@ -499,14 +499,14 @@ def chat():
         if updated_history:
             upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
 
+        # ⭐ MODIFIED RESPONSE DATA
         response_data = {
             "answer": answer,
-            "chat_history": updated_history
+            "chat_history": updated_history,
+            "conv_id": conv_id,
+            "new_conversation_created": new_conversation_created
         }
-        if new_conversation_created:
-            response_data["new_conversation_created"] = True
-            response_data["conv_id"] = conv_id
-        
+
         return jsonify(response_data)
 
     except Exception as e:
@@ -545,17 +545,17 @@ def conversation(conv_id):
 def restore_conversation(conv_id):
     if not session.get("user"):
         return jsonify({"error": "Not authenticated"}), 401
-    
+
     conv = get_conversation(session.get("uid"), conv_id)
     if not conv or "messages" not in conv:
         return jsonify({"error": "Conversation not found"}), 404
-    
+
     session_id = get_session_id()
     app_graph.update_state(
         config={"configurable": {"thread_id": session_id}},
         values={"chat_history": conv["messages"]}
     )
-    
+
     session["current_conv_id"] = conv_id
     session["created_at"] = conv.get("created_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
 

@@ -628,8 +628,6 @@ body {
   box-sizing: border-box;
 }
 
-/* Add this to the end of your chat.css file */
-
 .conversation-item.active-conversation {
   background-color: var(--menu-hover);
   color: white;
@@ -639,9 +637,6 @@ body {
   color: white;
 }
 
-/* ... all your existing CSS ... */
-
-/* ⭐ NEW: Styles for Conversation Loader */
 .loader-overlay {
   position: absolute;
   top: 50px; /* Height of the header */
@@ -669,7 +664,6 @@ body {
   animation: spin 1s linear infinite;
 }
 
-/* Re-using the spin animation from the login button */
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -823,4 +817,22 @@ body {
   body.keyboard-open .notification {
       bottom: 15px;
   }
+}
+
+/* Styles for Conversation History Loader */
+#conversationHistoryLoader {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px 0;
+  width: 100%;
+}
+
+.history-loader-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--menu-hover);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite; /* Re-uses existing spin animation */
 }
