@@ -53,10 +53,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Cleanup old Docker stuff
-        run: |
-          docker system prune -af --volumes
-
       - name: Stop, Remove, and Run New Docker Container
         run: |
           CONTAINER_NAME="rag-app-container"

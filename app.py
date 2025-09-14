@@ -129,12 +129,12 @@ def call_llm(state: ChatState):
     history_for_llm = list(history_for_state)
 
     # 3. Summarize the temporary copy if the conversation is long
-    X = 8  # threshold
+    X = 20
     if len(history_for_llm) > X:
         summary = summarize_history(history_for_llm[:-5])
         history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
 
-    # 4. ⭐ CORRECTED PROMPT BUILDING LOGIC
+    # 4. PROMPT BUILDING LOGIC
     final_system_prompt = system_prompt.format(
         retrieved_docs=retrieved_docs_context,
         chat_history="" 
@@ -232,8 +232,7 @@ def signup():
     
     if "@" in username:
         return jsonify({"success": False, "message": "Username cannot be an email address."})
-    
-    # ⭐ NEW: Check for spaces in the username
+
     if ' ' in username:
         return jsonify({"success": False, "message": "Username cannot contain spaces."})
 
@@ -405,6 +404,7 @@ def delete_file(filename):
         return jsonify({"success": False, "message": str(e)}), 500
 
 # ====== Chat API ======
+# ⭐ MODIFIED SECTION START
 @app.route("/get", methods=["POST"])
 def chat():
     if not session.get("user"):
@@ -414,27 +414,44 @@ def chat():
         session_id = get_session_id()
         config = {"configurable": {"thread_id": session_id}}
 
+        # --- FIX: Manually sync state from DB before every message ---
+        # This ensures that even if the app has multiple workers,
+        # the current worker's memory is up-to-date.
+        conv_id = session.get("current_conv_id")
+        if conv_id:
+            conversation = get_conversation(session.get("uid"), conv_id)
+            if conversation and "messages" in conversation:
+                # Load the full history into the graph's memory for this thread
+                app_graph.update_state(
+                    config,
+                    values={"chat_history": conversation["messages"]}
+                )
+        # --- END OF FIX ---
+
         result = app_graph.invoke({"input": msg}, config=config)
         answer = result.get("answer", "Sorry, I encountered an issue.")
         updated_history = result.get("chat_history", [])
         
         new_conversation_created = False
-        conv_id = session.get("current_conv_id")
-        created_at = session.get("created_at")
-
+        # If there's no conv_id in the session yet, this is the first message.
         if not conv_id:
             conv_id = str(uuid.uuid4())
             created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             session["current_conv_id"] = conv_id
             session["created_at"] = created_at
             new_conversation_created = True
+        else:
+            # We need created_at for existing conversations to pass to upsert
+            created_at = session.get("created_at")
 
+        # Save the updated history to DynamoDB on every message.
         if updated_history:
             upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
 
+        # Send the full history back to the frontend to keep it in sync
         response_data = {
             "answer": answer,
-            "chat_history": updated_history 
+            "chat_history": updated_history
         }
         if new_conversation_created:
             response_data["new_conversation_created"] = True
@@ -445,6 +462,7 @@ def chat():
     except Exception as e:
         print(f"Error in /get endpoint: {e}")
         return jsonify({"answer": f"Sorry, an error occurred."}), 500
+# ⭐ MODIFIED SECTION END
 
 @app.route("/clear", methods=["POST"])
 def clear_memory():
