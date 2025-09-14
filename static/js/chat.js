@@ -14,7 +14,6 @@ $(document).ready(function() {
   const conversationList = $("#conversationList");
 
   let isNewConversation = true;
-  // ⭐ 1. Add a variable to track the active conversation ID.
   let activeConversationId = null;
 
   // Enhanced viewport height handling for mobile
@@ -26,23 +25,18 @@ $(document).ready(function() {
   // Function to handle keyboard visibility on mobile
   function handleMobileKeyboard() {
     if (!window.visualViewport) return;
-    
     const viewport = window.visualViewport;
-    
     function viewportHandler() {
       const heightDifference = window.innerHeight - viewport.height;
-      
       if (heightDifference > 150) { 
         document.body.classList.add('keyboard-open');
       } else {
         document.body.classList.remove('keyboard-open');
       }
-      
       setTimeout(() => {
         messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
       }, 100);
     }
-    
     viewport.addEventListener('resize', viewportHandler);
   }
 
@@ -80,15 +74,11 @@ $(document).ready(function() {
     e.preventDefault();
     confirmDialog.addClass('active');
   });
-  
   cancelLogout.on('click', () => confirmDialog.removeClass('active'));
-  
   confirmLogoutButton.on('click', function() {
     const logoutUrl = logoutButton.find('a').attr('href');
     window.location.href = logoutUrl;
   });
-  
-  // Close dialog when clicking outside
   confirmDialog.on('click', function(e) {
     if ($(e.target).is('.confirm-dialog')) {
       confirmDialog.removeClass('active');
@@ -118,6 +108,26 @@ $(document).ready(function() {
       messagesContainer.stop().animate({ scrollTop: messagesContainer[0].scrollHeight}, 300);
     }
   }
+
+  // ⭐ 1. NEW FUNCTION: Renders the entire chat history from an array
+  // This function is the core fix for the disappearing messages bug.
+  function renderChatHistory(history) {
+    messagesContainer.empty(); // Clear all existing messages first
+    if (!history || !Array.isArray(history)) {
+      return;
+    }
+    history.forEach(message => {
+      // Do not display 'system' role messages in the chat window
+      if (message.role === 'system') {
+        return; 
+      }
+      // Use the existing addMessage function to create each bubble
+      // Set autoScroll to false to prevent jarring scroll on each message
+      addMessage(message.content, message.role === 'user', false);
+    });
+    // Scroll to the bottom once after all messages have been added
+    messagesContainer.stop().animate({ scrollTop: messagesContainer[0].scrollHeight }, 300);
+  }
   
   function sendMessage(message) {
     typingIndicator.removeClass('fade-out').show();
@@ -128,8 +138,14 @@ $(document).ready(function() {
       url: "/get",
       timeout: 30000
     }).done(function(data) {
-      addMessage(data.answer || "Sorry, I couldn't get a response.");
-      // ⭐ 2. If a new conversation was created, update the active ID.
+      // ⭐ 2. MODIFIED: Instead of adding one message, render the full history
+      if (data && data.chat_history) {
+        renderChatHistory(data.chat_history);
+      } else {
+        // Fallback for older server versions or errors
+        addMessage(data.answer || "Sorry, I couldn't get a response.");
+      }
+      
       if (data.new_conversation_created) {
         activeConversationId = data.conv_id;
         loadConversations();
@@ -149,6 +165,8 @@ $(document).ready(function() {
     const message = messageInput.val().trim();
     if (!message) return;
     
+    // We add the user's message immediately for a responsive feel,
+    // but the renderChatHistory function will soon redraw it.
     addMessage(message, true);
     messageInput.val('').css('height', 'auto');
     sendButton.prop('disabled', true);
@@ -159,7 +177,7 @@ $(document).ready(function() {
         sendMessage(message);
         isNewConversation = false;
       }).fail(function() {
-        console.error("Could not save previous session, proceeding with new chat.");
+        console.error("Could not clear session, proceeding with new chat.");
         sendMessage(message);
         isNewConversation = false;
       });
@@ -168,7 +186,6 @@ $(document).ready(function() {
     }
   });
   
-  // ⭐ 3. Create a helper function to apply the highlight.
   function applyActiveHighlight() {
     $('.conversation-item').removeClass('active-conversation');
     if (activeConversationId) {
@@ -183,9 +200,7 @@ $(document).ready(function() {
         conversationList.append("<div class='conversation-item' style='pointer-events:none;'>No past chats</div>");
         return;
       }
-      
       convs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      
       convs.forEach(c => {
         const safeTitle = (c.title || 'Untitled Chat').replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const item = $(`
@@ -201,7 +216,6 @@ $(document).ready(function() {
         `);
         conversationList.append(item);
       });
-      // ⭐ 4. Apply the highlight every time the list is reloaded.
       applyActiveHighlight();
     });
   }
@@ -211,31 +225,21 @@ $(document).ready(function() {
       return;
     }
     const convId = $(this).data('id');
-
-    // ⭐ 5. When an old chat is clicked, set it as active.
     activeConversationId = convId;
     applyActiveHighlight();
     isNewConversation = false; 
 
     $.post(`/conversation/${convId}/restore`).done(function() {
       $.getJSON(`/conversation/${convId}`, function(data) {
-        messagesContainer.empty();
-        if (data.messages) {
-          data.messages.forEach(m => addMessage(m.content, m.role === "user", false));
-          messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
-        }
+        // ⭐ 3. MODIFIED: Use the new function to render restored chats
+        renderChatHistory(data.messages);
       });
-    });
-
-    $.post(`/conversation/${convId}/touch`).done(function() {
-      loadConversations();
     });
   });
   
   $(document).on('click', '.delete-btn', function(e) {
     e.stopPropagation();
     const convId = $(this).closest('.conversation-item').data('id');
-    // ⭐ 6. If the deleted chat was active, clear the active ID.
     if (activeConversationId === convId) {
         activeConversationId = null;
     }
@@ -248,7 +252,6 @@ $(document).ready(function() {
     $.post("/clear", {}, function() {
       messagesContainer.empty();
       addMessage("👋 New conversation started. How can I help you today?");
-      // ⭐ 7. When starting a new chat, clear the active ID.
       activeConversationId = null;
       loadConversations();
       isNewConversation = true;

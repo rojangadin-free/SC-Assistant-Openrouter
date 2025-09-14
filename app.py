@@ -135,29 +135,19 @@ def call_llm(state: ChatState):
         history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
 
     # 4. ⭐ CORRECTED PROMPT BUILDING LOGIC
-    # Instead of flattening the history into a string, we build a proper message list.
-    
-    # First, create the main system prompt with the retrieved documents.
-    # Note: We pass an empty string for chat_history here because we will add it as separate messages.
     final_system_prompt = system_prompt.format(
         retrieved_docs=retrieved_docs_context,
         chat_history="" 
     )
-    
-    # Start the final list of messages for the AI
     final_messages_for_llm = [("system", final_system_prompt)]
-
-    # Add the (potentially summarized) chat history messages
     for msg in history_for_llm:
         final_messages_for_llm.append((msg['role'], msg['content']))
-
-    # Add the user's current input
     final_messages_for_llm.append(("human", state["input"]))
 
-    # 5. Invoke the model with the correctly structured message list
+    # 5. Invoke the model
     response = chatModel.invoke(final_messages_for_llm)
 
-    # 6. Update the state using the original, clean history
+    # 6. Update the state
     updated_history = history_for_state + [
         {"role": "user", "content": state["input"]},
         {"role": "assistant", "content": response.content}
@@ -182,10 +172,9 @@ def save_file_metadata(filename, uid):
     files_table.put_item(Item={
         "filename": filename,
         "uploaded_by": uid,
-        "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+        "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
     })
 
-# ⭐ MODIFIED: This function now creates or updates a conversation (upsert).
 def upsert_conversation(uid, conv_id, history, created_at):
     if not history:
         return
@@ -196,14 +185,13 @@ def upsert_conversation(uid, conv_id, history, created_at):
         "messages": history,
         "title": title,
         "created_at": created_at,
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
     conversations_table.put_item(Item=item)
 
-
 def list_conversations(uid):
     resp = conversations_table.query(
-        IndexName="uid-index",  # GSI required on uid
+        IndexName="uid-index",
         KeyConditionExpression=Key("uid").eq(uid),
         ScanIndexForward=False
     )
@@ -212,6 +200,19 @@ def list_conversations(uid):
 def get_conversation(uid, conv_id):
     resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid})
     return resp.get("Item")
+
+# Centralized dictionary for user-friendly Cognito error messages
+COGNITO_ERROR_MESSAGES = {
+    "UsernameExistsException": "This username or email is already registered. Please try logging in.",
+    "InvalidPasswordException": "Your password is not strong enough. It must be at least 8 characters long and include an uppercase letter, a lowercase letter, a number, and a special character (e.g., !@#$%).",
+    "InvalidParameterException": "Please provide a valid email address and username. Usernames cannot be email addresses.",
+    "NotAuthorizedException": "Incorrect username or password. Please check your credentials and try again.",
+    "UserNotFoundException": "Incorrect username or password. Please check your credentials and try again.",
+    "UserNotConfirmedException": "Your account is not confirmed yet. Please check your email for a confirmation link.",
+    "TooManyRequestsException": "You've made too many requests. Please wait a moment and try again.",
+    "InternalErrorException": "An internal server error occurred. Please try again later."
+}
+
 
 # ====== Auth Routes ======
 @app.route("/auth")
@@ -225,10 +226,17 @@ def signup():
     email = request.form.get("email")
     password = request.form.get("password")
     username = request.form.get("username")
+    
     if not email or not password or not username:
-        return jsonify({"success": False, "message": "All fields are required."})
+        return jsonify({"success": False, "message": "All fields (username, email, and password) are required."})
+    
     if "@" in username:
-        return jsonify({"success": False, "message": "Username cannot be an email."})
+        return jsonify({"success": False, "message": "Username cannot be an email address."})
+    
+    # ⭐ NEW: Check for spaces in the username
+    if ' ' in username:
+        return jsonify({"success": False, "message": "Username cannot contain spaces."})
+
     try:
         resp = cognito_client.sign_up(
             ClientId=COGNITO_CLIENT_ID,
@@ -240,13 +248,14 @@ def signup():
                 {"Name": "custom:role", "Value": "user"}
             ]
         )
+        
         try:
             cognito_client.admin_confirm_sign_up(
                 UserPoolId=COGNITO_USER_POOL_ID,
                 Username=username
             )
         except ClientError:
-            pass
+            pass 
         
         try:
             cognito_client.admin_update_user_attributes(
@@ -267,28 +276,31 @@ def signup():
             "role": "user"
         })
         return jsonify({"success": True, "redirect": url_for("chat_page")})
+
     except ClientError as e:
-        err_code = e.response["Error"]["Code"]
-        if err_code == "UsernameExistsException":
-            friendly = "Username or email already registered."
-        elif err_code == "InvalidPasswordException":
-            friendly = "Password must have Uppercase, Lowercase, Number, SpecialChar and be 8+ chars long."
-        else:
-            friendly = str(e)
-        return jsonify({"success": False, "message": friendly})
+        err_code = e.response.get("Error", {}).get("Code")
+        friendly_message = COGNITO_ERROR_MESSAGES.get(
+            err_code, 
+            "An unexpected error occurred during signup. Please try again."
+        )
+        print(f"Cognito Signup Error: {err_code} - {e}")
+        return jsonify({"success": False, "message": friendly_message})
 
 @app.route("/login", methods=["POST"])
 def login():
     identifier = request.form.get("email")
     password = request.form.get("password")
+    
     if not identifier or not password:
-        return jsonify({"success": False, "message": "All fields are required."})
+        return jsonify({"success": False, "message": "Both identifier and password are required."})
+
     try:
         resp = cognito_client.initiate_auth(
             ClientId=COGNITO_CLIENT_ID,
             AuthFlow="USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": identifier, "PASSWORD": password}
         )
+        
         auth_result = resp["AuthenticationResult"]
         id_token = auth_result["IdToken"]
         uid = jwt.get_unverified_claims(id_token)["sub"]
@@ -301,10 +313,18 @@ def login():
             "username": username,
             "role": role
         })
+        
         redirect_url = url_for("dashboard") if role == "admin" else url_for("chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
+
     except ClientError as e:
-        return jsonify({"success": False, "message": e.response["Error"]["Message"]})
+        err_code = e.response.get("Error", {}).get("Code")
+        friendly_message = COGNITO_ERROR_MESSAGES.get(
+            err_code, 
+            "An authentication error occurred. Please try again."
+        )
+        print(f"Cognito Login Error: {err_code} - {e}")
+        return jsonify({"success": False, "message": friendly_message})
 
 @app.route("/logout")
 def logout():
@@ -385,7 +405,6 @@ def delete_file(filename):
         return jsonify({"success": False, "message": str(e)}), 500
 
 # ====== Chat API ======
-# ⭐ MODIFIED: This route now saves the chat history after every message.
 @app.route("/get", methods=["POST"])
 def chat():
     if not session.get("user"):
@@ -403,19 +422,20 @@ def chat():
         conv_id = session.get("current_conv_id")
         created_at = session.get("created_at")
 
-        # If there's no conversation ID in the session, this is the first message.
         if not conv_id:
             conv_id = str(uuid.uuid4())
-            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat() # ⭐ FIXED
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             session["current_conv_id"] = conv_id
             session["created_at"] = created_at
             new_conversation_created = True
 
-        # Save the updated history to DynamoDB on every message.
         if updated_history:
             upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
 
-        response_data = {"answer": answer}
+        response_data = {
+            "answer": answer,
+            "chat_history": updated_history 
+        }
         if new_conversation_created:
             response_data["new_conversation_created"] = True
             response_data["conv_id"] = conv_id
@@ -426,17 +446,14 @@ def chat():
         print(f"Error in /get endpoint: {e}")
         return jsonify({"answer": f"Sorry, an error occurred."}), 500
 
-# ⭐ MODIFIED: This route now clears the conversation from the user's session.
 @app.route("/clear", methods=["POST"])
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
     try:
         session_id = get_session_id()
-        # The conversation is already saved, so we just clear the state.
         app_graph.update_state(config={"configurable": {"thread_id": session_id}}, values={"chat_history": []})
         
-        # Clear the specific conversation details from the Flask session
         session.pop("current_conv_id", None)
         session.pop("created_at", None)
 
@@ -459,7 +476,6 @@ def conversation(conv_id):
         return jsonify({"error": "Not found"}), 404
     return jsonify(conv)
 
-# ⭐ MODIFIED: This route now sets the session to the restored conversation's context.
 @app.route("/conversation/<conv_id>/restore", methods=["POST"])
 def restore_conversation(conv_id):
     if not session.get("user"):
@@ -469,16 +485,14 @@ def restore_conversation(conv_id):
     if not conv or "messages" not in conv:
         return jsonify({"error": "Conversation not found"}), 404
     
-    # Restore the message history into the graph's memory
     session_id = get_session_id()
     app_graph.update_state(
         config={"configurable": {"thread_id": session_id}},
         values={"chat_history": conv["messages"]}
     )
     
-    # Set the current conversation context in the Flask session
     session["current_conv_id"] = conv_id
-    session["created_at"] = conv.get("created_at", datetime.datetime.now(datetime.timezone.utc).isoformat()) # ⭐ FIXED
+    session["created_at"] = conv.get("created_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
 
     return jsonify({"status": "success", "message": "Conversation restored"})
 

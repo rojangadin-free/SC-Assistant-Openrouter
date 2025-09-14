@@ -14,6 +14,16 @@ $(document).ready(function() {
     const rememberMeCheckbox = $('#rememberMe');
     const notification = $('#notification');
     
+    // --- ADDED SECTION START: "Remember Me" Page Load Logic ---
+    // Check for a saved email when the page loads
+    const savedEmail = localStorage.getItem('rememberedEmail');
+    if (savedEmail) {
+        $('#email').val(savedEmail);
+        rememberMeCheckbox.prop('checked', true);
+        customCheckbox.addClass('checked');
+    }
+    // --- ADDED SECTION END ---
+
     // Theme toggle functionality
     function setTheme(theme) {
         if (theme === 'dark') {
@@ -95,16 +105,27 @@ $(document).ready(function() {
         
         notification.addClass('show');
         
+        const duration = type === 'error' ? 15000 : 3000;
+
         setTimeout(() => {
             notification.removeClass('show');
-        }, 3000);
+        }, duration);
     }
     
     // Handle login
     loginForm.on('submit', function(e) {
         e.preventDefault();
         
-        // Show loading state
+        // --- ADDED SECTION START: "Remember Me" Save Logic ---
+        if (rememberMeCheckbox.is(':checked')) {
+            // Save email to localStorage if checked
+            localStorage.setItem('rememberedEmail', $('#email').val());
+        } else {
+            // Remove email from localStorage if not checked
+            localStorage.removeItem('rememberedEmail');
+        }
+        // --- ADDED SECTION END ---
+
         const loginButton = $('#loginButton');
         loginButton.prop('disabled', true);
         loginButton.html('<span class="loading"></span>Signing In...');
@@ -129,7 +150,6 @@ $(document).ready(function() {
     signupForm.on('submit', function(e) {
         e.preventDefault();
         
-        // Show loading state
         const signupButton = $('#signupButton');
         signupButton.prop('disabled', true);
         signupButton.html('<span class="loading"></span>Creating Account...');
