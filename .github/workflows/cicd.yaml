@@ -4,11 +4,9 @@ on:
   push:
     branches: [main]
 
-
 jobs:
   Continuous-Integration:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -53,20 +51,36 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
+      - name: **Cleanup Runner Resources**
+        run: |
+          # Stop all Docker containers (ignore error if none exist)
+          docker stop $(docker ps -aq) || true
+          # Remove all Docker containers (ignore error if none exist)
+          docker rm $(docker ps -aq) || true
+          # Remove all Docker images to free space
+          docker rmi $(docker images -q) --force || true
+          # Prune unused Docker volumes and networks
+          docker volume prune -f
+          docker network prune -f
+          # Remove all unused Docker data (containers, networks, images, volumes)
+          docker system prune -a --volumes -f
+          # Clean apt cache and lists to free disk space
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          # Vacuum systemd journals older than 3 days:contentReference[oaicite:3]{index=3}
+          sudo journalctl --vacuum-time=3d
+
       - name: Stop, Remove, and Run New Docker Container
         run: |
           CONTAINER_NAME="rag-app-container"
           IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest"
 
           # Stop and remove the existing container if it's running
-          # The '|| true' part prevents the workflow from failing if the container doesn't exist yet
           docker stop $CONTAINER_NAME || true
           docker rm $CONTAINER_NAME || true
 
-          # Explicitly pull the latest version of the image from ECR
+          # Pull the latest image and run the new container
           docker pull $IMAGE_URI
-
-          # Run the new container with a specific name and restart policy
           docker run -d --name $CONTAINER_NAME --restart always \
             -p 8080:8080 \
             -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
