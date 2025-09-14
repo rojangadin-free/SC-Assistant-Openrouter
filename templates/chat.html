@@ -20,6 +20,9 @@
           </div>
           <div class="conversation-header">Conversation History</div>
           <div id="conversationList"></div>
+          <div id="conversationHistoryLoader" style="display: none;">
+              <div class="history-loader-spinner"></div>
+          </div>
         {% else %}
           <div class="menu-item">
             <i class="fas fa-user-circle"></i>
@@ -68,13 +71,6 @@
     </div>
     
     <div class="messages-container" id="messagesContainer">
-        <div class="message assistant">
-            <div class="avatar"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="AI Assistant"></div>
-            <div class="message-bubble">
-            👋 {% if user %} Welcome back, <b>{{ session.username }}</b>! How can I help you today?
-            {% else %} Welcome to Samar College Assistant. How can I help you today? {% endif %}
-            </div>
-        </div>
     </div>
         
     <div class="typing-indicator" id="typingIndicator" style="display:none;">
