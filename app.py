@@ -210,7 +210,11 @@ COGNITO_ERROR_MESSAGES = {
     "UserNotFoundException": "Incorrect username or password. Please check your credentials and try again.",
     "UserNotConfirmedException": "Your account is not confirmed yet. Please check your email for a confirmation link.",
     "TooManyRequestsException": "You've made too many requests. Please wait a moment and try again.",
-    "InternalErrorException": "An internal server error occurred. Please try again later."
+    "InternalErrorException": "An internal server error occurred. Please try again later.",
+    # New codes for password reset
+    "CodeMismatchException": "The verification code is incorrect. Please check the code and try again.",
+    "ExpiredCodeException": "The verification code has expired. Please request a new one.",
+    "LimitExceededException": "You have exceeded the limit for password reset attempts. Please try again later."
 }
 
 
@@ -325,12 +329,67 @@ def login():
         print(f"Cognito Login Error: {err_code} - {e}")
         return jsonify({"success": False, "message": friendly_message})
 
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    email = request.form.get("email")
+    if not email:
+        return jsonify({"success": False, "message": "An email address is required."})
+
+    try:
+        cognito_client.forgot_password(
+            ClientId=COGNITO_CLIENT_ID,
+            Username=email
+        )
+        return jsonify({
+            "success": True,
+            "message": "If an account with that email exists, you will receive a code to reset your password."
+        })
+
+    except ClientError as e:
+        err_code = e.response.get("Error", {}).get("Code")
+        print(f"Cognito Forgot Password Error: {err_code} - {e}")
+        
+        if err_code == "UserNotFoundException":
+            return jsonify({
+                "success": True,
+                "message": "If an account with that email exists, you will receive a code to reset your password."
+            })
+        
+        friendly_message = COGNITO_ERROR_MESSAGES.get(
+            err_code, 
+            "An unexpected error occurred. Please try again."
+        )
+        return jsonify({"success": False, "message": friendly_message})
+
+@app.route("/reset-password", methods=["POST"])
+def reset_password():
+    email = request.form.get("email")
+    code = request.form.get("code")
+    new_password = request.form.get("password")
+
+    if not all([email, code, new_password]):
+        return jsonify({"success": False, "message": "Email, code, and a new password are required."})
+
+    try:
+        cognito_client.confirm_forgot_password(
+            ClientId=COGNITO_CLIENT_ID,
+            Username=email,
+            ConfirmationCode=code,
+            Password=new_password
+        )
+        return jsonify({"success": True, "message": "Password has been reset successfully!"})
+    except ClientError as e:
+        err_code = e.response.get("Error", {}).get("Code")
+        friendly_message = COGNITO_ERROR_MESSAGES.get(err_code, "An unexpected error occurred.")
+        return jsonify({"success": False, "message": friendly_message})
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("auth_page"))
 
 # ====== Role-based Routes ======
+# ... (rest of your app.py is unchanged)
 @app.route("/dashboard")
 def dashboard():
     if not session.get("user") or not is_admin():
@@ -454,14 +513,11 @@ def chat():
         print(f"Error in /get endpoint: {e}")
         return jsonify({"answer": f"Sorry, an error occurred."}), 500
 
-# ⭐ MODIFIED SECTION START
 @app.route("/clear", methods=["POST"])
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
     try:
-        # Instead of clearing memory, we generate a new session ID for a clean slate.
-        # This is more robust in multi-worker environments.
         session.pop("session_id", None)
         session.pop("current_conv_id", None)
         session.pop("created_at", None)
@@ -469,7 +525,6 @@ def clear_memory():
         return jsonify({"status": "success", "message": "New session started"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
-# ⭐ MODIFIED SECTION END
 
 @app.route("/conversations", methods=["GET"])
 def conversations():

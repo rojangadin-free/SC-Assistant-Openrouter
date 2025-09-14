@@ -14,7 +14,6 @@
     <div class="sidebar-content">
       <div class="menu">
         {% if user %}
-          <!-- New chat always at top -->
           <div class="new-chat-btn">
             <i class="fas fa-plus-circle"></i>
             <span>New chat</span>
@@ -51,27 +50,31 @@
   
   <div class="chat-section">
     <div class="header">
-      <button class="hamburger-menu" id="hamburgerMenu">
-        <i class="fas fa-bars"></i>
-      </button>
-      <div class="header-left">
-        <img src="{{ url_for('static', filename='images/logo.png') }}" 
-            alt="Logo" class="logo-icon">
-        Samar College AI-Assistant
-      </div>
-      <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
-        <i class="fas fa-moon"></i>
-      </button>
+        <button class="hamburger-menu" id="hamburgerMenu">
+            <i class="fas fa-bars"></i>
+        </button>
+        <div class="header-left">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" 
+                alt="Logo" class="logo-icon">
+            Samar College AI-Assistant
+        </div>
+        <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
+            <i class="fas fa-moon"></i>
+        </button>
+    </div>
+
+    <div class="loader-overlay" id="conversationLoader" style="display: none;">
+        <div class="loader-spinner"></div>
     </div>
     
-   <div class="messages-container" id="messagesContainer">
-      <div class="message assistant">
-        <div class="avatar"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="AI Assistant"></div>
-        <div class="message-bubble">
-          👋 {% if user %} Welcome back, <b>{{ session.username }}</b>! How can I help you today?
-          {% else %} Welcome to Samar College Assistant. How can I help you today? {% endif %}
+    <div class="messages-container" id="messagesContainer">
+        <div class="message assistant">
+            <div class="avatar"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="AI Assistant"></div>
+            <div class="message-bubble">
+            👋 {% if user %} Welcome back, <b>{{ session.username }}</b>! How can I help you today?
+            {% else %} Welcome to Samar College Assistant. How can I help you today? {% endif %}
+            </div>
         </div>
-      </div>
     </div>
         
     <div class="typing-indicator" id="typingIndicator" style="display:none;">
