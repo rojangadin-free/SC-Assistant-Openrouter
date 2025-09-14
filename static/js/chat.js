@@ -1,5 +1,5 @@
 $(document).ready(function() {
-  const logoPath = '/static/images/logo.png'; // Make sure this path is correct
+  const logoPath = '/static/images/logo.png';
   const messagesContainer = $('#messagesContainer');
   const messageInput = $('#messageInput');
   const sendButton = $('#sendButton');
@@ -12,10 +12,12 @@ $(document).ready(function() {
   const cancelLogout = $('#cancelLogout');
   const confirmLogoutButton = $('#confirmLogoutButton');
   const conversationList = $("#conversationList");
+  const conversationLoader = $('#conversationLoader'); // ⭐ NEW: Loader element
 
   let isNewConversation = true;
   let activeConversationId = null;
 
+  // ... all your helper functions like adjustViewportHeight, setTheme, etc. remain the same ...
   // Enhanced viewport height handling for mobile
   function adjustViewportHeight() {
     const vh = window.innerHeight * 0.01;
@@ -124,6 +126,9 @@ $(document).ready(function() {
   }
   
   function sendMessage(message) {
+    const requestIsNew = isNewConversation;
+    const requestConvId = activeConversationId;
+
     typingIndicator.removeClass('fade-out').show();
     
     $.ajax({
@@ -132,27 +137,40 @@ $(document).ready(function() {
       url: "/get",
       timeout: 30000
     }).done(function(data) {
-      if (data && data.chat_history) {
-        renderChatHistory(data.chat_history);
-      } else {
-        addMessage(data.answer || "Sorry, I couldn't get a response.");
+      const responseConvId = data.new_conversation_created ? data.conv_id : requestConvId;
+      const isStillInNewChat = requestIsNew && activeConversationId === null;
+      const isStillInSameChat = activeConversationId === responseConvId;
+
+      if (isStillInNewChat || isStillInSameChat) {
+        if (data && data.chat_history) {
+          renderChatHistory(data.chat_history);
+        }
+        if (data.new_conversation_created) {
+          activeConversationId = data.conv_id;
+          isNewConversation = false;
+        }
       }
-      
-      if (data.new_conversation_created) {
-        activeConversationId = data.conv_id;
-        loadConversations();
-      }
+      loadConversations();
     }).fail(function() {
-      addMessage("Can you ask the question again? I am having trouble finding an answer to that question.");
-    }).always(function() {
-      typingIndicator.addClass('fade-out');
-      setTimeout(() => typingIndicator.hide(), 300);
-      sendButton.prop('disabled', false);
-      messageInput.prop('disabled', false);
+      if (requestConvId === activeConversationId) {
+        addMessage("Can you ask the question again? I am having trouble finding an answer to that question.");
+      }
+    }).always(function(dataOrXhr, textStatus) {
+      let convIdFromResponse = null;
+      if (textStatus === 'success' && dataOrXhr.new_conversation_created) {
+        convIdFromResponse = dataOrXhr.conv_id;
+      }
+      const effectiveRequestConvId = requestIsNew ? convIdFromResponse : requestConvId;
+
+      if (activeConversationId === effectiveRequestConvId) {
+        typingIndicator.addClass('fade-out');
+        setTimeout(() => typingIndicator.hide(), 300);
+        sendButton.prop('disabled', false);
+        messageInput.prop('disabled', false).focus();
+      }
     });
   }
 
-  // ⭐ MODIFIED SECTION START
   messageForm.on('submit', function(e) {
     e.preventDefault();
     const message = messageInput.val().trim();
@@ -163,17 +181,8 @@ $(document).ready(function() {
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
     
-    // The logic is now simplified. We no longer need to check isNewConversation
-    // or call /clear here. The "New Chat" button handles the clearing,
-    // and every message is sent the same way.
     sendMessage(message);
-    
-    // If it was a new conversation, we mark it as not new anymore.
-    if (isNewConversation) {
-        isNewConversation = false;
-    }
   });
-  // ⭐ MODIFIED SECTION END
   
   function applyActiveHighlight() {
     $('.conversation-item').removeClass('active-conversation');
@@ -209,41 +218,85 @@ $(document).ready(function() {
     });
   }
   
+  // ⭐ MODIFIED SECTION START
   $(document).on('click', '.conversation-item', function(e) {
     if ($(e.target).closest('.delete-btn').length) {
       return;
     }
     const convId = $(this).data('id');
+
+    // Prevent reloading the conversation that's already active
+    if (convId === activeConversationId) {
+        return;
+    }
+
     activeConversationId = convId;
     applyActiveHighlight();
     isNewConversation = false; 
 
+    // Show loader, clear old messages, and disable input
+    messagesContainer.empty();
+    conversationLoader.show();
+    sendButton.prop('disabled', true);
+    messageInput.prop('disabled', true);
+    typingIndicator.hide();
+
     $.post(`/conversation/${convId}/restore`).done(function() {
       $.getJSON(`/conversation/${convId}`, function(data) {
         renderChatHistory(data.messages);
+      }).fail(function() {
+        addMessage("Sorry, I couldn't load this conversation. Please try again.");
+      }).always(function() {
+        // Always hide loader and re-enable input
+        conversationLoader.hide();
+        sendButton.prop('disabled', false);
+        messageInput.prop('disabled', false).focus();
       });
+    }).fail(function() {
+        // Handle failure of the restore call
+        addMessage("An error occurred while switching conversations.");
+        conversationLoader.hide();
+        sendButton.prop('disabled', false);
+        messageInput.prop('disabled', false).focus();
     });
   });
   
+  function startNewChat() {
+    $.post("/clear", function() {
+      messagesContainer.empty();
+      addMessage("👋 New conversation started. How can I help you today?");
+      activeConversationId = null;
+      isNewConversation = true;
+      loadConversations();
+      sendButton.prop('disabled', false);
+      messageInput.prop('disabled', false).focus();
+      typingIndicator.hide();
+      conversationLoader.hide(); // Ensure loader is hidden
+    });
+  }
+  // ⭐ MODIFIED SECTION END
+
   $(document).on('click', '.delete-btn', function(e) {
     e.stopPropagation();
     const convId = $(this).closest('.conversation-item').data('id');
-    if (activeConversationId === convId) {
-        activeConversationId = null;
-    }
+    const wasActive = (activeConversationId === convId);
+
     if (confirm("Delete this conversation permanently?")) {
-      $.ajax({ url: `/conversation/${convId}/delete`, type: "DELETE" }).done(loadConversations);
+      $.ajax({ 
+        url: `/conversation/${convId}/delete`, 
+        type: "DELETE" 
+      }).done(function() {
+        if (wasActive) {
+          startNewChat();
+        } else {
+          loadConversations();
+        }
+      });
     }
   });
   
   $(".new-chat-btn").on("click", function() {
-    $.post("/clear", {}, function() {
-      messagesContainer.empty();
-      addMessage("👋 New conversation started. How can I help you today?");
-      activeConversationId = null;
-      loadConversations();
-      isNewConversation = true;
-    });
+    startNewChat();
   });
 
   messageInput.on('keydown', function(e) {

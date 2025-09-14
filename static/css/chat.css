@@ -639,6 +639,41 @@ body {
   color: white;
 }
 
+/* ... all your existing CSS ... */
+
+/* ⭐ NEW: Styles for Conversation Loader */
+.loader-overlay {
+  position: absolute;
+  top: 50px; /* Height of the header */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(248, 249, 250, 0.7); /* Semi-transparent light theme */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 998;
+  transition: opacity 0.3s ease;
+}
+
+[data-theme="dark"] .loader-overlay {
+  background-color: rgba(32, 33, 36, 0.8); /* Semi-transparent dark theme */
+}
+
+.loader-spinner {
+  width: 50px;
+  height: 50px;
+  border: 5px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* Re-using the spin animation from the login button */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .new-chat-btn:hover { background: var(--menu-hover); color: white; }
 .new-chat-btn i { color: var(--accent); font-size: 1.1rem; transition: color 0.2s ease; }
 .new-chat-btn:hover i { color: white; }
