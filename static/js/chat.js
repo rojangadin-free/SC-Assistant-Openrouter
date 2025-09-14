@@ -109,23 +109,17 @@ $(document).ready(function() {
     }
   }
 
-  // ⭐ 1. NEW FUNCTION: Renders the entire chat history from an array
-  // This function is the core fix for the disappearing messages bug.
   function renderChatHistory(history) {
-    messagesContainer.empty(); // Clear all existing messages first
+    messagesContainer.empty();
     if (!history || !Array.isArray(history)) {
       return;
     }
     history.forEach(message => {
-      // Do not display 'system' role messages in the chat window
       if (message.role === 'system') {
         return; 
       }
-      // Use the existing addMessage function to create each bubble
-      // Set autoScroll to false to prevent jarring scroll on each message
       addMessage(message.content, message.role === 'user', false);
     });
-    // Scroll to the bottom once after all messages have been added
     messagesContainer.stop().animate({ scrollTop: messagesContainer[0].scrollHeight }, 300);
   }
   
@@ -138,11 +132,9 @@ $(document).ready(function() {
       url: "/get",
       timeout: 30000
     }).done(function(data) {
-      // ⭐ 2. MODIFIED: Instead of adding one message, render the full history
       if (data && data.chat_history) {
         renderChatHistory(data.chat_history);
       } else {
-        // Fallback for older server versions or errors
         addMessage(data.answer || "Sorry, I couldn't get a response.");
       }
       
@@ -160,31 +152,28 @@ $(document).ready(function() {
     });
   }
 
+  // ⭐ MODIFIED SECTION START
   messageForm.on('submit', function(e) {
     e.preventDefault();
     const message = messageInput.val().trim();
     if (!message) return;
     
-    // We add the user's message immediately for a responsive feel,
-    // but the renderChatHistory function will soon redraw it.
     addMessage(message, true);
     messageInput.val('').css('height', 'auto');
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
     
+    // The logic is now simplified. We no longer need to check isNewConversation
+    // or call /clear here. The "New Chat" button handles the clearing,
+    // and every message is sent the same way.
+    sendMessage(message);
+    
+    // If it was a new conversation, we mark it as not new anymore.
     if (isNewConversation) {
-      $.post("/clear", {}, function() {
-        sendMessage(message);
         isNewConversation = false;
-      }).fail(function() {
-        console.error("Could not clear session, proceeding with new chat.");
-        sendMessage(message);
-        isNewConversation = false;
-      });
-    } else {
-      sendMessage(message);
     }
   });
+  // ⭐ MODIFIED SECTION END
   
   function applyActiveHighlight() {
     $('.conversation-item').removeClass('active-conversation');
@@ -231,7 +220,6 @@ $(document).ready(function() {
 
     $.post(`/conversation/${convId}/restore`).done(function() {
       $.getJSON(`/conversation/${convId}`, function(data) {
-        // ⭐ 3. MODIFIED: Use the new function to render restored chats
         renderChatHistory(data.messages);
       });
     });

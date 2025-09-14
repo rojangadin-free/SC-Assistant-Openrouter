@@ -404,7 +404,6 @@ def delete_file(filename):
         return jsonify({"success": False, "message": str(e)}), 500
 
 # ====== Chat API ======
-# ⭐ MODIFIED SECTION START
 @app.route("/get", methods=["POST"])
 def chat():
     if not session.get("user"):
@@ -414,26 +413,21 @@ def chat():
         session_id = get_session_id()
         config = {"configurable": {"thread_id": session_id}}
 
-        # --- FIX: Manually sync state from DB before every message ---
-        # This ensures that even if the app has multiple workers,
-        # the current worker's memory is up-to-date.
+        # Manually sync state from DB before every message
         conv_id = session.get("current_conv_id")
         if conv_id:
             conversation = get_conversation(session.get("uid"), conv_id)
             if conversation and "messages" in conversation:
-                # Load the full history into the graph's memory for this thread
                 app_graph.update_state(
                     config,
                     values={"chat_history": conversation["messages"]}
                 )
-        # --- END OF FIX ---
 
         result = app_graph.invoke({"input": msg}, config=config)
         answer = result.get("answer", "Sorry, I encountered an issue.")
         updated_history = result.get("chat_history", [])
         
         new_conversation_created = False
-        # If there's no conv_id in the session yet, this is the first message.
         if not conv_id:
             conv_id = str(uuid.uuid4())
             created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -441,14 +435,11 @@ def chat():
             session["created_at"] = created_at
             new_conversation_created = True
         else:
-            # We need created_at for existing conversations to pass to upsert
             created_at = session.get("created_at")
 
-        # Save the updated history to DynamoDB on every message.
         if updated_history:
             upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
 
-        # Send the full history back to the frontend to keep it in sync
         response_data = {
             "answer": answer,
             "chat_history": updated_history
@@ -462,22 +453,23 @@ def chat():
     except Exception as e:
         print(f"Error in /get endpoint: {e}")
         return jsonify({"answer": f"Sorry, an error occurred."}), 500
-# ⭐ MODIFIED SECTION END
 
+# ⭐ MODIFIED SECTION START
 @app.route("/clear", methods=["POST"])
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
     try:
-        session_id = get_session_id()
-        app_graph.update_state(config={"configurable": {"thread_id": session_id}}, values={"chat_history": []})
-        
+        # Instead of clearing memory, we generate a new session ID for a clean slate.
+        # This is more robust in multi-worker environments.
+        session.pop("session_id", None)
         session.pop("current_conv_id", None)
         session.pop("created_at", None)
 
-        return jsonify({"status": "success", "message": "Memory cleared for new conversation"})
+        return jsonify({"status": "success", "message": "New session started"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+# ⭐ MODIFIED SECTION END
 
 @app.route("/conversations", methods=["GET"])
 def conversations():
