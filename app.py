@@ -316,6 +316,8 @@ def login():
             "username": username,
             "role": role
         })
+        
+        session['start_new_chat'] = True
 
         redirect_url = url_for("dashboard") if role == "admin" else url_for("chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
@@ -389,7 +391,6 @@ def logout():
     return redirect(url_for("auth_page"))
 
 # ====== Role-based Routes ======
-# ... (rest of your app.py is unchanged)
 @app.route("/dashboard")
 def dashboard():
     if not session.get("user") or not is_admin():
@@ -400,7 +401,9 @@ def dashboard():
 def chat_page():
     if not session.get("user"):
         return redirect(url_for("auth_page"))
-    return render_template("chat.html", user=session["user"])
+    
+    start_new = session.pop('start_new_chat', False)
+    return render_template("chat.html", user=session["user"], start_new_chat=str(start_new).lower())
 
 @app.route("/")
 def index():
@@ -472,7 +475,6 @@ def chat():
         session_id = get_session_id()
         config = {"configurable": {"thread_id": session_id}}
 
-        # Manually sync state from DB before every message
         conv_id = session.get("current_conv_id")
         if conv_id:
             conversation = get_conversation(session.get("uid"), conv_id)
@@ -487,24 +489,26 @@ def chat():
         updated_history = result.get("chat_history", [])
 
         new_conversation_created = False
+        title = None
         if not conv_id:
             conv_id = str(uuid.uuid4())
             created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             session["current_conv_id"] = conv_id
             session["created_at"] = created_at
             new_conversation_created = True
+            title = msg[:40]  # Capture title for new conversations
         else:
             created_at = session.get("created_at")
 
         if updated_history:
             upsert_conversation(session.get("uid"), conv_id, updated_history, created_at)
 
-        # ⭐ MODIFIED RESPONSE DATA
+        # ⭐ MODIFIED RESPONSE DATA: No longer sending full chat_history
         response_data = {
             "answer": answer,
-            "chat_history": updated_history,
             "conv_id": conv_id,
-            "new_conversation_created": new_conversation_created
+            "new_conversation_created": new_conversation_created,
+            "new_conv_title": title  # Send title back if new conv was created
         }
 
         return jsonify(response_data)

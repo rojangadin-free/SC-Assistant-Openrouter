@@ -108,6 +108,7 @@ $(document).ready(function() {
     }
   }
 
+  // This function is still needed for loading old conversations
   function renderChatHistory(history) {
     messagesContainer.empty();
     if (!history || !Array.isArray(history)) {
@@ -120,6 +121,30 @@ $(document).ready(function() {
       addMessage(message.content, message.role === 'user', false);
     });
     messagesContainer.stop().animate({ scrollTop: messagesContainer[0].scrollHeight }, 300);
+  }
+
+  // ⭐ NEW HELPER FUNCTION to add a new conversation to the top of the sidebar
+  function addConversationToSidebar(convId, title) {
+      // Remove the "No past chats" message if it exists
+      const noChatsMessage = conversationList.find('.conversation-item:contains("No past chats")');
+      if (noChatsMessage.length) {
+          noChatsMessage.remove();
+      }
+      
+      const safeTitle = (title || 'Untitled Chat').replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const newItem = $(`
+          <div class="conversation-item" data-id="${convId}">
+            <div class="conv-main">
+              <i class="fas fa-comment-alt"></i>
+              <span>${safeTitle}</span>
+            </div>
+            <div class="conv-actions">
+              <button class="delete-btn" title="Delete"><i class="fas fa-trash"></i></button>
+            </div>
+          </div>
+      `);
+      conversationList.prepend(newItem);
+      applyActiveHighlight(); // Make the new item active
   }
 
   function sendMessage(message) {
@@ -139,17 +164,21 @@ $(document).ready(function() {
       const isStillInSameChat = activeConversationId === responseConvId;
 
       if (isStillInNewChat || isStillInSameChat) {
-        if (data && data.chat_history) {
-          renderChatHistory(data.chat_history);
+        // ⭐ FIX: Only append the new answer, don't re-render anything.
+        if (data && data.answer) {
+          addMessage(data.answer, false);
         }
+        
+        // ⭐ FIX: If a new chat was created, add it to the sidebar without a full refresh.
         if (data.new_conversation_created) {
           activeConversationId = data.conv_id;
           isNewConversation = false;
-          // ⭐ CHANGE: Save new conversation ID to localStorage
           localStorage.setItem('activeConversationId', activeConversationId);
+          addConversationToSidebar(data.conv_id, data.new_conv_title);
         }
       }
-      loadConversations();
+      // ⭐ FIX: DO NOT reload the entire conversation list on every message.
+      // loadConversations();
     }).fail(function() {
       if (requestConvId === activeConversationId) {
         addMessage("Can you ask the question again? I am having trouble finding an answer to that question.");
@@ -232,16 +261,14 @@ $(document).ready(function() {
       });
   }
 
-  // ⭐ NEW: Refactored function to load a specific conversation
   function loadSpecificConversation(convId) {
     if (convId === activeConversationId) {
-      return; // Don't reload if it's already active
+      return;
     }
 
     activeConversationId = convId;
     isNewConversation = false;
 
-    // Save the active ID to localStorage
     localStorage.setItem('activeConversationId', convId);
     applyActiveHighlight();
 
@@ -269,7 +296,6 @@ $(document).ready(function() {
     });
   }
 
-  // ⭐ CHANGE: The click handler now uses the refactored function
   $(document).on('click', '.conversation-item', function(e) {
     if ($(e.target).closest('.delete-btn').length) {
       return;
@@ -283,7 +309,6 @@ $(document).ready(function() {
       messagesContainer.empty();
       activeConversationId = null;
       isNewConversation = true;
-      // ⭐ CHANGE: Remove the saved conversation ID from localStorage
       localStorage.removeItem('activeConversationId');
       applyActiveHighlight();
       sendButton.prop('disabled', false);
@@ -304,7 +329,7 @@ $(document).ready(function() {
         type: "DELETE"
       }).done(function() {
         if (wasActive) {
-          startNewChat(); // This will also clear localStorage
+          startNewChat();
         }
         loadConversations();
       });
@@ -328,18 +353,21 @@ $(document).ready(function() {
     this.style.height = newHeight + 'px';
   });
 
-  // ⭐ NEW: Logic to run on page load
   function initializeChat() {
-    const savedConvId = localStorage.getItem('activeConversationId');
-    if (savedConvId) {
-      // If there's a saved conversation, load it
-      loadSpecificConversation(savedConvId);
+    const shouldStartNew = $('body').data('start-new') === true;
+
+    if (shouldStartNew) {
+      startNewChat();
+    } else {
+      const savedConvId = localStorage.getItem('activeConversationId');
+      if (savedConvId) {
+        loadSpecificConversation(savedConvId);
+      }
     }
-    // Always load the conversation history list for the sidebar
     loadConversations();
   }
 
-  initializeChat(); // Call the initialization function
+  initializeChat();
 });
 
 // ... (The hamburger menu functionality at the end of the file remains unchanged) ...
