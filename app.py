@@ -50,7 +50,7 @@ os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY or ""
 embeddings = get_local_embeddings()
 index_name = "rag-database3"
 docsearch = PineconeVectorStore.from_existing_index(index_name=index_name, embedding=embeddings)
-retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 7})
+retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 15})
 
 # ====== LLM ======
 chatModel = ChatOpenAI(
