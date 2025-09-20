@@ -5,20 +5,23 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict
 from pinecone import Pinecone
+from langchain.schema import Document
+# CORRECTED: Import Ranker and RerankRequest
+from flashrank import Ranker, RerankRequest
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, OPENROUTER_API_KEY, PINECONE_API_KEY
 
 # ====== Vector Store ======
 embeddings = get_local_embeddings()
-
-# Explicitly initialize Pinecone with the API key
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
-
-# Now, initialize PineconeVectorStore with the Pinecone index object
 docsearch = PineconeVectorStore(index, embeddings)
+# Retrieve 7 documents initially for re-ranking
 retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 15})
+
+# ====== Re-ranker ======
+reranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
 
 # ====== LLMs ======
 chatModel = ChatOpenAI(
@@ -67,8 +70,25 @@ def create_graph():
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        docs = retriever.invoke(state["input"])
-        retrieved_docs_context = docs_to_context(docs)
+        # 1. Initial retrieval from Pinecone
+        initial_docs = retriever.invoke(state["input"])
+        
+        # 2. Re-ranking with FlashRank
+        if initial_docs:
+            passages = [{"id": i, "text": doc.page_content, "meta": doc.metadata} for i, doc in enumerate(initial_docs)]
+            
+            # CORRECTED: Create a RerankRequest object
+            rerank_request = RerankRequest(query=state["input"], passages=passages)
+            
+            # Pass the single request object and slice the result
+            reranked_passages = reranker.rerank(rerank_request)[:4]
+            
+            reranked_docs = [Document(page_content=p["text"], metadata=p["meta"]) for p in reranked_passages]
+        else:
+            reranked_docs = []
+
+        # 3. Use the re-ranked documents for context
+        retrieved_docs_context = docs_to_context(reranked_docs)
 
         history_for_state = state.get("chat_history", [])
         history_for_llm = list(history_for_state)
