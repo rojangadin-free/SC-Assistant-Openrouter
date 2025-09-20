@@ -12,6 +12,8 @@ import os
 import uuid
 import datetime
 import tempfile
+import re
+from flashrank import Ranker, RerankRequest
 
 # -------- AWS --------
 import boto3
@@ -61,14 +63,156 @@ chatModel = ChatOpenAI(
     max_tokens=2048
 )
 
-# 🔹 Summarizer LLM (lighter/faster)
+# 🔹 Summarizer / utility LLM (low-temp, used for rewrites & summarization)
 summarizer = ChatOpenAI(
-    model="x-ai/grok-4-fast:free",
+    model="meta-llama/llama-3.3-8b-instruct:free",
     openai_api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
-    temperature=0.3,
+    temperature=0.1,
     max_tokens=512
 )
+
+# ====== Query Rewriter / Gibberish Detection Config ======
+# Heuristic thresholds (tweakable)
+MIN_WORDS_TO_REWRITE = 4         # only consider rewriting if more than this many words
+GIBBERISH_MIN_VOWEL_RATIO = 0.08 # if vowel ratio is less than this -> gibberish
+GIBBERISH_MAX_RUN_LENGTH = 12    # long continuous character runs suggest gibberish
+
+CASUAL_PHRASES = [
+    "hello", "hi", "hey", "who are you", "what's up", "how are you",
+    "thanks", "thank you", "bye", "goodbye"
+]
+
+REWRITE_PROMPT = """
+Rewrite the user's input to a concise, clear search/query that preserves the user's intent for a retrieval system.
+Return only the rewritten query (no explanation). If the query is already clear and short, return it unchanged.
+
+User input:
+\"\"\"{query}\"\"\"
+"""
+
+# Initialize FlashRank (this downloads the reranker model once)
+flash_reranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+# Other good ones: "ms-marco-MiniLM-L-6-v2", "ms-marco-distilbert-base-tas-b"
+
+def rerank_results_flashrank(query: str, docs):
+    """Use FlashRank (cross-encoder) to rerank retrieved documents."""
+    if not docs:
+        return []
+
+    # Build request with docs
+    candidates = [{"id": str(i), "text": d.page_content} for i, d in enumerate(docs)]
+    request = RerankRequest(query=query, passages=candidates)
+
+    # Run FlashRank
+    results = flash_reranker.rerank(request)
+
+    # Map back to original docs by ranked order
+    ranked_docs = []
+    for r in results:
+        doc_id = int(r["id"])
+        ranked_docs.append(docs[doc_id])
+
+    return ranked_docs
+
+def looks_like_gibberish(query: str) -> bool:
+    """Heuristic checks for gibberish / random character strings."""
+    s = query.strip()
+    if not s:
+        return True
+
+    # If contains many non-alphanumeric characters (excluding punctuation), consider gibberish
+    non_alnum = len([c for c in s if not c.isalnum() and not c.isspace() and c not in ".,?!'\"-:/"])
+    if non_alnum / max(1, len(s)) > 0.25:
+        return True
+
+    # Vowel ratio check
+    vowels = len(re.findall(r"[aeiouAEIOU]", s))
+    vowel_ratio = vowels / max(1, len(re.findall(r"[A-Za-z]", s)))
+    if vowel_ratio > 0 and vowel_ratio < GIBBERISH_MIN_VOWEL_RATIO:
+        return True
+
+    # Long runs of consonants or same char
+    if re.search(r"(.)\1{6,}", s):  # same char repeats >6 times
+        return True
+    if re.search(r"[bcdfghjklmnpqrstvwxyz]{6,}", s, re.IGNORECASE):  # long consonant run
+        return True
+
+    # If single long alpha token (> GIBBERISH_MAX_RUN_LENGTH) with no spaces, likely gibberish
+    tokens = s.split()
+    if len(tokens) == 1 and len(tokens[0]) > GIBBERISH_MAX_RUN_LENGTH and tokens[0].isalpha():
+        return True
+
+    return False
+
+def should_rewrite_query(query: str) -> bool:
+    """Decide whether to send the query to the rewriter."""
+    if not query or not query.strip():
+        return False
+
+    q = query.strip()
+    q_lower = q.lower()
+
+    # Short queries / greetings
+    if len(q.split()) <= 3:
+        # still allow certain short but meaningful queries to be rewritten? No — keep simple.
+        return False
+
+    # small talk / casual phrases -> skip
+    for phrase in CASUAL_PHRASES:
+        if phrase in q_lower:
+            return False
+
+    # if appears to be a URL or email or pure numbers -> skip
+    if re.match(r"^(https?://|www\.)", q_lower) or re.match(r"^[\w\.-]+@[\w\.-]+$", q_lower):
+        return False
+    if q.isnumeric():
+        return False
+
+    # gibberish -> skip
+    if looks_like_gibberish(q):
+        return False
+
+    # otherwise rewrite
+    return True
+
+def rewrite_query_llm(query: str) -> str:
+    """Call the utility LLM to rewrite the query. Returns the rewritten query or original on failure."""
+    prompt = REWRITE_PROMPT.format(query=query)
+    try:
+        resp = summarizer.invoke([("system", "You are a helpful rewrite assistant."), ("user", prompt)])
+        rewritten = resp.content.strip()
+        # quick clean: remove surrounding quotes and truncate
+        rewritten = rewritten.strip(' "\'')
+        # if rewrite is empty or looks like gibberish, return original
+        if not rewritten or looks_like_gibberish(rewritten):
+            print("Rewriter produced empty or gibberish output — falling back to original query.")
+            return query
+        return rewritten
+    except Exception as e:
+        print(f"Query rewriter failed: {e}. Using original query.")
+        return query
+
+def process_query(query: str) -> (str, bool):
+    """
+    Process the incoming query:
+      - decide whether to rewrite
+      - perform rewrite if needed
+    Returns (final_query, was_rewritten_flag)
+    """
+    if not should_rewrite_query(query):
+        # skip rewriting
+        print(f"[rewriter] Skipping rewrite for: {query!r}")
+        return query, False
+
+    # try rewriting
+    rewritten = rewrite_query_llm(query)
+    if rewritten and rewritten.strip().lower() != query.strip().lower():
+        print(f"[rewriter] Rewrote query: {query!r} -> {rewritten!r}")
+        return rewritten, True
+    else:
+        print(f"[rewriter] Rewriter returned identical query, using original.")
+        return query, False
 
 # ====== Chat State ======
 class ChatState(TypedDict):
@@ -104,7 +248,7 @@ def get_session_id():
         session["session_id"] = str(uuid.uuid4())
     return session["session_id"]
 
-# 🔹 Summarization Helper
+# 🔹 Summarization Helper (uses summarizer LLM)
 def summarize_history(history: List[Dict[str, str]]) -> str:
     if not history:
         return ""
@@ -113,46 +257,103 @@ def summarize_history(history: List[Dict[str, str]]) -> str:
         {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts, questions, and answers."},
         {"role": "user", "content": transcript}
     ]
-    response = summarizer.invoke(summary_prompt)
-    return response.content
+    try:
+        response = summarizer.invoke(summary_prompt)
+        return response.content
+    except Exception as e:
+        print(f"Summarization failed: {e}")
+        return ""
 
 # ====== Graph ======
 graph = StateGraph(ChatState)
 
 def call_llm(state: ChatState):
-    # 1. Retrieve documents
-    docs = retriever.invoke(state["input"])
-    retrieved_docs_context = docs_to_context(docs)
+    # 0. Original user input
+    user_input = state["input"]
 
-    # 2. Get the user-facing history and create a temporary copy for the LLM
+    # 1. Rewrite query if useful
+    final_query, was_rewritten = process_query(user_input)
+
+    # 2. Retrieve docs with original + rewritten query
+    docs = []
+    try:
+        docs.extend(retriever.invoke(user_input))
+    except Exception as e:
+        print(f"Retriever failed with original query '{user_input}': {e}")
+
+    if was_rewritten and final_query.strip().lower() != user_input.strip().lower():
+        try:
+            docs.extend(retriever.invoke(final_query))
+        except Exception as e:
+            print(f"Retriever failed with rewritten query '{final_query}': {e}")
+
+    # Deduplicate docs
+    seen = set()
+    unique_docs = []
+    for d in docs:
+        if d.page_content not in seen:
+            unique_docs.append(d)
+            seen.add(d.page_content)
+
+   # 3. Rerank combined results with FlashRank
+    if unique_docs:
+        rerank_query = final_query if was_rewritten else user_input
+        ranked_docs = rerank_results_flashrank(rerank_query, unique_docs)
+    else:
+        ranked_docs = []
+
+
+    retrieved_docs_context = docs_to_context(ranked_docs)
+
+    # 4. Conversation history
     history_for_state = state.get("chat_history", [])
     history_for_llm = list(history_for_state)
 
-    # 3. Summarize the temporary copy if the conversation is long
+    # 5. Summarize history if long
     X = 20
     if len(history_for_llm) > X:
         summary = summarize_history(history_for_llm[:-5])
-        history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
+        if summary:
+            history_for_llm = [{"role": "system", "content": f"Summary of earlier conversation: {summary}"}] + history_for_llm[-5:]
+        else:
+            history_for_llm = history_for_llm[-10:]
 
-    # 4. PROMPT BUILDING LOGIC
+    # 6. Prompt
+    rewrite_note = ""
+    if was_rewritten and final_query.strip().lower() != user_input.strip().lower():
+        rewrite_note = f"\n\n(Note: user originally asked: \"{user_input}\", rewritten as: \"{final_query}\")"
+
     final_system_prompt = system_prompt.format(
-        retrieved_docs=retrieved_docs_context,
+        retrieved_docs=retrieved_docs_context + rewrite_note,
         chat_history=""
     )
+
     final_messages_for_llm = [("system", final_system_prompt)]
     for msg in history_for_llm:
         final_messages_for_llm.append((msg['role'], msg['content']))
-    final_messages_for_llm.append(("human", state["input"]))
+    final_messages_for_llm.append(("human", user_input))
 
-    # 5. Invoke the model
-    response = chatModel.invoke(final_messages_for_llm)
+    # 7. Model call
+    try:
+        response = chatModel.invoke(final_messages_for_llm)
+    except Exception as e:
+        print(f"Main LLM call failed: {e}")
+        try:
+            fallback_resp = summarizer.invoke([("system", "You are a helpful assistant."), ("user", user_input)])
+            response = fallback_resp
+        except Exception as e2:
+            print(f"Fallback LLM also failed: {e2}")
+            class _Resp: pass
+            response = _Resp()
+            response.content = "Sorry, I couldn't process that right now."
 
-    # 6. Update the state
+    # 8. Update state
     updated_history = history_for_state + [
-        {"role": "user", "content": state["input"]},
+        {"role": "user", "content": user_input},
         {"role": "assistant", "content": response.content}
     ]
     return {"answer": response.content, "chat_history": updated_history}
+
 
 graph.add_node("llm", call_llm)
 graph.set_entry_point("llm")
@@ -216,7 +417,6 @@ COGNITO_ERROR_MESSAGES = {
     "ExpiredCodeException": "The verification code has expired. Please request a new one.",
     "LimitExceededException": "You have exceeded the limit for password reset attempts. Please try again later."
 }
-
 
 # ====== Auth Routes ======
 @app.route("/auth")
