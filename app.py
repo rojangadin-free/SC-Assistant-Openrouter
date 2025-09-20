@@ -65,7 +65,7 @@ chatModel = ChatOpenAI(
 
 # 🔹 Summarizer / utility LLM (low-temp, used for rewrites & summarization)
 summarizer = ChatOpenAI(
-    model="meta-llama/llama-3.3-8b-instruct:free",
+    model="openai/gpt-oss-20b:free",
     openai_api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
     temperature=0.1,
@@ -84,7 +84,7 @@ CASUAL_PHRASES = [
 ]
 
 REWRITE_PROMPT = """
-Rewrite the user's input to a concise, clear search/query that preserves the user's intent for a retrieval system.
+Rewrite the user's input to a clear question that preserves the user's intent for a retrieval system.
 Return only the rewritten query (no explanation). If the query is already clear and short, return it unchanged.
 
 User input:
