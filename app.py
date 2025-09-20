@@ -54,7 +54,7 @@ retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k":
 
 # ====== LLM ======
 chatModel = ChatOpenAI(
-    model="openrouter/sonoma-dusk-alpha",
+    model="x-ai/grok-4-fast:free",
     openai_api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
     temperature=0.7,
@@ -63,7 +63,7 @@ chatModel = ChatOpenAI(
 
 # 🔹 Summarizer LLM (lighter/faster)
 summarizer = ChatOpenAI(
-    model="openrouter/sonoma-dusk-alpha",
+    model="x-ai/grok-4-fast:free",
     openai_api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
     temperature=0.3,
