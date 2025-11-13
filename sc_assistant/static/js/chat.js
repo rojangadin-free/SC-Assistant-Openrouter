@@ -163,7 +163,6 @@ $(document).ready(function() {
       url: '/chat/get', // Note: Updated URL
       type: 'POST',
       data: { msg: message },
-      timeout: 30000,
     })
       .done(function(data) {
         const responseConvId = data.new_conversation_created
@@ -197,7 +196,7 @@ $(document).ready(function() {
       .fail(function() {
         if (requestConvId === activeConversationId) {
           addMessage(
-            'Can you ask the question again? I am having trouble finding an answer to that question.'
+            'An error occured.'
           );
         }
       })

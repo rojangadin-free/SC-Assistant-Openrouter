@@ -1,3 +1,5 @@
+torch
+onnxruntime-gpu
 Flask==3.1.2                      # Web framework
 dotenv==0.9.9             # Load .env file support
 langchain==0.3.27                # Core LangChain library

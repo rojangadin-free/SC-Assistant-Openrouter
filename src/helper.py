@@ -23,11 +23,12 @@ def text_split(extracted_data):
 
 def get_local_embeddings():
     """
-    Loads HuggingFace embeddings that run locally on the CPU.
+    Loads HuggingFace embeddings that run locally, 
+    auto-detecting CPU or GPU (cuda).
     """
     # ⭐ UPDATED: Use the new HuggingFaceEmbeddings class
     # The model will be downloaded and cached on its first run.
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'}
+        # model_kwargs removed to allow auto-detection of 'cuda'
     )

@@ -1,0 +1,52 @@
+steps:
+  # 1. Build the Docker image. This will also run your `download_model.py`.
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      # This tags the image with the region, project ID, repo, and commit hash
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
+      - '.'
+    id: 'Build'
+  
+  # 2. Push the built image to your Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
+    id: 'Push'
+
+  # 3. Deploy the image to Cloud Run
+  - name: 'gcr.io/google-appengine/exec-wrapper'
+    args:
+      - '-i'
+      - 'gcr.io/google/cloud-sdk'
+      - '--'
+      - 'gcloud'
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}' # The name of your app in Cloud Run
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--allow-unauthenticated' # This makes your app public
+      
+      # This line securely injects all your secrets
+      - '--set-secrets=PINECONE_API_KEY=PINECONE_API_KEY:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,AWS_REGION=AWS_REGION:latest,COGNITO_USER_POOL_ID=COGNITO_USER_POOL_ID:latest,COGNITO_CLIENT_ID=COGNITO_CLIENT_ID:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest'
+    id: 'Deploy'
+
+# This lists the final image that was built
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
+
+# Define the variables used in the steps above
+substitutions:
+  _REGION: 'us-east4'           # Change this to your region from Step 1
+  _REPOSITORY: 'sc-assistant-repo' # Change this to your repo name from Step 1
+  _IMAGE_NAME: 'sc-assistant-image'
+  _SERVICE_NAME: 'sc-assistant'    # This will be the public name of your app
+
+# Use a faster machine for the build and a longer timeout
+options:
+  machineType: 'E2_HIGHCPU_8'
+  timeout: '1200s' # 20 minutes
