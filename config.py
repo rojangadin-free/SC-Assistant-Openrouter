@@ -9,6 +9,7 @@ load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID")
 COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+S3_BUCKET_NAME = "sc-assistant"
 
 # API Keys
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -21,8 +22,8 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 INDEX_NAME = "rag-database3"
 
 # LLM Configuration
-CHAT_MODEL_NAME = "deepseek/deepseek-chat-v3.1:free"
-SUMMARIZER_MODEL_NAME = "meituan/longcat-flash-chat:free"
+CHAT_MODEL_NAME = "openrouter/polaris-alpha"
+SUMMARIZER_MODEL_NAME = "openrouter/polaris-alpha"
 
 # Add a check for the Pinecone API key to fail early if it's not set
 if not PINECONE_API_KEY:

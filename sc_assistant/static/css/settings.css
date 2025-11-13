@@ -1,0 +1,446 @@
+/* Import base styles from chat.css for consistency */
+@import url('chat.css');
+
+/* Ensure full height for proper flex layout */
+html,
+body {
+  height: 100%;
+}
+
+/* Page layout for settings (desktop default) */
+body.settings-page {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: row;
+  direction: ltr; /* ensure scrollbar on the right */
+  overflow: hidden; /* prevent double-scroll on desktop */
+}
+
+/* Sidebar base (desktop) */
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+}
+
+/* Main section uses column layout: header + scrollable content */
+.settings-page .main-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--light-bg);
+  height: 100vh; /* Fixed height instead of max-height */
+  overflow: hidden; /* Prevent main section from scrolling */
+}
+
+/* Header */
+.settings-page .header {
+  flex-shrink: 0; /* Prevent header from shrinking */
+  z-index: 10;
+}
+
+/* Page content - the actual scrollable container */
+.settings-page .page-content {
+  flex: 1;
+  overflow-y: auto; /* Enable scrolling here */
+  padding: 0; /* Let container handle padding */
+  height: 0; /* Force flex child to respect flex-basis */
+}
+
+/* Scrollable container for settings cards */
+.settings-page .settings-container {
+  padding: 2rem; /* Container padding */
+  min-height: 100%; /* Ensure container fills available space */
+  box-sizing: border-box;
+}
+
+/* Cards layout: center via margins on each card */
+.settings-page .settings-container .settings-card {
+  margin: 0 auto 1.5rem; /* Center card and add bottom margin */
+  width: 100%;
+  max-width: 800px;
+}
+
+/* Last card bottom spacing */
+.settings-page .settings-container .settings-card:last-child {
+  margin-bottom: 2rem;
+}
+
+.settings-card {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  box-shadow: 0 4px 12px var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.settings-card h2 {
+  color: var(--text-primary);
+  margin-bottom: 1.5rem;
+  font-size: 1.3rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.settings-card h2 i {
+  color: var(--primary);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.form-group input[type="text"],
+.form-group input[type="email"],
+.form-group input[type="password"] {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--light-bg);
+  color: var(--text-primary);
+  font-size: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.1);
+}
+
+.form-group input:disabled {
+  background-color: var(--menu-hover);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.form-group small {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+/* Buttons */
+.btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+  align-self: flex-start;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn-primary {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-dark);
+}
+
+.btn-danger {
+  background-color: var(--logout-text);
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background-color: #dc2626;
+}
+
+/* Theme options */
+.theme-options {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: 0.5rem;
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.theme-option input[type="radio"] {
+  display: none;
+}
+
+.checkmark {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  position: relative;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.theme-option input[type="radio"]:checked + .checkmark {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+
+.theme-option input[type="radio"]:checked + .checkmark::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 8px;
+  background-color: #ffffff;
+  border-radius: 50%;
+}
+
+/* Danger Zone */
+.danger-zone {
+  border-color: var(--logout-border);
+  background-color: var(--logout-bg);
+}
+
+.danger-zone h2 i {
+  color: var(--logout-text);
+}
+
+.danger-zone p {
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+/* Notification */
+.notification {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 4px 12px var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s ease;
+  z-index: 1001;
+  max-width: 350px;
+}
+
+.notification.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.notification.success .notification-icon {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+
+.notification.error .notification-icon {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.notification-content {
+  flex: 1;
+}
+
+.notification-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.notification-message {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+/* Sidebar button spacing */
+.sidebar .new-chat-btn {
+  margin-bottom: 0.8rem;
+}
+
+/* Delete Account Modal */
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1002;
+}
+
+.confirm-dialog.active {
+  display: flex;
+}
+
+.confirm-box {
+  background: var(--card-bg);
+  padding: 1.5rem 2rem;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  max-width: 420px;
+  width: 90%;
+}
+
+.confirm-title {
+  margin: 0 0 0.75rem;
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.confirm-message {
+  margin: 0 0 1.25rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.confirm-button {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.cancel-button {
+  background: var(--menu-hover);
+  color: var(--text-primary);
+}
+
+.confirm-delete-button {
+  background: var(--logout-text);
+  color: #ffffff;
+}
+
+/* MOBILE RESPONSIVE */
+@media (max-width: 768px) {
+  body.settings-page {
+    flex-direction: column;
+    overflow: visible; /* allow scrolling on mobile */
+  }
+
+  /* Header: stick to top for better UX */
+  .settings-page .header {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: var(--light-bg);
+  }
+
+  /* Off-canvas sidebar on mobile */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 260px;
+    max-width: 80%;
+    z-index: 1100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.35);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar.active {
+    transform: translateX(0);
+  }
+
+  /* Dim background when sidebar is open */
+  body.sidebar-open::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 1090;
+  }
+
+  /* Main section full width, scrollable content */
+  .settings-page .main-section {
+    flex: none;
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent main section from scrolling */
+  }
+
+  .settings-page .page-content {
+    flex: 1;
+    overflow-y: auto; /* Enable scrolling here */
+    -webkit-overflow-scrolling: touch;
+    padding: 0; /* Let container handle padding */
+    height: 0; /* Force flex child to respect flex-basis */
+  }
+
+  .settings-page .settings-container {
+    padding: 1rem; /* Reduced padding for mobile */
+    min-height: 100%;
+    box-sizing: border-box;
+  }
+
+  /* Cards: 90% of viewport width, centered */
+  .settings-page .settings-container .settings-card {
+    margin: 0 auto 1rem; /* Center card and add bottom margin */
+    width: 90vw;
+    max-width: 90vw;
+    box-sizing: border-box;
+  }
+
+  .settings-page .settings-container .settings-card:last-child {
+    margin-bottom: 1.5rem;
+  }
+
+  .settings-card {
+    padding: 1rem 1.1rem;
+    border-radius: 10px;
+  }
+
+  /* Mobile notification fit */
+  .notification {
+    left: 10px;
+    right: 10px;
+    bottom: calc(15px + env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+  }
+
+  /* Slightly larger tap area for back button */
+  .sidebar .new-chat-btn {
+    padding: 0.85rem 1rem;
+  }
+}

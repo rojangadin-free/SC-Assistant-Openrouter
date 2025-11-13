@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set active_page = 'chat' %}
+
+{% block title %}Samar College AI-Assistant{% endblock %}
+
+{% block extra_head %}
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet"
+        type="text/css"
+        href="{{ url_for('static', filename='css/chat.css') }}"/>
+{% endblock %}
+
+{% block body_attrs %}data-start-new="{{ start_new_chat }}"{% endblock %}
+
+{# Override the default layout to match chat.css expectations #}
+{% block layout %}
+  <div class="sidebar" id="sidebar">
+    {% include "partials/sidebar.html" %}
+  </div>
+
+  <div class="chat-section">
+    {% include "partials/header.html" %}
+
+    <div class="loader-overlay" id="conversationLoader" style="display: none;">
+      <div class="loader-spinner"></div>
+    </div>
+
+    <div class="messages-container" id="messagesContainer"></div>
+
+    <div class="typing-indicator" id="typingIndicator" style="display:none;">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
+    <div class="chat-input-area">
+      <form id="messageForm" class="message-form">
+        <textarea id="messageInput"
+                  class="message-input"
+                  placeholder="Ask a question..."
+                  rows="1"
+                  required></textarea>
+        <button type="submit" id="sendButton" class="send-button">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {% endblock %}
+
+{% block extra_body %}
+  {{ super() }} {# <-- This loads main.js from base.html #}
+  <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+{% endblock %}

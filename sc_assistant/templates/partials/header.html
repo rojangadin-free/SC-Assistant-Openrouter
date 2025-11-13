@@ -1,0 +1,27 @@
+<div class="header">
+  <!-- Mobile sidebar toggle -->
+  <button class="hamburger-menu" id="hamburgerMenu" aria-label="Toggle sidebar">
+    <i class="fas fa-bars"></i>
+  </button>
+
+  <div class="header-left">
+    <img src="{{ url_for('static', filename='images/logo.png') }}"
+         alt="Logo" class="logo-icon">
+
+    {% if active_page == 'chat' %}
+      <span>Samar College AI-Assistant</span>
+    {% elif active_page == 'dashboard' %}
+      <span>Dashboard</span>
+    {% elif active_page == 'settings' %}
+      <span>Settings</span>
+    {% else %}
+      <span>Samar College</span>
+    {% endif %}
+  </div>
+
+  <div class="header-right">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
+      <i class="fas fa-moon"></i>
+    </button>
+  </div>
+</div>

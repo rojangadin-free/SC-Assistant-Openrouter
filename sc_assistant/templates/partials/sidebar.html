@@ -1,0 +1,105 @@
+<div class="sidebar-content">
+  <div class="menu">
+
+    {% if active_page == 'chat' %}
+      {% if user %}
+        <div class="new-chat-btn">
+          <i class="fas fa-plus-circle"></i>
+          <span>New chat</span>
+        </div>
+        <div class="conversation-header">Conversation History</div>
+        <div id="conversationList"></div>
+        <div id="conversationHistoryLoader" style="display: none;">
+          <div class="history-loader-spinner"></div>
+        </div>
+      {% else %}
+        <div class="menu-item">
+          <i class="fas fa-user-circle"></i>
+          <a href="{{ url_for('auth.auth_page') }}">
+            <span>Login</span>
+          </a>
+        </div>
+      {% endif %}
+
+    {% elif active_page == 'settings' %}
+      <div class="new-chat-btn">
+        <i class="fas fa-arrow-left"></i>
+        <a href="{{ url_for('chat.chat_page') }}"
+           style="text-decoration: none; color: inherit; width: 100%;">
+          <span>Back to Chat</span>
+        </a>
+      </div>
+      <div class="menu-item active">
+        <i class="fas fa-cog"></i>
+        <span>Account</span>
+      </div>
+
+    {% elif active_page == 'dashboard' %}
+      <div class="menu-item active" id="overviewMenuItem">
+        <i class="fas fa-table"></i>
+        <span>Overview</span>
+      </div>
+
+      <div class="menu-item" id="uploadsMenuItem">
+        <i class="fas fa-cloud-upload-alt"></i>
+        <span>File Uploads</span>
+      </div>
+
+      <div class="menu-item" id="usersMenuItem">
+        <i class="fas fa-users-cog"></i>
+        <span>User Management</span>
+      </div>
+
+      <div class="menu-item">
+        <i class="fas fa-comments"></i>
+        <a href="{{ url_for('chat.chat_page') }}" target="_blank" rel="noopener noreferrer">
+          <span>Chatbot</span>
+        </a>
+      </div>
+    {% endif %}
+
+    {% if not user and active_page != 'chat' %}
+      <div class="menu-item">
+        <i class="fas fa-user-circle"></i>
+        <a href="{{ url_for('auth.auth_page') }}">
+          <span>Login</span>
+        </a>
+      </div>
+    {% endif %}
+
+  </div>
+</div>
+
+<div class="user-account-section">
+  {% if user %}
+    <div class="user-account-button" id="userAccountButton">
+      <i class="fas fa-user-circle"></i>
+      <span>{{ user.username if user.username else 'Account' }}</span>
+      <i class="fas fa-chevron-up"></i>
+    </div>
+    <div class="user-dropdown" id="userDropdown">
+      <a href="#" class="dropdown-item" id="profileButton">
+        <i class="fas fa-envelope"></i>
+        <span>{{ user.email }}</span>
+      </a>
+      <a href="{{ url_for('settings.settings_page') }}"
+         class="dropdown-item"
+         id="settingsButton">
+        <i class="fas fa-cog"></i>
+        <span>Settings</span>
+      </a>
+      <div class="dropdown-divider"></div>
+      <a href="{{ url_for('auth.logout') }}"
+         class="dropdown-item"
+         id="logoutButton">
+        <i class="fas fa-sign-out-alt"></i>
+        <span>Logout</span>
+      </a>
+    </div>
+  {% else %}
+    <div class="menu-item">
+      <i class="fas fa-user"></i>
+      <span>Continue as Guest</span>
+    </div>
+  {% endif %}
+</div>
