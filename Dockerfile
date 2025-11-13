@@ -6,7 +6,6 @@ WORKDIR /app
 
 # Copy the requirements first to leverage Docker layer caching
 COPY requirements.txt .
-
 # Install any needed packages specified in requirements.txt
 RUN pip install -r requirements.txt
 
@@ -17,5 +16,6 @@ COPY . /app
 # Run the model download script during the build process
 RUN python3 download_model.py
 
+# --- UPDATE THIS LINE ---
 # Run gunicorn when the container launches, binding to the correct port
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "run:app"]

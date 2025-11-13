@@ -1,0 +1,591 @@
+/* =========================================
+ * MAIN STYLESHEET (main.css)
+ *
+ * Contains all shared styles for:
+ * 1. Theme Variables (:root)
+ * 2. Global Styles (body, scrollbar)
+ * 3. Shared Layout (header, sidebar, main-section)
+ * 4. Shared Components (user menu, notification, modal)
+ * 5. Shared Mobile Responsive Layout
+ * ========================================= */
+
+/* 1. THEME VARIABLES */
+:root {
+  /* Light theme variables */
+  --primary: #1a73e8;
+  --primary-dark: #1765cc;
+  --secondary: #34a853;
+  --accent: #fbbc05;
+  --light-bg: #f8f9fa;
+  --dark-bg: #202124;
+  --card-bg: #ffffff;
+  --text-primary: #202124;
+  --text-secondary: #5f6368;
+  --border: #dadce0;
+  --shadow: rgba(0, 0, 0, 0.1);
+  --sidebar-text: #e0e0e0;
+  --menu-hover: rgba(255, 255, 255, 0.1);
+  --scrollbar-bg: rgba(0, 0, 0, 0.1);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.3);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.5);
+  --logout-bg: rgba(239, 68, 68, 0.1);
+  --logout-border: rgba(239, 68, 68, 0.3);
+  --logout-text: #ef4444;
+  --logout-hover: rgba(239, 68, 68, 0.2);
+  /* Dynamic viewport height fallback */
+  --vh: 1vh;
+}
+
+/* Dark theme variables */
+[data-theme="dark"] {
+  --primary: #8ab4f8;
+  --primary-dark: #a8c7fa;
+  --secondary: #81c995;
+  --accent: #fdd663;
+  --light-bg: #202124;
+  --dark-bg: #292a2d;
+  --card-bg: #292a2d;
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0a6;
+  --border: #5f6368;
+  --shadow: rgba(0, 0, 0, 0.3);
+  --sidebar-text: #e8eaed;
+  --menu-hover: rgba(138, 180, 248, 0.15);
+  --scrollbar-bg: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.3);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.5);
+  --logout-bg: rgba(239, 68, 68, 0.2);
+  --logout-border: rgba(239, 68, 68, 0.4);
+  --logout-text: #f87171;
+  --logout-hover: rgba(239, 68, 68, 0.3);
+}
+
+
+/* 2. GLOBAL STYLES */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: var(--light-bg);
+  color: var(--text-primary);
+  display: flex;
+  height: 100vh; /* Fallback */
+  height: calc(var(--vh, 1vh) * 100);
+  overflow: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Modern Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-bg);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+  transition: background 0.3s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
+}
+
+
+/* 3. SHARED LAYOUT (Sidebar, Header, Main) */
+.sidebar {
+  width: 260px;
+  background: var(--dark-bg);
+  box-shadow: 2px 0 10px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex-shrink: 0;
+  z-index: 1000;
+}
+
+.sidebar-content {
+  padding: 1rem;
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.menu-item {
+  padding: 1rem 1.2rem;
+  border-radius: 12px;
+  color: var(--sidebar-text);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 0.8rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.menu-item:hover {
+  background: var(--menu-hover);
+  color: white;
+}
+
+.menu-item.active {
+  background: var(--menu-hover);
+  color: white;
+}
+
+.menu-item i {
+  color: var(--accent);
+  font-size: 1.2rem;
+  transition: all 0.3s ease;
+}
+
+.menu-item:hover i {
+  color: white;
+}
+
+.menu-item a {
+  color: var(--sidebar-text);
+  text-decoration: none;
+  width: 100%;
+}
+
+.menu-item:hover a {
+  color: white;
+}
+
+.main-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--light-bg);
+  min-width: 0;
+  position: relative;
+}
+
+.page-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.header {
+  background: var(--card-bg);
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+  flex-shrink: 0;
+  height: 50px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+}
+
+.header i {
+  color: var(--primary);
+  font-size: 1.1rem;
+}
+
+.logo-icon {
+  height: 24px;
+  width: 24px;
+  margin-right: 6px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.theme-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 50%;
+  transition: all 0.3s ease;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  background: var(--border);
+}
+
+
+/* 4. SHARED COMPONENTS (User Menu, Notification, Modal) */
+
+/* User Account */
+.user-account-section {
+  padding: 1rem;
+  background: var(--dark-bg);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.user-account-button {
+  width: 100%;
+  padding: 1rem 1.2rem;
+  border-radius: 12px;
+  background: var(--menu-hover);
+  border: 1px solid transparent;
+  color: var(--sidebar-text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 1rem;
+  font-weight: 500;
+  box-sizing: border-box;
+}
+
+.user-account-button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.user-account-button i:first-child {
+  color: var(--primary);
+}
+
+.user-account-button i:last-child {
+  transition: transform 0.3s ease;
+}
+
+.user-account-section.active .user-account-button i:last-child {
+  transform: rotate(180deg);
+}
+
+.user-dropdown {
+  position: absolute;
+  bottom: calc(100% - 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(10px) scale(0.95);
+  width: 228px;
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: 0 -4px 20px var(--shadow);
+  display: block;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+  z-index: 1000;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.user-dropdown::before {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 16px;
+  height: 16px;
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  z-index: -1;
+}
+
+.user-dropdown.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0.8rem 1.2rem;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.dropdown-item:hover {
+  background-color: var(--light-bg);
+}
+
+.dropdown-item i {
+  width: 20px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* Notification */
+.notification {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 4px 12px var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s ease;
+  z-index: 1001;
+  max-width: 350px;
+}
+
+.notification.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.notification-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.notification.success .notification-icon {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+
+.notification.error .notification-icon {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.notification-content {
+  flex: 1;
+}
+
+.notification-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.notification-message {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+/* Confirmation Dialog (for Logout/Delete) */
+.confirm-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s, visibility 0.3s;
+}
+
+.confirm-dialog.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.confirm-box {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  transform: scale(0.9);
+  transition: transform 0.3s;
+}
+
+.confirm-dialog.active .confirm-box {
+  transform: scale(1);
+}
+
+.confirm-title {
+  margin: 0 0 0.75rem;
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.confirm-message {
+  margin: 0 0 1.25rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.confirm-button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.cancel-button {
+  background-color: var(--menu-hover);
+  color: var(--text-primary);
+}
+
+.cancel-button:hover {
+  background-color: var(--border);
+}
+
+.confirm-logout-button,
+.confirm-delete-button {
+  background-color: var(--logout-text);
+  color: white;
+}
+.confirm-logout-button:hover,
+.confirm-delete-button:hover {
+  background-color: #dc2626;
+}
+
+
+/* 5. SHARED MOBILE RESPONSIVE LAYOUT */
+.hamburger-menu {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 5px;
+  z-index: 1001;
+}
+
+@media (max-width: 768px) {
+  body {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .hamburger-menu {
+    display: block;
+  }
+  
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 280px;
+    max-width: 85%;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease-in-out;
+  }
+  
+  .sidebar.active {
+    transform: translateX(0);
+  }
+  
+  .sidebar-content {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .user-account-section {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+  
+  /* Mobile dropdown fix */
+  .user-dropdown {
+    width: calc(100% - 2rem);
+    left: 1rem;
+    right: 1rem;
+    transform: translateY(10px) scale(0.95);
+  }
+  .user-dropdown::before {
+    left: 50%;
+  }
+  .user-dropdown.show {
+    transform: translateY(0) scale(1);
+  }
+  
+  /* Mobile overlay */
+  body.sidebar-open::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+    opacity: 1;
+    transition: opacity 0.3s ease-in-out;
+  }
+  body:not(.sidebar-open)::before {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Mobile notification */
+  .notification {
+    left: 10px;
+    right: 10px;
+    bottom: calc(15px + env(safe-area-inset-bottom));
+    width: auto;
+  }
+  body.keyboard-open .notification {
+      bottom: 15px;
+  }
+}

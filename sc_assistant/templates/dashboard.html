@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% set active_page = 'dashboard' %}
+
+{% block title %}Dashboard - Samar College AI-Assistant{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet"
+        type="text/css"
+        href="{{ url_for('static', filename='css/dashboard.css') }}"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+  <div class="content-area">
+    <div id="overviewSection" class="dashboard-section active">
+      <div class="dashboard-header">
+        <h1>Dashboard Overview</h1>
+        <p>Welcome back! Here's what's happening with your AI Assistant today.</p>
+      </div>
+
+      <div class="stats-container">
+        <div class="stat-card">
+          <div class="stat-icon">
+            <i class="fas fa-users"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-number">...</h3>
+            <p class="stat-label">Total Users</p>
+            <span class="stat-change positive">+0%</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon">
+            <i class="fas fa-comments"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-number">...</h3>
+            <p class="stat-label">Total Conversations</p>
+            <span class="stat-change positive">+0%</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon">
+            <i class="fas fa-file-alt"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-number">...</h3>
+            <p class="stat-label">Documents Uploaded</p>
+            <span class="stat-change positive">+0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="charts-container">
+        <div class="chart-card">
+          <h3>User Activity</h3>
+          <canvas id="userActivityChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Popular Topics</h3>
+          <canvas id="topicsChart"></canvas>
+        </div>
+      </div>
+
+      <div class="activity-section">
+        <h3>Recent Activities</h3>
+        <div class="activity-list">
+          </div>
+      </div>
+    </div>
+
+    <div id="uploadSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverview">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>File Management</h2>
+      </div>
+
+      <div class="upload-section">
+        <div class="upload-header">
+          <div class="upload-icon">
+            <i class="fas fa-cloud-upload-alt"></i>
+          </div>
+          <h3 class="upload-title">Upload Files</h3>
+        </div>
+
+        <div class="upload-area" id="uploadArea">
+          <i class="fas fa-cloud-upload-alt upload-icon-large"></i>
+          <p class="upload-text">Drag and drop your files here</p>
+          <!-- 
+            FIX: Re-added the subtext as requested.
+          -->
+          <p class="upload-subtext">or click to browse files</p>
+          <input type="file" id="fileInput" class="file-input" multiple>
+          <label for="fileInput" class="upload-button">Browse Files</label>
+        </div>
+
+        <div class="upload-progress" id="uploadProgress" style="display: none;">
+          <h4>Uploading...</h4>
+          <div class="progress-bar-container">
+            <div class="progress-bar" id="progressBar"></div>
+          </div>
+          <span class="progress-text" id="progressText">0%</span>
+        </div>
+
+        <div class="uploaded-files" id="uploadedFiles" style="display: none;">
+          <h4 style="margin-bottom: 1rem; color: var(--text-primary);">
+            Uploaded Files
+          </h4>
+          <div class="file-list" id="fileList"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="usersSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromUsers">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>User Management</h2>
+      </div>
+
+      <div class="user-list-container">
+        <h3>Registered Users</h3>
+        <div id="userListLoader" style="display: none;">
+          <div class="loader-spinner"></div>
+        </div>
+        <div class="table-wrapper">
+          <table id="userListTable">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Role</th>
+                <th>Joined</th>
+                <th class="actions-header">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="userListBody">
+              <!-- User rows will be inserted here by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit User Modal -->
+    <div class="confirm-dialog" id="editUserModal">
+      <div class="confirm-box" id="editUserBox" style="max-width: 500px;">
+        <h3 class="confirm-title" style="display: flex; justify-content: space-between; align-items: center;">
+          Edit User
+          <button id="closeEditUserModal" class="close-modal-btn" style="background: none; border: none; font-size: 1.5rem; color: var(--text-secondary); cursor: pointer;">&times;</button>
+        </h3>
+        <form id="editUserForm">
+          <input type="hidden" id="editUserCognitoUsername" name="cognito_username">
+          
+          <div class="form-group" style="margin-bottom: 1rem;">
+            <label for="editUserUsername" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Username</label>
+            <input type="text" id="editUserUsername" name="username" class="form-input" style="width: 100%;" required>
+          </div>
+          
+          <div class="form-group" style="margin-bottom: 1rem;">
+            <label for="editUserEmail" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Email (read-only)</label>
+            <input type="email" id="editUserEmail" name="email" class="form-input" style="width: 100%;" disabled>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 1.5rem;">
+            <label for="editUserRole" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Role</label>
+            <select id="editUserRole" name="role" class="form-input" style="width: 100%;">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+
+          <div class="confirm-buttons">
+            <button type="button" class="confirm-button cancel-button" id="cancelEditUser">Cancel</button>
+            <button type="submit" class="confirm-button confirm-logout-button" id="saveUserChanges">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+  </div>
+
+  {% endblock %}
+
+{% block extra_body %}
+  {{ super() }} {# <-- Loads main.js #}
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}
