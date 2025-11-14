@@ -3,8 +3,8 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      # --- FIX #1: ADDED --no-cache ---
-      # This forces a clean build to fix the BadZipFile error
+      # This --no-cache flag is CRITICAL. It ensures we get a
+      # clean build and run our new download_model.py script.
       - '--no-cache' 
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
@@ -29,11 +29,8 @@ steps:
       - '--platform=managed'
       - '--allow-unauthenticated'
       
-      # --- FIX #2: INCREASED MEMORY ---
-      # We are increasing the memory from 2Gi to 4Gi
-      - '--memory=4Gi'
-
-      # We are also setting 1 vCPU
+      # We are increasing the memory from 2Gi to 6Gi
+      - '--memory=6Gi'
       - '--cpu=1'
       
       - '--set-secrets=PINECONE_API_KEY=PINECONE_API_KEY:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,AWS_REGION=AWS_REGION:latest,COGNITO_USER_POOL_ID=COGNITO_USER_POOL_ID:latest,COGNITO_CLIENT_ID=COGNITO_CLIENT_ID:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest'
