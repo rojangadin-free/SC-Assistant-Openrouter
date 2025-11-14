@@ -22,8 +22,8 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 INDEX_NAME = "rag-database3"
 
 # LLM Configuration
-CHAT_MODEL_NAME = "deepseek/deepseek-r1-0528:free"
-SUMMARIZER_MODEL_NAME = "meta-llama/llama-3.3-8b-instruct:free"
+CHAT_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it:free"
 
 # Add a check for the Pinecone API key to fail early if it's not set
 if not PINECONE_API_KEY:
