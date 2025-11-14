@@ -16,12 +16,11 @@ steps:
     id: 'Push'
 
   # 3. Deploy the image to Cloud Run
-  - name: 'gcr.io/google-appengine/exec-wrapper'
+  # --- THIS STEP IS NOW FIXED ---
+  # We are using the modern, official 'gcloud' builder instead of the
+  # deprecated 'exec-wrapper'.
+  - name: 'gcr.io/cloud-builders/gcloud'
     args:
-      - '-i'
-      - 'gcr.io/google/cloud-sdk'
-      - '--'
-      - 'gcloud'
       - 'run'
       - 'deploy'
       - '${_SERVICE_NAME}'
@@ -36,16 +35,13 @@ images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
 
 substitutions:
-  _REGION: 'us-east4'              # Your specified region
-  _REPOSITORY: 'sc-assistant-repo' # Your repo name
+  _REGION: 'us-east4'
+  _REPOSITORY: 'sc-assistant-repo'
   _IMAGE_NAME: 'sc-assistant-image'
   _SERVICE_NAME: 'sc-assistant'
 
 timeout: '1200s' # 20 minutes
 
-# --- THIS BLOCK IS THE FIX ---
 options:
   machineType: 'E2_HIGHCPU_8'
-  # This line explicitly tells Cloud Build to use a regional log bucket,
-  # which solves the permissions error.
   defaultLogsBucketBehavior: 'REGIONAL_USER_OWNED_BUCKET'
