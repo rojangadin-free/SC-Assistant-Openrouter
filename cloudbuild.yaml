@@ -25,6 +25,14 @@ steps:
       - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
+      
+      # --- THIS IS THE FIX ---
+      # We are increasing the memory from 512Mi to 2Gi
+      - '--memory=2Gi'
+
+      # We are also setting 1 vCPU
+      - '--cpu=1'
+      
       - '--set-secrets=PINECONE_API_KEY=PINECONE_API_KEY:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,AWS_REGION=AWS_REGION:latest,COGNITO_USER_POOL_ID=COGNITO_USER_POOL_ID:latest,COGNITO_CLIENT_ID=COGNITO_CLIENT_ID:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest'
     id: 'Deploy'
 
@@ -37,7 +45,6 @@ substitutions:
   _IMAGE_NAME: 'sc-assistant-image'
   _SERVICE_NAME: 'sc-assistant'
 
-# --- THIS IS THE FIX ---
 timeout: '1800s' # 30 minutes
 
 options:
