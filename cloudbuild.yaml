@@ -3,6 +3,9 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
+      # --- FIX #1: ADDED --no-cache ---
+      # This forces a clean build to fix the BadZipFile error
+      - '--no-cache' 
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA'
       - '.'
@@ -26,9 +29,9 @@ steps:
       - '--platform=managed'
       - '--allow-unauthenticated'
       
-      # --- THIS IS THE FIX ---
-      # We are increasing the memory from 512Mi to 2Gi
-      - '--memory=2Gi'
+      # --- FIX #2: INCREASED MEMORY ---
+      # We are increasing the memory from 2Gi to 4Gi
+      - '--memory=4Gi'
 
       # We are also setting 1 vCPU
       - '--cpu=1'
