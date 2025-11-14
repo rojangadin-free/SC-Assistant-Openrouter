@@ -30,8 +30,8 @@ steps:
       - '--allow-unauthenticated'
       
       # We are increasing the memory from 2Gi to 6Gi
-      - '--memory=6Gi'
-      - '--cpu=1'
+      - '--memory=8Gi'
+      - '--cpu=2'
       
       - '--set-secrets=PINECONE_API_KEY=PINECONE_API_KEY:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,AWS_REGION=AWS_REGION:latest,COGNITO_USER_POOL_ID=COGNITO_USER_POOL_ID:latest,COGNITO_CLIENT_ID=COGNITO_CLIENT_ID:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest'
     id: 'Deploy'
