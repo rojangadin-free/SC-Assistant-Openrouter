@@ -6,18 +6,30 @@ from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict
 from pinecone import Pinecone
 from langchain.schema import Document
-# CORRECTED: Import Ranker and RerankRequest
 from flashrank import Ranker, RerankRequest
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, OPENROUTER_API_KEY, PINECONE_API_KEY
+
+# ====== Patch System Prompt ======
+# We programmatically relax the prompt constraints to allow memory of user details.
+# 1. Allow using history for facts (names, ages, etc.)
+system_prompt = system_prompt.replace(
+    "Reference solely for conversational continuity (e.g., pronouns or prior Samar College topics), never for new facts.",
+    "Reference for conversational continuity and to recall personal details (name, age, preferences) provided by the user in the chat."
+)
+# 2. Allow personal topic questions if the answer is in the history
+system_prompt = system_prompt.replace(
+    "Reject non-Samar College topics immediately",
+    "Reject non-Samar College topics (unless answering questions about the user's own information found in the history)"
+)
 
 # ====== Vector Store ======
 embeddings = get_local_embeddings()
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
 docsearch = PineconeVectorStore(index, embeddings)
-# Retrieve 7 documents initially for re-ranking
+# Retrieve 15 documents initially for re-ranking
 retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 15})
 
 # ====== Re-ranker ======
@@ -58,7 +70,7 @@ def summarize_history(history: List[Dict[str, str]]) -> str:
         return ""
     transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
     summary_prompt = [
-        {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts, questions, and answers."},
+        {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts (like user's name, age) and questions."},
         {"role": "user", "content": transcript}
     ]
     response = summarizer.invoke(summary_prompt)
@@ -77,7 +89,7 @@ def create_graph():
         if initial_docs:
             passages = [{"id": i, "text": doc.page_content, "meta": doc.metadata} for i, doc in enumerate(initial_docs)]
             
-            # CORRECTED: Create a RerankRequest object
+            # Create a RerankRequest object
             rerank_request = RerankRequest(query=state["input"], passages=passages)
             
             # Pass the single request object and slice the result
@@ -90,21 +102,37 @@ def create_graph():
         # 3. Use the re-ranked documents for context
         retrieved_docs_context = docs_to_context(reranked_docs)
 
+        # 4. Process History
         history_for_state = state.get("chat_history", [])
         history_for_llm = list(history_for_state)
 
-        if len(history_for_llm) > 20:
-            summary = summarize_history(history_for_llm[:-5])
-            history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
+        # Summarization logic for long history (keep last 10 messages)
+        if len(history_for_llm) > 10:
+            summary = summarize_history(history_for_llm[:-10])
+            history_for_llm = [{"role": "system", "content": f"Summary of previous conversation: {summary}"}] + history_for_llm[-10:]
 
+        # --- FIX: Format history as string and inject into System Prompt ---
+        history_str = ""
+        if history_for_llm:
+            # Format: "USER: message \n ASSISTANT: response"
+            history_str = "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in history_for_llm])
+        else:
+            history_str = "No previous conversation."
+
+        # Inject the history string into the {chat_history} placeholder
+        # The prompt is now patched to allow using this history for personal facts.
         final_system_prompt = system_prompt.format(
             retrieved_docs=retrieved_docs_context,
-            chat_history=""
+            chat_history=history_str 
         )
-        final_messages_for_llm = [("system", final_system_prompt)]
-        for msg in history_for_llm:
-            final_messages_for_llm.append((msg['role'], msg['content']))
-        final_messages_for_llm.append(("human", state["input"]))
+        
+        # Construct messages. 
+        # Since history is now INSIDE the system prompt (Source 3), we only need 
+        # the System Message and the Current User Input.
+        final_messages_for_llm = [
+            ("system", final_system_prompt),
+            ("human", state["input"])
+        ]
 
         response = chatModel.invoke(final_messages_for_llm)
 

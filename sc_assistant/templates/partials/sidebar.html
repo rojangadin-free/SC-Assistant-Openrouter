@@ -24,10 +24,20 @@
     {% elif active_page == 'settings' %}
       <div class="new-chat-btn">
         <i class="fas fa-arrow-left"></i>
-        <a href="{{ url_for('chat.chat_page') }}"
-           style="text-decoration: none; color: inherit; width: 100%;">
-          <span>Back to Chat</span>
-        </a>
+        
+        {# Dynamic Back Button Logic #}
+        {% if origin == 'dashboard' %}
+          <a href="{{ url_for('admin.dashboard') }}"
+             style="text-decoration: none; color: inherit; width: 100%;">
+            <span>Back to Dashboard</span>
+          </a>
+        {% else %}
+          <a href="{{ url_for('chat.chat_page') }}"
+             style="text-decoration: none; color: inherit; width: 100%;">
+            <span>Back to Chat</span>
+          </a>
+        {% endif %}
+        
       </div>
       <div class="menu-item active">
         <i class="fas fa-cog"></i>
@@ -82,9 +92,7 @@
         <i class="fas fa-envelope"></i>
         <span>{{ user.email }}</span>
       </a>
-      <a href="{{ url_for('settings.settings_page') }}"
-         class="dropdown-item"
-         id="settingsButton">
+      <a href="#" class="dropdown-item" id="settingsButton">
         <i class="fas fa-cog"></i>
         <span>Settings</span>
       </a>

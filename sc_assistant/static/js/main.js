@@ -80,11 +80,19 @@ $(document).ready(function() {
     });
   }
 
-  // Settings navigation
+  // Settings navigation - UPDATED logic for origin tracking
   if(settingsButton.length) {
     settingsButton.on('click', function(e) {
       e.preventDefault();
-      window.location.href = '/settings'; // Hardcoded URL is fine here
+      
+      // Determine origin based on current URL
+      let origin = 'chat';
+      if (window.location.pathname.includes('/dashboard')) {
+        origin = 'dashboard';
+      }
+      
+      // Navigate with origin parameter
+      window.location.href = `/settings?origin=${origin}`;
     });
   }
 
