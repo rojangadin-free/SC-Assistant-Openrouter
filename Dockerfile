@@ -18,4 +18,4 @@ RUN python3 download_model.py
 
 # --- UPDATE THIS LINE ---
 # Run gunicorn when the container launches, binding to the correct port
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "run:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "3", "--timeout", "120", "run:app"]
