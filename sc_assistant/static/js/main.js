@@ -11,6 +11,7 @@
 
 $(document).ready(function() {
   const body = $('body');
+  const sidebar = $('#sidebar'); 
 
   // ===== Theme Management =====
   const themeToggle = $('#themeToggle');
@@ -37,6 +38,83 @@ $(document).ready(function() {
     themeToggle.on('click', function() {
       const current = body.attr('data-theme') === 'dark' ? 'dark' : 'light';
       setTheme(current === 'dark' ? 'light' : 'dark');
+    });
+  }
+
+  // ===== Sidebar Logic (Desktop Collapse / Mobile Close) =====
+  const sidebarCollapseBtn = $('#sidebarCollapseBtn');
+  const sidebarHeader = $('.sidebar-header'); // Target the whole header for click expanion
+  
+  // Helper to check if we are in mobile view
+  function isMobile() {
+    return window.innerWidth <= 768;
+  }
+
+  // Function to manage sidebar state based on screen size
+  function updateSidebarState() {
+    const shouldBeCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+    
+    if (isMobile()) {
+      // In mobile, sidebar NEVER uses 'collapsed' class (mini-sidebar).
+      // It is either active (visible) or not.
+      sidebar.removeClass('collapsed');
+      
+      // Update Button Icon to 'X' (Close)
+      sidebarCollapseBtn.find('i')
+        .removeClass('fa-compress')
+        .addClass('fa-times');
+        
+    } else {
+      // Desktop: Restore 'collapsed' state from storage
+      if (shouldBeCollapsed) {
+        sidebar.addClass('collapsed');
+      } else {
+        sidebar.removeClass('collapsed');
+      }
+      
+      // Update Button Icon to Chevron
+      sidebarCollapseBtn.find('i')
+        .removeClass('fa-times')
+        .addClass('fa-compress');
+    }
+  }
+
+  // Initial Check
+  updateSidebarState();
+
+  // Re-check on resize
+  $(window).on('resize', updateSidebarState);
+
+  // Button Click Handler
+  if (sidebarCollapseBtn.length) {
+    sidebarCollapseBtn.on('click', function(e) {
+      e.stopPropagation(); // Prevent bubbling to header click
+      
+      if (isMobile()) {
+        // MOBILE: Close the sidebar completely
+        sidebar.removeClass('active');
+        body.removeClass('sidebar-open');
+      } else {
+        // DESKTOP: Toggle collapse state
+        sidebar.toggleClass('collapsed');
+        const isCollapsed = sidebar.hasClass('collapsed');
+        localStorage.setItem('sidebarCollapsed', isCollapsed);
+      }
+    });
+  }
+
+  // Header Click Handler (For expanding only)
+  // This allows clicking the logo area to expand the sidebar in Desktop Collapsed mode
+  if (sidebarHeader.length) {
+    sidebarHeader.on('click', function(e) {
+      // Only trigger if desktop AND currently collapsed
+      if (!isMobile() && sidebar.hasClass('collapsed')) {
+        // Don't trigger if they clicked the button directly (though stopPropagation handles this)
+        if ($(e.target).closest('.collapse-btn').length === 0) {
+           sidebar.removeClass('collapsed');
+           localStorage.setItem('sidebarCollapsed', 'false');
+        }
+      }
     });
   }
 
@@ -80,18 +158,15 @@ $(document).ready(function() {
     });
   }
 
-  // Settings navigation - UPDATED logic for origin tracking
+  // Settings navigation
   if(settingsButton.length) {
     settingsButton.on('click', function(e) {
       e.preventDefault();
       
-      // Determine origin based on current URL
       let origin = 'chat';
       if (window.location.pathname.includes('/dashboard')) {
         origin = 'dashboard';
       }
-      
-      // Navigate with origin parameter
       window.location.href = `/settings?origin=${origin}`;
     });
   }
@@ -116,11 +191,11 @@ $(document).ready(function() {
 
   if (confirmLogoutButton.length && logoutButton.length) {
     confirmLogoutButton.on('click', function() {
-      const logoutUrl = logoutButton.attr('href'); // Get URL from the link
+      const logoutUrl = logoutButton.attr('href');
       if(logoutUrl) {
         window.location.href = logoutUrl;
       } else {
-        window.location.href = '/logout'; // Fallback
+        window.location.href = '/logout';
       }
     });
   }
@@ -133,9 +208,8 @@ $(document).ready(function() {
     });
   }
 
-  // ===== Hamburger / Sidebar (Mobile) =====
+  // ===== Hamburger / Sidebar (Mobile Toggle) =====
   const hamburgerMenu = $('#hamburgerMenu');
-  const sidebar = $('#sidebar');
 
   if (hamburgerMenu.length && sidebar.length) {
     hamburgerMenu.on('click', function(e) {
@@ -145,7 +219,8 @@ $(document).ready(function() {
     });
 
     $(document).on('click', function(e) {
-      if (window.innerWidth <= 768 && sidebar.hasClass('active')) {
+      // Close sidebar if clicking outside on mobile
+      if (isMobile() && sidebar.hasClass('active')) {
         const isClickInsideSidebar = sidebar[0].contains(e.target);
         const isHamburger = hamburgerMenu[0].contains(e.target);
         if (!isClickInsideSidebar && !isHamburger) {
@@ -161,17 +236,9 @@ $(document).ready(function() {
         body.removeClass('sidebar-open');
       }
     });
-
-    $(window).on('resize', function() {
-      if (window.innerWidth > 768) {
-        sidebar.removeClass('active');
-        body.removeClass('sidebar-open');
-      }
-    });
   }
 
   // ===== Notification Helper Function =====
-  // Make it globally accessible for other scripts
   window.showNotification = function(message, type = 'success', details = null) {
     const notification = $('#notification');
     if (!notification.length) return;
@@ -181,7 +248,6 @@ $(document).ready(function() {
     notification.find('.notification-title')
       .text(isSuccess ? 'Success' : 'Error');
     
-    // Remove old details
     notification.find('.notification-details').remove();
 
     notification.find('.notification-message')
@@ -190,7 +256,6 @@ $(document).ready(function() {
     notification.find('.notification-icon i')
       .attr('class', isSuccess ? 'fas fa-check' : 'fas fa-exclamation-triangle');
 
-    // Add details if provided
     if (details) {
       const detailsHtml = `<div class="notification-details" style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">${details}</div>`;
       notification.find('.notification-content').append(detailsHtml);
@@ -201,13 +266,11 @@ $(document).ready(function() {
       .addClass(type)
       .addClass('show');
 
-    // Auto-hide
     setTimeout(() => {
       notification.removeClass('show');
-      // Remove details after hiding
       setTimeout(() => {
         notification.find('.notification-details').remove();
       }, 300);
-    }, 5000); // 5 seconds
+    }, 5000); 
   }
 });

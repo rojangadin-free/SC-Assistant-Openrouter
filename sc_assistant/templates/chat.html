@@ -10,7 +10,8 @@
         href="{{ url_for('static', filename='css/chat.css') }}"/>
 {% endblock %}
 
-{% block body_attrs %}data-start-new="{{ start_new_chat }}"{% endblock %}
+{# FIX: Updated variable name from 'start_new_chat' to 'start_new' to match chat.py #}
+{% block body_attrs %}data-start-new="{{ start_new }}"{% endblock %}
 
 {# Override the default layout to match chat.css expectations #}
 {% block layout %}

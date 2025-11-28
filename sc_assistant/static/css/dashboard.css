@@ -214,7 +214,6 @@ body {
 .menu-item:hover {
   background: var(--menu-hover);
   color: white;
-  transform: translateX(5px);
 }
 
 .menu-item.active {

@@ -1,12 +1,5 @@
 /* =========================================
  * MAIN STYLESHEET (main.css)
- *
- * Contains all shared styles for:
- * 1. Theme Variables (:root)
- * 2. Global Styles (body, scrollbar)
- * 3. Shared Layout (header, sidebar, main-section)
- * 4. Shared Components (user menu, notification, modal)
- * 5. Shared Mobile Responsive Layout
  * ========================================= */
 
 /* 1. THEME VARIABLES */
@@ -112,6 +105,44 @@ body {
   height: 100%;
   flex-shrink: 0;
   z-index: 1000;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* --- Sidebar Header --- */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  min-height: 60px;
+  flex-shrink: 0;
+}
+
+.sidebar-logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  transition: transform 0.3s ease;
+}
+
+.collapse-btn {
+  background: transparent;
+  border: none;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  font-size: 1.1rem;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.collapse-btn:hover {
+  background: var(--menu-hover);
+  color: white;
 }
 
 .sidebar-content {
@@ -120,6 +151,7 @@ body {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .menu {
@@ -129,6 +161,7 @@ body {
   overflow: hidden;
 }
 
+/* --- Standard Menu Items --- */
 .menu-item {
   padding: 1rem 1.2rem;
   border-radius: 12px;
@@ -139,6 +172,7 @@ body {
   margin-bottom: 0.8rem;
   cursor: pointer;
   transition: all 0.3s ease;
+  white-space: nowrap;
 }
 
 .menu-item:hover {
@@ -154,7 +188,8 @@ body {
 .menu-item i {
   color: var(--accent);
   font-size: 1.2rem;
-  transition: all 0.3s ease;
+  min-width: 24px;
+  text-align: center;
 }
 
 .menu-item:hover i {
@@ -165,11 +200,118 @@ body {
   color: var(--sidebar-text);
   text-decoration: none;
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .menu-item:hover a {
   color: white;
 }
+
+/* --- Collapsed State Styles (Desktop Only) --- */
+.sidebar.collapsed {
+  width: 76px;
+}
+
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 1rem 0;
+  cursor: pointer; /* Click header to expand */
+}
+
+/* HIDE the Arrow Button when collapsed */
+.sidebar.collapsed .collapse-btn {
+  display: none;
+}
+
+/* SHOW and Center the Logo when collapsed */
+.sidebar.collapsed .sidebar-logo-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+/* Add a visual cue on hover for the logo when collapsed */
+.sidebar.collapsed .sidebar-header:hover .sidebar-logo {
+  transform: scale(1.1);
+  opacity: 0.9;
+}
+
+/* Hide Text Labels & History when Collapsed */
+.sidebar.collapsed .menu-item span,
+.sidebar.collapsed .user-account-button span,
+.sidebar.collapsed .user-account-button .fa-chevron-up,
+.sidebar.collapsed .conversation-header,
+.sidebar.collapsed #conversationList,
+.sidebar.collapsed #conversationHistoryLoader,
+.sidebar.collapsed .new-chat-btn span,
+.sidebar.collapsed .menu-item a span {
+  display: none;
+}
+
+/* Center Icons in Collapsed Mode */
+.sidebar.collapsed .menu-item, 
+.sidebar.collapsed .user-account-button,
+.sidebar.collapsed .new-chat-btn {
+  justify-content: center;
+  padding: 1rem 0;
+  gap: 0;
+}
+
+.sidebar.collapsed .menu-item i,
+.sidebar.collapsed .new-chat-btn i {
+  font-size: 1.3rem;
+}
+
+.sidebar.collapsed .user-account-section {
+  padding: 1rem 0.5rem;
+}
+
+/* Collapsed Sidebar User Dropdown Override */
+.sidebar.collapsed .user-dropdown {
+  left: 10px; /* Align to center with the sidebar icons */
+  bottom: 100%;
+  margin-bottom: 12px;
+  width: 56px; /* Narrow width for icons only */
+  min-width: 0; 
+  transform-origin: bottom left;
+  transform: translateY(10px) scale(0.95);
+  padding: 0.5rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.sidebar.collapsed .user-dropdown.show {
+  transform: translateY(0) scale(1);
+}
+
+.sidebar.collapsed .user-dropdown::before {
+  left: 50%; 
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* Hide text in dropdown items when collapsed */
+.sidebar.collapsed .dropdown-item span {
+  display: none;
+}
+
+/* Center icons in dropdown items when collapsed */
+.sidebar.collapsed .dropdown-item {
+  justify-content: center;
+  padding: 0.8rem 0;
+  width: 100%;
+}
+
+.sidebar.collapsed .dropdown-item i {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* --- End Collapsed State --- */
+
 
 .main-section {
   flex: 1;
@@ -275,6 +417,7 @@ body {
   font-size: 1rem;
   font-weight: 500;
   box-sizing: border-box;
+  white-space: nowrap;
 }
 
 .user-account-button:hover {
@@ -283,6 +426,8 @@ body {
 
 .user-account-button i:first-child {
   color: var(--primary);
+  min-width: 24px;
+  text-align: center;
 }
 
 .user-account-button i:last-child {
@@ -293,6 +438,7 @@ body {
   transform: rotate(180deg);
 }
 
+/* User Dropdown Default (Open Sidebar) */
 .user-dropdown {
   position: absolute;
   bottom: calc(100% - 10px);
@@ -311,6 +457,12 @@ body {
   overflow: hidden;
 }
 
+.user-dropdown.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
 .user-dropdown::before {
   content: '';
   position: absolute;
@@ -325,12 +477,7 @@ body {
   z-index: -1;
 }
 
-.user-dropdown.show {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(-50%) translateY(0) scale(1);
-}
-
+/* Dropdown Items */
 .dropdown-item {
   display: flex;
   align-items: center;
@@ -548,16 +695,22 @@ body {
   
   /* Mobile dropdown fix */
   .user-dropdown {
-    width: calc(100% - 2rem);
+    width: auto; /* Let it stretch */
     left: 1rem;
     right: 1rem;
+    bottom: 100%;
+    margin-bottom: 10px;
+    transform-origin: bottom center;
     transform: translateY(10px) scale(0.95);
   }
-  .user-dropdown::before {
-    left: 50%;
-  }
+  
   .user-dropdown.show {
     transform: translateY(0) scale(1);
+  }
+  
+  .user-dropdown::before {
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
   }
   
   /* Mobile overlay */

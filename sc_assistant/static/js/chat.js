@@ -216,7 +216,12 @@ $(document).ready(function() {
           typingIndicator.addClass('fade-out');
           setTimeout(() => typingIndicator.hide(), 300);
           sendButton.prop('disabled', false);
-          messageInput.prop('disabled', false).focus(); // Auto-focus here
+          messageInput.prop('disabled', false);
+          
+          // FIX: Only auto-focus on non-mobile devices
+          if (window.innerWidth > 768) {
+            messageInput.focus();
+          }
         }
       });
   }
@@ -316,7 +321,12 @@ $(document).ready(function() {
           .always(function() {
             conversationLoader.hide();
             sendButton.prop('disabled', false);
-            messageInput.prop('disabled', false).focus(); // Auto-focus here
+            messageInput.prop('disabled', false);
+            
+            // FIX: Only auto-focus on non-mobile devices
+            if (window.innerWidth > 768) {
+              messageInput.focus();
+            }
           });
       })
       .fail(function() {
@@ -325,7 +335,12 @@ $(document).ready(function() {
         );
         conversationLoader.hide();
         sendButton.prop('disabled', false);
-        messageInput.prop('disabled', false).focus(); // Auto-focus here
+        messageInput.prop('disabled', false);
+        
+        // FIX: Only auto-focus on non-mobile devices
+        if (window.innerWidth > 768) {
+          messageInput.focus();
+        }
       });
   }
 
@@ -343,7 +358,13 @@ $(document).ready(function() {
       localStorage.removeItem('activeConversationId');
       applyActiveHighlight();
       sendButton.prop('disabled', false);
-      messageInput.prop('disabled', false).focus(); // Auto-focus here
+      messageInput.prop('disabled', false);
+      
+      // FIX: Only auto-focus on non-mobile devices
+      if (window.innerWidth > 768) {
+        messageInput.focus();
+      }
+      
       typingIndicator.hide();
       conversationLoader.hide();
     });
