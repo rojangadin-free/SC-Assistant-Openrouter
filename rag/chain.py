@@ -6,7 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict
 from pinecone import Pinecone
 from langchain.schema import Document
-from flashrank import Ranker, RerankRequest
+# Removed: from flashrank import Ranker, RerankRequest
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, OPENROUTER_API_KEY, PINECONE_API_KEY
@@ -29,11 +29,11 @@ embeddings = get_local_embeddings()
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
 docsearch = PineconeVectorStore(index, embeddings)
-# Retrieve 15 documents initially for re-ranking
-retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 15})
 
-# ====== Re-ranker ======
-reranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+# UPDATED: Retrieve only top 4 documents directly since we are not reranking
+retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+
+# Removed: Reranker initialization
 
 # ====== LLMs ======
 chatModel = ChatOpenAI(
@@ -82,27 +82,13 @@ def create_graph():
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        # 1. Initial retrieval from Pinecone
-        initial_docs = retriever.invoke(state["input"])
+        # 1. Retrieval from Pinecone
+        retrieved_docs = retriever.invoke(state["input"])
         
-        # 2. Re-ranking with FlashRank
-        if initial_docs:
-            passages = [{"id": i, "text": doc.page_content, "meta": doc.metadata} for i, doc in enumerate(initial_docs)]
-            
-            # Create a RerankRequest object
-            rerank_request = RerankRequest(query=state["input"], passages=passages)
-            
-            # Pass the single request object and slice the result
-            reranked_passages = reranker.rerank(rerank_request)[:4]
-            
-            reranked_docs = [Document(page_content=p["text"], metadata=p["meta"]) for p in reranked_passages]
-        else:
-            reranked_docs = []
+        # 2. Use retrieved documents directly for context (No Reranking)
+        retrieved_docs_context = docs_to_context(retrieved_docs)
 
-        # 3. Use the re-ranked documents for context
-        retrieved_docs_context = docs_to_context(reranked_docs)
-
-        # 4. Process History
+        # 3. Process History
         history_for_state = state.get("chat_history", [])
         history_for_llm = list(history_for_state)
 
@@ -111,7 +97,7 @@ def create_graph():
             summary = summarize_history(history_for_llm[:-10])
             history_for_llm = [{"role": "system", "content": f"Summary of previous conversation: {summary}"}] + history_for_llm[-10:]
 
-        # --- FIX: Format history as string and inject into System Prompt ---
+        # Format history as string and inject into System Prompt
         history_str = ""
         if history_for_llm:
             # Format: "USER: message \n ASSISTANT: response"
@@ -120,15 +106,12 @@ def create_graph():
             history_str = "No previous conversation."
 
         # Inject the history string into the {chat_history} placeholder
-        # The prompt is now patched to allow using this history for personal facts.
         final_system_prompt = system_prompt.format(
             retrieved_docs=retrieved_docs_context,
             chat_history=history_str 
         )
         
-        # Construct messages. 
-        # Since history is now INSIDE the system prompt (Source 3), we only need 
-        # the System Message and the Current User Input.
+        # Construct messages
         final_messages_for_llm = [
             ("system", final_system_prompt),
             ("human", state["input"])

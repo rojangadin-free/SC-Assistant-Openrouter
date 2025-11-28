@@ -22,23 +22,19 @@
       {% endif %}
 
     {% elif active_page == 'settings' %}
-      <div class="new-chat-btn">
-        <i class="fas fa-arrow-left"></i>
-        
-        {# Dynamic Back Button Logic #}
-        {% if origin == 'dashboard' %}
-          <a href="{{ url_for('admin.dashboard') }}"
-             style="text-decoration: none; color: inherit; width: 100%;">
-            <span>Back to Dashboard</span>
-          </a>
-        {% else %}
-          <a href="{{ url_for('chat.chat_page') }}"
-             style="text-decoration: none; color: inherit; width: 100%;">
-            <span>Back to Chat</span>
-          </a>
-        {% endif %}
-        
-      </div>
+      {# Dynamic Back Button Logic - Made entire button clickable #}
+      {% if origin == 'dashboard' %}
+        <a href="{{ url_for('admin.dashboard') }}" class="new-chat-btn" style="text-decoration: none; color: inherit;">
+          <i class="fas fa-arrow-left"></i>
+          <span>Back to Dashboard</span>
+        </a>
+      {% else %}
+        <a href="{{ url_for('chat.chat_page') }}" class="new-chat-btn" style="text-decoration: none; color: inherit;">
+          <i class="fas fa-arrow-left"></i>
+          <span>Back to Chat</span>
+        </a>
+      {% endif %}
+      
       <div class="menu-item active">
         <i class="fas fa-cog"></i>
         <span>Account</span>
@@ -60,12 +56,10 @@
         <span>User Management</span>
       </div>
 
-      <div class="menu-item">
+      <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none; color: inherit;">
         <i class="fas fa-comments"></i>
-        <a href="{{ url_for('chat.chat_page') }}" target="_blank" rel="noopener noreferrer">
-          <span>Chatbot</span>
-        </a>
-      </div>
+        <span>Chatbot</span>
+      </a>
     {% endif %}
 
     {% if not user and active_page != 'chat' %}

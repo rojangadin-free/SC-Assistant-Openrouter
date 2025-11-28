@@ -4,7 +4,7 @@ Flask==3.1.2                      # Web framework
 dotenv==0.9.9             # Load .env file support
 langchain==0.3.27                # Core LangChain library
 langchain_huggingface==0.3.1     # Embeddings & HuggingFace integrations
-langchain_pinecone              # Pinecone vector store integration (no need to pin version unless issues)
+langchain_pinecone              # Pinecone vector store integration
 pinecone==7.0.2                  # Official Pinecone Python SDK
 langgraph==0.6.7                 # For stateful workflows & graph orchestration
 langchain_community             # Needed for document loaders (PyMuPDFLoader etc.)
@@ -13,4 +13,3 @@ sentence-transformers           # Underlying model for HuggingFaceEmbeddings
 boto3                            # AWS Cognito & DynamoDB
 python-jose==3.3.0               # JWT decoding
 gunicorn                        # For production server
-flashrank==0.2.10              # For text ranking
