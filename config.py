@@ -22,7 +22,7 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 INDEX_NAME = "rag-database3"
 
 # LLM Configuration
-CHAT_MODEL_NAME = "x-ai/grok-4.1-fast:free"
+CHAT_MODEL_NAME = "meituan/longcat-flash-chat:free"
 SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it:free"
 
 # Add a check for the Pinecone API key to fail early if it's not set
