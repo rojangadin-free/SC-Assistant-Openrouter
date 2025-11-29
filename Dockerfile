@@ -22,4 +22,4 @@ RUN python3 download_model.py
 # Reduced workers to 1 to prevent OOM
 # Added --preload to save RAM
 # Added --access-logfile - and --error-logfile - to see logs in Docker
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--preload", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "debug", "run:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "--preload", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "debug", "run:app"]
