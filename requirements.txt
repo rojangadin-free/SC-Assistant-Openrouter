@@ -1,13 +1,22 @@
-Flask==3.1.2                      # Web framework
-dotenv==0.9.9             # Load .env file support
-langchain==0.3.27                # Core LangChain library
-langchain_huggingface==0.3.1     # Embeddings & HuggingFace integrations
-langchain_pinecone              # Pinecone vector store integration
-pinecone==7.0.2                  # Official Pinecone Python SDK
-langgraph==0.6.7                 # For stateful workflows & graph orchestration
-langchain_community             # Needed for document loaders (PyMuPDFLoader etc.)
-pymupdf==1.26.4                  # For PDF loading via PyMuPDFLoader
-sentence-transformers           # Underlying model for HuggingFaceEmbeddings
-boto3                            # AWS Cognito & DynamoDB
-python-jose==3.3.0               # JWT decoding
-gunicorn                        # For production server
+Flask==3.1.2
+python-dotenv==1.0.1
+# Core LangChain
+langchain==0.3.7
+langchain-core==0.3.15
+langchain-community==0.3.5
+# Google Integration (Pinned to avoid conflicts)
+langchain-google-genai==2.0.1
+# Vector Store
+langchain-pinecone==0.2.0
+pinecone-client==5.0.1
+# Graph
+langgraph==0.2.45
+# Utilities
+pymupdf==1.24.11
+boto3==1.35.54
+python-jose==3.3.0
+gunicorn==23.0.0
+Pillow==11.0.0
+# Reranking
+sentence-transformers==3.3.1
+einops==0.8.0

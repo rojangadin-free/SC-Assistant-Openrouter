@@ -16,7 +16,7 @@ RUN pip install -r requirements.txt
 COPY . /app
 
 # Run the model download script during the build process
-RUN python3 download_model.py
+#RUN python3 download_model.py
 
 # --- FIX 2: Update Command for Logs & Stability ---
 # Reduced workers to 1 to prevent OOM

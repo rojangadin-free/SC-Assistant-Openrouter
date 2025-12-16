@@ -150,7 +150,10 @@ body {
   width: 100%;
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  /* CHANGED: Hidden so the inner list can scroll independently */
+  overflow: hidden; 
+  display: flex;       
+  flex-direction: column; 
   overflow-x: hidden;
 }
 
@@ -159,6 +162,7 @@ body {
   flex-direction: column;
   flex: 1;
   overflow: hidden;
+  height: 100%; /* Ensure it fills the parent */
 }
 
 /* --- Standard Menu Items --- */

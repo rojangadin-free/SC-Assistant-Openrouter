@@ -920,3 +920,73 @@ body {
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
+
+/* =========================================
+ * NEW: Markdown Table & Code Block Styles
+ * ========================================= */
+
+/* Tables */
+.message-bubble table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  width: 100%;
+  display: block; /* Allows scrolling for wide tables */
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.message-bubble th,
+.message-bubble td {
+  padding: 0.75rem;
+  text-align: left;
+  border: 1px solid var(--border);
+}
+
+.message-bubble th {
+  background-color: rgba(0, 0, 0, 0.05);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.message-bubble tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="dark"] .message-bubble th {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+[data-theme="dark"] .message-bubble tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Code Blocks */
+.message-bubble pre {
+  background: #f6f8fa;
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid var(--border);
+}
+
+[data-theme="dark"] .message-bubble pre {
+  background: #2d2d2d;
+}
+
+.message-bubble code {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+}
+
+.message-bubble p code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: #e83e8c;
+}
+
+[data-theme="dark"] .message-bubble p code {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ff79c6;
+}

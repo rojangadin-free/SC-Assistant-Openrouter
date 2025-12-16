@@ -1,129 +1,135 @@
 from langchain_pinecone import PineconeVectorStore
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
-from langchain.schema import Document
-# Removed: from flashrank import Ranker, RerankRequest
+
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
-from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, OPENROUTER_API_KEY, PINECONE_API_KEY
+from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, GOOGLE_API_KEY, PINECONE_API_KEY
 
-# ====== Patch System Prompt ======
-# We programmatically relax the prompt constraints to allow memory of user details.
-# 1. Allow using history for facts (names, ages, etc.)
-system_prompt = system_prompt.replace(
-    "Reference solely for conversational continuity (e.g., pronouns or prior Samar College topics), never for new facts.",
-    "Reference for conversational continuity and to recall personal details (name, age, preferences) provided by the user in the chat."
-)
-# 2. Allow personal topic questions if the answer is in the history
-system_prompt = system_prompt.replace(
-    "Reject non-Samar College topics immediately",
-    "Reject non-Samar College topics (unless answering questions about the user's own information found in the history)"
-)
-
-# ====== Vector Store ======
+# ====== Setup ======
 embeddings = get_local_embeddings()
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
 docsearch = PineconeVectorStore(index, embeddings)
 
-# UPDATED: Retrieve only top 4 documents directly since we are not reranking
-retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+# 1. RETRIEVAL (Standard Semantic Search)
+# Adjusted k to 10 since we are no longer filtering with a reranker
+retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 20})
 
-# Removed: Reranker initialization
-
-# ====== LLMs ======
-chatModel = ChatOpenAI(
+chatModel = ChatGoogleGenerativeAI(
     model=CHAT_MODEL_NAME,
-    openai_api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
+    google_api_key=GOOGLE_API_KEY,
     temperature=0.7,
-    max_tokens=2048
+    max_tokens=None,
+    timeout=None,
+    max_retries=2
 )
 
-summarizer = ChatOpenAI(
+summarizer = ChatGoogleGenerativeAI(
     model=SUMMARIZER_MODEL_NAME,
-    openai_api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-    temperature=0.3,
-    max_tokens=512
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0
 )
 
 # ====== Chat State ======
 class ChatState(TypedDict):
     input: str
+    image_data: Optional[str]
     chat_history: List[Dict[str, str]]
     answer: str
 
 def docs_to_context(docs) -> str:
-    """Converts a list of documents to a string context."""
-    if not docs:
+    context_parts = []
+    for i, d in enumerate(docs):
+        # Include Source in the context passed to LLM
+        source = d.metadata.get("source", "Unknown")
+        page = d.metadata.get("page", "?")
+        text = f"Source: {source} (Page {page}):\n{d.page_content}"
+        context_parts.append(text)
+    if not context_parts:
         return "No relevant context found."
-    return "\n\n".join([f"[{i+1}] {d.page_content}" for i, d in enumerate(docs)])
+    return "\n---\n".join(context_parts)
 
 def summarize_history(history: List[Dict[str, str]]) -> str:
-    """Summarizes the chat history."""
-    if not history:
-        return ""
+    if not history: return ""
     transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
     summary_prompt = [
-        {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts (like user's name, age) and questions."},
+        {"role": "system", "content": "Summarize the conversation to retain key context."},
         {"role": "user", "content": transcript}
     ]
-    response = summarizer.invoke(summary_prompt)
-    return response.content
+    return summarizer.invoke(summary_prompt).content
 
-# ====== LangGraph Setup ======
+# ====== LangGraph ======
 def create_graph():
-    """Creates and compiles the LangGraph."""
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        # 1. Retrieval from Pinecone
-        retrieved_docs = retriever.invoke(state["input"])
+        user_text = state["input"]
+        image_data = state.get("image_data")
+        history = state.get("chat_history", [])
         
-        # 2. Use retrieved documents directly for context (No Reranking)
-        retrieved_docs_context = docs_to_context(retrieved_docs)
+        # Direct user input without rewriting
+        refined_query = user_text 
 
-        # 3. Process History
-        history_for_state = state.get("chat_history", [])
-        history_for_llm = list(history_for_state)
+        # --- 1. Image Analysis (Vision) ---
+        image_description = ""
+        if image_data:
+            vision_message = HumanMessage(content=[
+                {"type": "text", "text": "Transcribe any text in this image and describe the visual layout in detail."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+            ])
+            image_description = summarizer.invoke([vision_message]).content
+            print(f"Image Analysis: {image_description}")
 
-        # Summarization logic for long history (keep last 10 messages)
-        if len(history_for_llm) > 10:
-            summary = summarize_history(history_for_llm[:-10])
-            history_for_llm = [{"role": "system", "content": f"Summary of previous conversation: {summary}"}] + history_for_llm[-10:]
+        # --- 2. Retrieval (Standard) ---
+        print(f"\n=== 🔍 STEP 1: Retrieval (Query: '{refined_query}') ===")
+        initial_docs = retriever.invoke(refined_query)
+        
+        # DEBUG: Print Retrieved Docs
+        for i, doc in enumerate(initial_docs):
+            src = doc.metadata.get("source", "Unknown")
+            pg = doc.metadata.get("page", "?")
+            snippet = doc.page_content.replace("\n", " ")[:80]
+            print(f"  [{i+1}] {src} (Pg {pg}): {snippet}...")
 
-        # Format history as string and inject into System Prompt
-        history_str = ""
-        if history_for_llm:
-            # Format: "USER: message \n ASSISTANT: response"
-            history_str = "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in history_for_llm])
-        else:
-            history_str = "No previous conversation."
+        context_str = docs_to_context(initial_docs)
 
-        # Inject the history string into the {chat_history} placeholder
+        # --- 3. History Management ---
+        if len(history) > 10:
+            summary = summarize_history(history[:-6])
+            history = [{"role": "system", "content": f"Previous conversation summary: {summary}"}] + history[-6:]
+
+        history_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
+
+        # --- 4. Answer Generation ---
         final_system_prompt = system_prompt.format(
-            retrieved_docs=retrieved_docs_context,
+            retrieved_docs=context_str,
             chat_history=history_str 
         )
+
+        messages = [SystemMessage(content=final_system_prompt)]
         
-        # Construct messages
-        final_messages_for_llm = [
-            ("system", final_system_prompt),
-            ("human", state["input"])
-        ]
+        if image_data:
+            content_block = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+            ]
+            messages.append(HumanMessage(content=content_block))
+        else:
+            messages.append(HumanMessage(content=user_text))
 
-        response = chatModel.invoke(final_messages_for_llm)
+        response = chatModel.invoke(messages)
 
-        updated_history = history_for_state + [
-            {"role": "user", "content": state["input"]},
+        new_history = history + [
+            {"role": "user", "content": user_text + (" [Image Uploaded]" if image_data else "")},
             {"role": "assistant", "content": response.content}
         ]
-        return {"answer": response.content, "chat_history": updated_history}
+
+        return {"answer": response.content, "chat_history": new_history}
 
     graph.add_node("llm", call_llm)
     graph.set_entry_point("llm")

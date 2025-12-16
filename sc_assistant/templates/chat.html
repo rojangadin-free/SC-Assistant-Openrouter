@@ -8,12 +8,40 @@
   <link rel="stylesheet"
         type="text/css"
         href="{{ url_for('static', filename='css/chat.css') }}"/>
+  <style>
+    .image-preview-container {
+        display: none;
+        padding: 10px 15px;
+        background: var(--light-bg);
+        border-top: 1px solid var(--border);
+    }
+    .preview-thumb {
+        height: 60px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+    }
+    .remove-image {
+        color: #ef4444;
+        cursor: pointer;
+        margin-left: 10px;
+        font-size: 1.2rem;
+    }
+    .upload-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 1.2rem;
+        cursor: pointer;
+        padding: 0 10px;
+        margin-top: 5px;
+        transition: color 0.2s;
+    }
+    .upload-btn:hover { color: var(--primary); }
+  </style>
 {% endblock %}
 
-{# FIX: Updated variable name from 'start_new_chat' to 'start_new' to match chat.py #}
 {% block body_attrs %}data-start-new="{{ start_new }}"{% endblock %}
 
-{# Override the default layout to match chat.css expectations #}
 {% block layout %}
   <div class="sidebar" id="sidebar">
     {% include "partials/sidebar.html" %}
@@ -29,13 +57,24 @@
     <div class="messages-container" id="messagesContainer"></div>
 
     <div class="typing-indicator" id="typingIndicator" style="display:none;">
-      <span></span>
-      <span></span>
-      <span></span>
+      <span></span><span></span><span></span>
     </div>
 
     <div class="chat-input-area">
-      <form id="messageForm" class="message-form">
+      <div id="imagePreviewContainer" class="image-preview-container">
+          <div style="display: flex; align-items: center;">
+              <img id="imagePreview" src="" class="preview-thumb">
+              <i class="fas fa-times-circle remove-image" id="removeImageBtn"></i>
+          </div>
+      </div>
+
+      <form id="messageForm" class="message-form" enctype="multipart/form-data">
+        <input type="file" id="imageInput" accept="image/*" style="display: none;">
+        
+        <button type="button" class="upload-btn" id="uploadBtn" title="Attach Image">
+            <i class="fas fa-paperclip"></i>
+        </button>
+
         <textarea id="messageInput"
                   class="message-input"
                   placeholder="Ask a question..."
@@ -47,10 +86,9 @@
       </form>
     </div>
   </div>
-
   {% endblock %}
 
 {% block extra_body %}
-  {{ super() }} {# <-- This loads main.js from base.html #}
+  {{ super() }} 
   <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
 {% endblock %}
