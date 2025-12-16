@@ -118,6 +118,7 @@ body {
   flex-direction: column;
   flex: 1;
   overflow: hidden;
+  position: relative; /* --- FIX 1: Added relative positioning for absolute child --- */
 }
 
 .menu-item {
@@ -903,13 +904,18 @@ body {
   }
 }
 
-/* Styles for Conversation History Loader */
+/* Styles for Conversation History Loader - FIXED CENTER POSITIONING */
 #conversationHistoryLoader {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 20px 0;
-  width: 100%;
+  background-color: var(--dark-bg);
+  z-index: 10;
 }
 
 .history-loader-spinner {

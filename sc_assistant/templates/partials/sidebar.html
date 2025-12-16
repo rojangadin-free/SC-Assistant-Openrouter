@@ -65,10 +65,12 @@
         <span>User Management</span>
       </div>
 
+      {#
       <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">
         <i class="fas fa-comments"></i>
         <span>Chatbot</span>
       </a>
+      #}
     {% endif %}
 
     {% if not user and active_page != 'chat' %}
