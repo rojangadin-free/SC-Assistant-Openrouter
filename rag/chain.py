@@ -1,118 +1,207 @@
-from langchain_pinecone import PineconeVectorStore
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
-from langchain.schema import Document
-# CORRECTED: Import Ranker and RerankRequest
-from flashrank import Ranker, RerankRequest
+
+# UPDATED IMPORTS: Added EnsembleRetriever
+from langchain_community.retrievers import PineconeHybridSearchRetriever
+from langchain.retrievers import EnsembleRetriever
+from pinecone_text.sparse import BM25Encoder
+
+from sentence_transformers import CrossEncoder
+
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
-from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, OPENROUTER_API_KEY, PINECONE_API_KEY
+from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, GOOGLE_API_KEY, PINECONE_API_KEY
 
-# ====== Vector Store ======
+# ====== Setup ======
 embeddings = get_local_embeddings()
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
-docsearch = PineconeVectorStore(index, embeddings)
-# Retrieve 7 documents initially for re-ranking
-retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 15})
 
-# ====== Re-ranker ======
-reranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+# --- 1. SETUP RETRIEVERS FOR RRF ---
 
-# ====== LLMs ======
-chatModel = ChatOpenAI(
-    model=CHAT_MODEL_NAME,
-    openai_api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-    temperature=0.7,
-    max_tokens=2048
+# Load BM25 params
+bm25_path = "bm25_values.json"
+if os.path.exists(bm25_path):
+    bm25 = BM25Encoder().load(bm25_path)
+else:
+    print("WARNING: bm25_values.json not found. Using default BM25.")
+    bm25 = BM25Encoder().default()
+
+# A. Sparse Retriever (Keyword Search only)
+# alpha=0.0 means 100% sparse score
+sparse_retriever = PineconeHybridSearchRetriever(
+    embeddings=embeddings,
+    sparse_encoder=bm25,
+    index=index,
+    top_k=10, 
+    alpha=0.0 
 )
 
-summarizer = ChatOpenAI(
+# B. Dense Retriever (Semantic Search only)
+# alpha=1.0 means 100% dense score
+dense_retriever = PineconeHybridSearchRetriever(
+    embeddings=embeddings,
+    sparse_encoder=bm25, # Required by class structure, even if unused for scoring
+    index=index,
+    top_k=10,
+    alpha=1.0
+)
+
+# C. Ensemble Retriever (Reciprocal Rank Fusion)
+# Combines the results of both retrievers using RRF
+retriever = EnsembleRetriever(
+    retrievers=[sparse_retriever, dense_retriever],
+    weights=[0.5, 0.5] # Equal weight to both strategies
+)
+
+# D. Cross-Encoder Reranker
+# Scores query+doc pairs together — much more accurate than bi-encoder alone.
+# Runs locally, no extra API cost. Reranks the RRF candidates down to top 6.
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+RERANK_TOP_K = 8
+
+
+def rerank_docs(query: str, docs: list) -> list:
+    """Score each retrieved doc against the query jointly, keep only the best."""
+    if not docs:
+        return docs
+    pairs = [(query, doc.page_content) for doc in docs]
+    scores = reranker.predict(pairs)
+    ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+    top_docs = [doc for _, doc in ranked[:RERANK_TOP_K]]
+    print(f"  Reranked {len(docs)} → top {len(top_docs)} docs")
+    return top_docs
+
+chatModel = ChatGoogleGenerativeAI(
+    model=CHAT_MODEL_NAME,
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0.3,  # Lower = more faithful to retrieved context, fewer hallucinations
+    max_tokens=None,
+    timeout=None,
+    max_retries=2
+)
+
+summarizer = ChatGoogleGenerativeAI(
     model=SUMMARIZER_MODEL_NAME,
-    openai_api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-    temperature=0.3,
-    max_tokens=512
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0
 )
 
 # ====== Chat State ======
 class ChatState(TypedDict):
     input: str
+    image_data: Optional[str]
     chat_history: List[Dict[str, str]]
     answer: str
 
 def docs_to_context(docs) -> str:
-    """Converts a list of documents to a string context."""
-    if not docs:
+    """
+    Format retrieved docs with explicit [DOCUMENT N] headers so the LLM
+    has unambiguous anchors to reference when generating [SOURCE:…] citations.
+    """
+    context_parts = []
+    for i, d in enumerate(docs):
+        source = d.metadata.get("source", "Unknown")
+        page = d.metadata.get("page", "?")
+        # Structured header gives the LLM a clear, parseable citation anchor
+        text = (
+            f"[DOCUMENT {i + 1}]\n"
+            f"Source: {source} | Page: {page}\n"
+            f"Content:\n{d.page_content}"
+        )
+        context_parts.append(text)
+    if not context_parts:
         return "No relevant context found."
-    return "\n\n".join([f"[{i+1}] {d.page_content}" for i, d in enumerate(docs)])
+    return "\n\n---\n\n".join(context_parts)
 
 def summarize_history(history: List[Dict[str, str]]) -> str:
-    """Summarizes the chat history."""
-    if not history:
-        return ""
+    if not history: return ""
     transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
     summary_prompt = [
-        {"role": "system", "content": "Summarize the following conversation. Keep it concise but preserve key facts, questions, and answers."},
+        {"role": "system", "content": "Summarize the conversation to retain key context."},
         {"role": "user", "content": transcript}
     ]
-    response = summarizer.invoke(summary_prompt)
-    return response.content
+    return summarizer.invoke(summary_prompt).content
 
-# ====== LangGraph Setup ======
+# ====== LangGraph ======
 def create_graph():
-    """Creates and compiles the LangGraph."""
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        # 1. Initial retrieval from Pinecone
-        initial_docs = retriever.invoke(state["input"])
+        user_text = state["input"]
+        image_data = state.get("image_data")
+        history = state.get("chat_history", [])
         
-        # 2. Re-ranking with FlashRank
-        if initial_docs:
-            passages = [{"id": i, "text": doc.page_content, "meta": doc.metadata} for i, doc in enumerate(initial_docs)]
-            
-            # CORRECTED: Create a RerankRequest object
-            rerank_request = RerankRequest(query=state["input"], passages=passages)
-            
-            # Pass the single request object and slice the result
-            reranked_passages = reranker.rerank(rerank_request)[:4]
-            
-            reranked_docs = [Document(page_content=p["text"], metadata=p["meta"]) for p in reranked_passages]
-        else:
-            reranked_docs = []
+        # Direct user input without rewriting
+        refined_query = user_text 
 
-        # 3. Use the re-ranked documents for context
-        retrieved_docs_context = docs_to_context(reranked_docs)
+        # --- 1. Image Analysis (Vision) ---
+        image_description = ""
+        if image_data:
+            vision_message = HumanMessage(content=[
+                {"type": "text", "text": "Transcribe any text in this image and describe the visual layout in detail."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+            ])
+            image_description = summarizer.invoke([vision_message]).content
+            print(f"Image Analysis: {image_description}")
 
-        history_for_state = state.get("chat_history", [])
-        history_for_llm = list(history_for_state)
+        # --- 2. Retrieval (Ensemble RRF) + Reranking ---
+        print(f"\n=== 🔍 STEP 1: Retrieval (Query: '{refined_query}') ===")
+        
+        # Ensemble RRF: merges sparse (BM25) + dense (semantic) candidates
+        initial_docs = retriever.invoke(refined_query)
+        print(f"  RRF returned {len(initial_docs)} candidates")
 
-        if len(history_for_llm) > 20:
-            summary = summarize_history(history_for_llm[:-5])
-            history_for_llm = [{"role": "system", "content": f"This is a summary of the preceding conversation: {summary}"}] + history_for_llm[-5:]
+        # Cross-encoder rerank: scores each doc against the query jointly
+        print(f"\n=== ⚖️  STEP 2: Reranking to top {RERANK_TOP_K} ===")
+        reranked_docs = rerank_docs(refined_query, initial_docs)
+        
+        # DEBUG: Print final docs sent to LLM
+        for i, doc in enumerate(reranked_docs):
+            src = doc.metadata.get("source", "Unknown")
+            pg = doc.metadata.get("page", "?")
+            snippet = doc.page_content.replace("\n", " ")[:80]
+            print(f"  [{i+1}] {src} (Pg {pg}): {snippet}...")
 
+        context_str = docs_to_context(reranked_docs)
+
+        # --- 3. History Management ---
+        if len(history) > 10:
+            summary = summarize_history(history[:-6])
+            history = [{"role": "system", "content": f"Previous conversation summary: {summary}"}] + history[-6:]
+
+        history_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
+
+        # --- 4. Answer Generation ---
         final_system_prompt = system_prompt.format(
-            retrieved_docs=retrieved_docs_context,
-            chat_history=""
+            retrieved_docs=context_str,
+            chat_history=history_str 
         )
-        final_messages_for_llm = [("system", final_system_prompt)]
-        for msg in history_for_llm:
-            final_messages_for_llm.append((msg['role'], msg['content']))
-        final_messages_for_llm.append(("human", state["input"]))
 
-        response = chatModel.invoke(final_messages_for_llm)
+        messages = [SystemMessage(content=final_system_prompt)]
+        
+        if image_data:
+            content_block = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+            ]
+            messages.append(HumanMessage(content=content_block))
+        else:
+            messages.append(HumanMessage(content=user_text))
 
-        updated_history = history_for_state + [
-            {"role": "user", "content": state["input"]},
+        response = chatModel.invoke(messages)
+
+        new_history = history + [
+            {"role": "user", "content": user_text + (" [Image Uploaded]" if image_data else "")},
             {"role": "assistant", "content": response.content}
         ]
-        return {"answer": response.content, "chat_history": updated_history}
+
+        return {"answer": response.content, "chat_history": new_history}
 
     graph.add_node("llm", call_llm)
     graph.set_entry_point("llm")

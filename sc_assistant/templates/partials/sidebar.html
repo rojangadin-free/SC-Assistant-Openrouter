@@ -1,3 +1,13 @@
+<div class="sidebar-header">
+  <div class="sidebar-logo-container">
+    <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="sidebar-logo">
+  </div>
+  <span class="samar-college-text">Samar Colleges, Inc.</span>
+  <button id="sidebarCollapseBtn" class="collapse-btn" title="Toggle Sidebar">
+    <i class="fa-solid fa-bars"></i>
+  </button>
+</div>
+
 <div class="sidebar-content">
   <div class="menu">
 
@@ -22,13 +32,19 @@
       {% endif %}
 
     {% elif active_page == 'settings' %}
-      <div class="new-chat-btn">
-        <i class="fas fa-arrow-left"></i>
-        <a href="{{ url_for('chat.chat_page') }}"
-           style="text-decoration: none; color: inherit; width: 100%;">
+      {# Dynamic Back Button Logic - Made entire button clickable #}
+      {% if origin == 'dashboard' %}
+        <a href="{{ url_for('admin.dashboard') }}" class="new-chat-btn" style="text-decoration: none;">
+          <i class="fas fa-arrow-left"></i>
+          <span>Back to Dashboard</span>
+        </a>
+      {% else %}
+        <a href="{{ url_for('chat.chat_page') }}" class="new-chat-btn" style="text-decoration: none;">
+          <i class="fas fa-arrow-left"></i>
           <span>Back to Chat</span>
         </a>
-      </div>
+      {% endif %}
+      
       <div class="menu-item active">
         <i class="fas fa-cog"></i>
         <span>Account</span>
@@ -50,12 +66,11 @@
         <span>User Management</span>
       </div>
 
-      <div class="menu-item">
+      <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">
         <i class="fas fa-comments"></i>
-        <a href="{{ url_for('chat.chat_page') }}" target="_blank" rel="noopener noreferrer">
-          <span>Chatbot</span>
-        </a>
-      </div>
+        <span>Chatbot</span>
+      </a>
+    
     {% endif %}
 
     {% if not user and active_page != 'chat' %}
@@ -82,9 +97,7 @@
         <i class="fas fa-envelope"></i>
         <span>{{ user.email }}</span>
       </a>
-      <a href="{{ url_for('settings.settings_page') }}"
-         class="dropdown-item"
-         id="settingsButton">
+      <a href="#" class="dropdown-item" id="settingsButton">
         <i class="fas fa-cog"></i>
         <span>Settings</span>
       </a>
