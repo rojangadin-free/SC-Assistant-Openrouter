@@ -18,11 +18,6 @@ $(document).ready(function() {
   const updateProfileForm = $('#updateProfileForm');
   const changePasswordForm = $('#changePasswordForm');
 
-  const deleteAccountBtn = $('#deleteAccountBtn');
-  const deleteAccountModal = $('#deleteAccountModal');
-  const confirmDeleteBtn = $('#confirmDeleteBtn');
-  const cancelDeleteBtn = $('#cancelDeleteBtn');
-
   // --- Error Message Helper ---
   function getErrorMessage(xhr, fallback) {
     try {
@@ -145,59 +140,6 @@ $(document).ready(function() {
       },
       complete: function() {
         submitBtn.prop('disabled', false).text(originalText);
-      }
-    });
-  });
-
-  // --- Delete Account Modal ---
-  deleteAccountBtn.on('click', function() {
-    deleteAccountModal.addClass('active');
-  });
-
-  cancelDeleteBtn.on('click', function() {
-    deleteAccountModal.removeClass('active');
-  });
-
-  deleteAccountModal.on('click', function(e) {
-    if ($(e.target).is('#deleteAccountModal')) {
-      deleteAccountModal.removeClass('active');
-    }
-  });
-
-  $(document).on('keydown', function(e) {
-    if (e.key === 'Escape' && deleteAccountModal.hasClass('active')) {
-      deleteAccountModal.removeClass('active');
-    }
-  });
-
-  confirmDeleteBtn.on('click', function() {
-    const originalText = confirmDeleteBtn.text();
-    confirmDeleteBtn.prop('disabled', true).text('Deleting...');
-    
-    $.ajax({
-      url: '/settings/delete-account', // Note: This URL is correct
-      method: 'DELETE',
-      success: function(response) {
-        const type = response.success ? 'success' : 'error';
-        const message = response.message || 'Account deletion request completed.';
-        
-        window.showNotification(message, type);
-        
-        if (response.success) {
-          setTimeout(() => {
-            window.location.href = '/auth'; // Go to auth page
-          }, 2000);
-        } else {
-          deleteAccountModal.removeClass('active');
-        }
-      },
-      error: function(xhr) {
-        const errorMsg = getErrorMessage(xhr, 'Failed to delete account. Please try again.');
-        window.showNotification(errorMsg, 'error');
-        deleteAccountModal.removeClass('active');
-      },
-      complete: function() {
-        confirmDeleteBtn.prop('disabled', false).text(originalText);
       }
     });
   });

@@ -1,7 +1,13 @@
 import boto3
+import hmac
+import hashlib
+import base64
 from botocore.exceptions import ClientError
 from jose import jwt
 from config import COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, AWS_REGION
+
+# Ensure you add COGNITO_CLIENT_SECRET to your config.py and .env
+from config import COGNITO_CLIENT_SECRET 
 
 cognito_client = boto3.client("cognito-idp", region_name=AWS_REGION)
 
@@ -19,6 +25,16 @@ COGNITO_ERROR_MESSAGES = {
     "LimitExceededException": "You have exceeded the limit for password reset attempts. Please try again later."
 }
 
+def get_secret_hash(username):
+    """Generates the SecretHash required for Cognito App Clients with a Client Secret."""
+    msg = username + COGNITO_CLIENT_ID
+    dig = hmac.new(
+        str(COGNITO_CLIENT_SECRET).encode('utf-8'),
+        msg.encode('utf-8'),
+        digestmod=hashlib.sha256
+    ).digest()
+    return base64.b64encode(dig).decode()
+
 def get_user_role_from_claims(id_token):
     """Decodes the user role from the JWT token."""
     decoded = jwt.get_unverified_claims(id_token)
@@ -30,13 +46,15 @@ def handle_cognito_error(e):
     return COGNITO_ERROR_MESSAGES.get(err_code, "An unexpected error occurred. Please try again.")
 
 def sign_up_user(username, email, password):
-    """Signs up a new user in Cognito."""
+    """Signs up a new user in Cognito using SecretHash."""
     if "@" in username or ' ' in username:
         return {"success": False, "message": "Username cannot be an email address or contain spaces."}
 
     try:
+        secret_hash = get_secret_hash(username)
         resp = cognito_client.sign_up(
             ClientId=COGNITO_CLIENT_ID,
+            SecretHash=secret_hash,
             Username=username,
             Password=password,
             UserAttributes=[
@@ -45,7 +63,8 @@ def sign_up_user(username, email, password):
                 {"Name": "custom:role", "Value": "user"}
             ]
         )
-        # Auto-confirm user for simplicity
+        
+        # Admin actions do NOT require SecretHash, but require Admin IAM permissions
         cognito_client.admin_confirm_sign_up(
             UserPoolId=COGNITO_USER_POOL_ID,
             Username=username
@@ -60,22 +79,29 @@ def sign_up_user(username, email, password):
         return {"success": False, "message": handle_cognito_error(e)}
 
 def login_user(identifier, password):
-    """Logs in a user and returns authentication tokens."""
+    """Logs in a user with SecretHash and returns authentication tokens."""
     try:
+        secret_hash = get_secret_hash(identifier)
         resp = cognito_client.initiate_auth(
             ClientId=COGNITO_CLIENT_ID,
             AuthFlow="USER_PASSWORD_AUTH",
-            AuthParameters={"USERNAME": identifier, "PASSWORD": password}
+            AuthParameters={
+                "USERNAME": identifier, 
+                "PASSWORD": password,
+                "SECRET_HASH": secret_hash
+            }
         )
         return {"success": True, "auth_result": resp["AuthenticationResult"]}
     except ClientError as e:
         return {"success": False, "message": handle_cognito_error(e)}
 
 def forgot_password(email):
-    """Initiates the forgot password flow for a user."""
+    """Initiates the forgot password flow with SecretHash."""
     try:
+        secret_hash = get_secret_hash(email)
         cognito_client.forgot_password(
             ClientId=COGNITO_CLIENT_ID,
+            SecretHash=secret_hash,
             Username=email
         )
         return {"success": True, "message": "If an account with that email exists, you will receive a code to reset your password."}
@@ -85,10 +111,12 @@ def forgot_password(email):
         return {"success": False, "message": handle_cognito_error(e)}
 
 def reset_password(email, code, new_password):
-    """Resets a user's password with a confirmation code."""
+    """Resets a user's password with a confirmation code and SecretHash."""
     try:
+        secret_hash = get_secret_hash(email)
         cognito_client.confirm_forgot_password(
             ClientId=COGNITO_CLIENT_ID,
+            SecretHash=secret_hash,
             Username=email,
             ConfirmationCode=code,
             Password=new_password

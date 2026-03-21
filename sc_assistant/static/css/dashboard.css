@@ -2,6 +2,8 @@
   /* Light theme variables */
   --primary: #1a73e8;
   --primary-dark: #1765cc;
+  --sc-green: #0d4503;
+  --sc-yellow: #ffc107;
   --secondary: #34a853;
   --accent: #fbbc05;
   --light-bg: #f8f9fa;
@@ -178,8 +180,8 @@ body {
 }
 
 .sidebar {
-  width: 260px;
-  background: var(--dark-bg);
+  width: 250px;
+  background: var(--sc-green);
   box-shadow: 2px 0 10px var(--shadow);
   display: flex;
   flex-direction: column;
@@ -214,7 +216,6 @@ body {
 .menu-item:hover {
   background: var(--menu-hover);
   color: white;
-  transform: translateX(5px);
 }
 
 .menu-item.active {
@@ -245,7 +246,7 @@ body {
 /* User Account Section - FIXED */
 .user-account-section {
   padding: 1rem;
-  background: var(--dark-bg);
+  background: var(--sc-green);
   flex-shrink: 0;
   position: relative; /* CRITICAL for positioning */
 }

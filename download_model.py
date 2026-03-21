@@ -1,21 +1,14 @@
-# download_model.py
+import os
+from sentence_transformers import SentenceTransformer
 
-# This script is designed to be run once during the deployment process
-# on Elastic Beanstalk. It ensures the sentence-transformer model is
-# downloaded and cached before the main application starts.
+def download_models():
+    # Must match the model name used in src/helper.py
+    model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    print(f"Downloading embedding model: {model_name}...")
+    # This initializes the model, which triggers the download to the local cache
+    SentenceTransformer(model_name)
+    print("Download complete.")
 
-print("---------------------------------------------------------")
-print("--- [Pre-flight] Starting Hugging Face model download ---")
-print("---------------------------------------------------------")
-
-# We import the function directly from the helper module.
-from src.helper import get_local_embeddings
-
-# Calling this function will trigger the download from Hugging Face
-# and save the model to the local cache on the EC2 instance.
-# Subsequent calls to this function in the main app will be instant.
-get_local_embeddings()
-
-print("-------------------------------------------------------")
-print("--- [Pre-flight] Hugging Face model download complete ---")
-print("-------------------------------------------------------")
+if __name__ == "__main__":
+    download_models()

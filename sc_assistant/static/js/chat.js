@@ -1,9 +1,6 @@
 /*
  * =========================================
  * CHAT-SPECIFIC JAVASCRIPT (chat.js)
- *
- * This file only contains logic for the
- * /chat page. Shared logic is in main.js.
  * =========================================
  */
 
@@ -25,6 +22,13 @@ $(document).ready(function() {
   const conversationList = $("#conversationList");
   const conversationLoader = $('#conversationLoader');
   const conversationHistoryLoader = $('#conversationHistoryLoader');
+
+  // --- Image Upload Elements ---
+  const imageInput = $('#imageInput');
+  const uploadBtn = $('#uploadBtn');
+  const previewContainer = $('#imagePreviewContainer');
+  const previewImg = $('#imagePreview');
+  const removeImageBtn = $('#removeImageBtn');
 
   let isNewConversation = true;
   let activeConversationId = null;
@@ -70,11 +74,113 @@ $(document).ready(function() {
   // --- End Mobile Fixes ---
 
 
+  // --- Image Upload Handlers ---
+  uploadBtn.on('click', function() {
+    imageInput.click();
+  });
+
+  imageInput.on('change', function() {
+    if (this.files && this.files[0]) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            previewImg.attr('src', e.target.result);
+            previewContainer.css('display', 'flex'); // Show preview
+        }
+        reader.readAsDataURL(this.files[0]);
+    }
+  });
+
+  removeImageBtn.on('click', function() {
+    imageInput.val('');
+    previewContainer.hide();
+  });
+
+
+  // --- Citation badge renderer ---
+  // 3-pass approach so marked.js never escapes the badge HTML:
+  //   1. Replace [SOURCE:…] with safe placeholders
+  //   2. Run marked.parse on placeholders
+  //   3. Swap placeholders back for final badge HTML
+  function renderCitations(rawText) {
+    const placeholders = [];
+
+    const withPlaceholders = rawText.replace(
+      /\[SOURCE:([^\]|]+)\|p\.([^\]]+)\]/g,
+      function(match, filename, page) {
+        const cleanPage = page.replace(/\.0$/, '').trim();
+        let label = filename.trim();
+        if (label.length > 35) {
+          label = label.substring(0, 32) + '…';
+        }
+        const displayText = (cleanPage && cleanPage !== '?')
+          ? `${label} p.${cleanPage}`
+          : label;
+        // data-source stores the raw filename so the click handler can fetch the URL
+        const badge = (
+          `<span class="citation-badge" ` +
+          `data-source="${filename.trim()}" ` +
+          `title="Click to view ${filename.trim()}, page ${cleanPage}">` +
+          `<i class="fas fa-file-alt"></i>&nbsp;${displayText}` +
+          `</span>`
+        );
+        const key = `CITATIONPLACEHOLDER${placeholders.length}END`;
+        placeholders.push({ key, badge });
+        return key;
+      }
+    );
+
+    let html = marked.parse(withPlaceholders);
+
+    placeholders.forEach(({ key, badge }) => {
+      html = html.split(key).join(badge);
+    });
+
+    return html;
+  }
+
+  // --- Citation click handler ---
+  // Uses the same /api/files/view-url/<filename> endpoint as the dashboard.
+  $(document).on('click', '.citation-badge', function() {
+    const filename = $(this).data('source');
+    if (!filename) return;
+
+    const $badge = $(this);
+    const originalHtml = $badge.html();
+
+    // Show loading spinner inside the badge while fetching
+    $badge.html('<i class="fas fa-spinner fa-spin"></i>&nbsp;Opening…').css('pointer-events', 'none');
+
+    $.get(`/api/files/view-url/${encodeURIComponent(filename)}`)
+      .done(function(response) {
+        if (response.success && response.url) {
+          window.open(response.url, '_blank');
+        } else {
+          window.showNotification('Could not open document.', 'error');
+        }
+      })
+      .fail(function() {
+        window.showNotification('Failed to fetch document link.', 'error');
+      })
+      .always(function() {
+        $badge.html(originalHtml).css('pointer-events', '');
+      });
+  });
+
   // --- Chat rendering helpers ---
-  function addMessage(content, isUser = false, autoScroll = true) {
-    const processedContent = isUser
-      ? content.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      : marked.parse(content);
+  function addMessage(content, isUser = false, autoScroll = true, hasImage = false) {
+    let processedContent = '';
+    
+    if (isUser) {
+       // Sanitize user input
+       processedContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+       if (hasImage) {
+           // Add a clean badge for the image
+           processedContent += ' <br><span style="font-size:0.85em; color:var(--text-secondary); display:inline-flex; align-items:center; margin-top:5px;"><i class="fas fa-paperclip" style="margin-right:4px;"></i> Image Attached</span>';
+       }
+    } else {
+       // Run citation rendering (which also calls marked.parse internally)
+       processedContent = renderCitations(content);
+    }
 
     const avatar = isUser
       ? '<div class="avatar"><i class="fas fa-user"></i></div>'
@@ -104,7 +210,13 @@ $(document).ready(function() {
 
     history.forEach(msg => {
       if (msg.role === 'system') return;
-      addMessage(msg.content, msg.role === 'user', false);
+      
+      // Clean up history tags
+      let content = msg.content;
+      const hasImageTag = content.includes('[Image Uploaded]');
+      content = content.replace(' [Image Uploaded]', '');
+      
+      addMessage(content, msg.role === 'user', false, hasImageTag);
     });
 
     if (messagesContainer.length > 0) {
@@ -153,17 +265,25 @@ $(document).ready(function() {
   }
 
   // --- Chat Send Logic ---
-  function sendMessage(message) {
+  function sendMessage(message, imageFile) {
     const requestIsNew = isNewConversation;
     const requestConvId = activeConversationId;
 
     typingIndicator.removeClass('fade-out').show();
 
+    // Prepare FormData
+    const formData = new FormData();
+    formData.append("msg", message);
+    if (imageFile) {
+        formData.append("image", imageFile);
+    }
+
     $.ajax({
-      url: '/chat/get', // Note: Updated URL
+      url: '/chat/get',
       type: 'POST',
-      data: { msg: message },
-      timeout: 30000,
+      data: formData,
+      processData: false,
+      contentType: false,
     })
       .done(function(data) {
         const responseConvId = data.new_conversation_created
@@ -196,9 +316,7 @@ $(document).ready(function() {
       })
       .fail(function() {
         if (requestConvId === activeConversationId) {
-          addMessage(
-            'Can you ask the question again? I am having trouble finding an answer to that question.'
-          );
+          addMessage('An error occurred.');
         }
       })
       .always(function(dataOrXhr, textStatus) {
@@ -217,25 +335,45 @@ $(document).ready(function() {
           typingIndicator.addClass('fade-out');
           setTimeout(() => typingIndicator.hide(), 300);
           sendButton.prop('disabled', false);
-          messageInput.prop('disabled', false).focus(); // Auto-focus here
+          messageInput.prop('disabled', false);
+          
+          if (window.innerWidth > 768) {
+            messageInput.focus();
+          }
         }
       });
   }
 
+  // --- Submit Handler ---
   messageForm.on('submit', function(e) {
     e.preventDefault();
     const message = messageInput.val().trim();
-    if (!message) return;
+    
+    // 1. Get file immediately
+    const hasImage = imageInput[0].files.length > 0;
+    const imageFile = hasImage ? imageInput[0].files[0] : null;
 
-    addMessage(message, true);
+    if (!message && !hasImage) return;
+
+    // 2. Add message to UI immediately
+    addMessage(message, true, true, hasImage);
+    
+    // 3. Clear Inputs & Preview IMMEDIATELY
     messageInput.val('').css('height', 'auto');
+    if (hasImage) {
+        imageInput.val(''); // Clear file input
+        previewContainer.hide(); // Hide preview box
+    }
+    
+    // 4. Disable controls
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
 
-    sendMessage(message);
+    // 5. Send
+    sendMessage(message, imageFile);
   });
 
-  // --- Conversation History Logic ---
+  // --- Conversation History Loading ---
   function loadConversations() {
     if (isHistoryLoading) return;
     isHistoryLoading = true;
@@ -243,7 +381,7 @@ $(document).ready(function() {
     conversationHistoryLoader.show();
     conversationList.empty();
 
-    $.getJSON('/chat/conversations') // Note: Updated URL
+    $.getJSON('/chat/conversations')
       .done(function(convs) {
         if (!convs || convs.length === 0) {
           conversationList.append(
@@ -303,9 +441,9 @@ $(document).ready(function() {
     messageInput.prop('disabled', true);
     typingIndicator.hide();
 
-    $.post(`/chat/conversation/${convId}/restore`) // Note: Updated URL
+    $.post(`/chat/conversation/${convId}/restore`)
       .done(function() {
-        $.getJSON(`/chat/conversation/${convId}`) // Note: Updated URL
+        $.getJSON(`/chat/conversation/${convId}`)
           .done(function(data) {
             renderChatHistory(data.messages);
           })
@@ -317,7 +455,11 @@ $(document).ready(function() {
           .always(function() {
             conversationLoader.hide();
             sendButton.prop('disabled', false);
-            messageInput.prop('disabled', false).focus(); // Auto-focus here
+            messageInput.prop('disabled', false);
+            
+            if (window.innerWidth > 768) {
+              messageInput.focus();
+            }
           });
       })
       .fail(function() {
@@ -326,7 +468,11 @@ $(document).ready(function() {
         );
         conversationLoader.hide();
         sendButton.prop('disabled', false);
-        messageInput.prop('disabled', false).focus(); // Auto-focus here
+        messageInput.prop('disabled', false);
+        
+        if (window.innerWidth > 768) {
+          messageInput.focus();
+        }
       });
   }
 
@@ -337,14 +483,19 @@ $(document).ready(function() {
   });
 
   function startNewChat() {
-    $.post('/chat/clear', function() { // Note: Updated URL
+    $.post('/chat/clear', function() {
       messagesContainer.empty();
       activeConversationId = null;
       isNewConversation = true;
       localStorage.removeItem('activeConversationId');
       applyActiveHighlight();
       sendButton.prop('disabled', false);
-      messageInput.prop('disabled', false).focus(); // Auto-focus here
+      messageInput.prop('disabled', false);
+      
+      if (window.innerWidth > 768) {
+        messageInput.focus();
+      }
+      
       typingIndicator.hide();
       conversationLoader.hide();
     });
@@ -359,7 +510,7 @@ $(document).ready(function() {
 
     if (confirm('Delete this conversation permanently?')) {
       $.ajax({
-        url: `/chat/conversation/${convId}/delete`, // Note: Updated URL
+        url: `/chat/conversation/${convId}/delete`,
         type: 'DELETE',
       }).done(function() {
         if (wasActive) startNewChat();
@@ -385,7 +536,6 @@ $(document).ready(function() {
     this.style.height = `${newHeight}px`;
   });
 
-  // --- Page Initialization ---
   function initializeChat() {
     const shouldStartNew =
       $('body').data('start-new') === true ||
@@ -400,7 +550,7 @@ $(document).ready(function() {
       if (savedConvId) {
         loadSpecificConversation(savedConvId);
       } else {
-        startNewChat(); // Default to a new chat if no saved ID
+        startNewChat();
       }
     }
     loadConversations();

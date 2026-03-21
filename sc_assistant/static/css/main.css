@@ -1,19 +1,15 @@
 /* =========================================
  * MAIN STYLESHEET (main.css)
- *
- * Contains all shared styles for:
- * 1. Theme Variables (:root)
- * 2. Global Styles (body, scrollbar)
- * 3. Shared Layout (header, sidebar, main-section)
- * 4. Shared Components (user menu, notification, modal)
- * 5. Shared Mobile Responsive Layout
  * ========================================= */
 
+/* ... (Keep Theme Variables & Global Styles the same) ... */
 /* 1. THEME VARIABLES */
 :root {
   /* Light theme variables */
   --primary: #1a73e8;
   --primary-dark: #1765cc;
+  --sc-green: #0d4503;
+  --sc-yellow: #ffc107;
   --secondary: #34a853;
   --accent: #fbbc05;
   --light-bg: #f8f9fa;
@@ -60,7 +56,6 @@
   --logout-hover: rgba(239, 68, 68, 0.3);
 }
 
-
 /* 2. GLOBAL STYLES */
 * {
   box-sizing: border-box;
@@ -79,7 +74,7 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Modern Scrollbar Styling */
+/* Modern Scrollbar Styling (Global) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -101,17 +96,95 @@ body {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
 }
 
-
 /* 3. SHARED LAYOUT (Sidebar, Header, Main) */
 .sidebar {
-  width: 260px;
-  background: var(--dark-bg);
+  width: 250px;
+  background: var(--sc-green);
   box-shadow: 2px 0 10px var(--shadow);
   display: flex;
   flex-direction: column;
   height: 100%;
   flex-shrink: 0;
   z-index: 1000;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* --- SIDEBAR SPECIFIC SCROLLBAR (IMPROVED COLOR) --- */
+/* Uses light transparency because sidebar is dark green */
+.sidebar .menu::-webkit-scrollbar,
+.sidebar .sidebar-content::-webkit-scrollbar {
+    width: 6px;
+}
+.sidebar .menu::-webkit-scrollbar-track,
+.sidebar .sidebar-content::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+.sidebar .menu::-webkit-scrollbar-thumb,
+.sidebar .sidebar-content::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2); /* Light scrollbar */
+    border-radius: 10px;
+}
+.sidebar .menu::-webkit-scrollbar-thumb:hover,
+.sidebar .sidebar-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.4);
+}
+/* Firefox fallback */
+.sidebar .menu,
+.sidebar .sidebar-content {
+    scrollbar-color: rgba(255, 255, 255, 0.2) rgba(0, 0, 0, 0.1);
+    scrollbar-width: thin;
+}
+
+/* --- Sidebar Header --- */
+.sidebar-header {
+  background: var(--sc-yellow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  height: 50px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #4b545c;
+  overflow: hidden; /* prevents overflow during collapse */
+}
+
+.sidebar-logo {
+  opacity: .8;
+  width: 29px;
+  height: 29px;
+  object-fit: contain;
+  transition: transform 0.3s ease;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, .19), 0 6px 6px rgba(0, 0, 0, .23) !important;
+  border-radius: 50%;
+}
+
+.samar-college-text {
+  color: #1f2d3d !important;
+  font-size: inherit;
+  font-weight: bolder;
+  line-height: 1.5;
+  white-space: nowrap; /* Prevent wrapping */
+  transition: opacity 0.2s; /* Smooth fade */
+}
+
+.collapse-btn {
+  background: transparent;
+  border: none;
+  color: var(--dark-bg);
+  cursor: pointer;
+  font-size: 1.1rem;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.collapse-btn:hover {
+  background: var(--menu-hover);
+  color: white;
 }
 
 .sidebar-content {
@@ -119,16 +192,21 @@ body {
   width: 100%;
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;       
+  flex-direction: column; 
+  overflow: hidden; /* Container hidden, inner menu scrolls */
 }
 
 .menu {
   display: flex;
   flex-direction: column;
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto; /* FIX: Allow scrolling */
+  overflow-x: hidden;
+  height: 100%;
 }
 
+/* --- Standard Menu Items --- */
 .menu-item {
   padding: 1rem 1.2rem;
   border-radius: 12px;
@@ -139,6 +217,7 @@ body {
   margin-bottom: 0.8rem;
   cursor: pointer;
   transition: all 0.3s ease;
+  white-space: nowrap;
 }
 
 .menu-item:hover {
@@ -154,7 +233,8 @@ body {
 .menu-item i {
   color: var(--accent);
   font-size: 1.2rem;
-  transition: all 0.3s ease;
+  min-width: 24px;
+  text-align: center;
 }
 
 .menu-item:hover i {
@@ -165,12 +245,122 @@ body {
   color: var(--sidebar-text);
   text-decoration: none;
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .menu-item:hover a {
   color: white;
 }
 
+/* --- Collapsed State Styles (Desktop Only) --- */
+.sidebar.collapsed {
+  width: 76px;
+}
+
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 1rem 0;
+  cursor: pointer; 
+}
+
+/* HIDE the Arrow Button when collapsed */
+.sidebar.collapsed .collapse-btn {
+  display: none;
+}
+
+/* HIDE the Text Title when collapsed (FIX) */
+.sidebar.collapsed .samar-college-text {
+  display: none;
+}
+
+/* SHOW and Center the Logo when collapsed */
+.sidebar.collapsed .sidebar-logo-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.sidebar.collapsed .sidebar-header:hover .sidebar-logo {
+  transform: scale(1.1);
+  opacity: 0.9;
+}
+
+/* Hide Text Labels & History when Collapsed */
+.sidebar.collapsed .menu-item span,
+.sidebar.collapsed .user-account-button span,
+.sidebar.collapsed .user-account-button .fa-chevron-up,
+.sidebar.collapsed .conversation-header,
+.sidebar.collapsed #conversationList,
+.sidebar.collapsed #conversationHistoryLoader,
+.sidebar.collapsed .new-chat-btn span,
+.sidebar.collapsed .menu-item a span {
+  display: none;
+}
+
+/* Center Icons in Collapsed Mode */
+.sidebar.collapsed .menu-item, 
+.sidebar.collapsed .user-account-button,
+.sidebar.collapsed .new-chat-btn {
+  justify-content: center;
+  padding: 1rem 0;
+  gap: 0;
+}
+
+.sidebar.collapsed .menu-item i,
+.sidebar.collapsed .new-chat-btn i {
+  font-size: 1.3rem;
+}
+
+.sidebar.collapsed .user-account-section {
+  padding: 1rem 0.5rem;
+}
+
+/* Collapsed Sidebar User Dropdown Override */
+.sidebar.collapsed .user-dropdown {
+  left: 10px; 
+  bottom: 100%;
+  margin-bottom: 12px;
+  width: 56px; 
+  min-width: 0; 
+  transform-origin: bottom left;
+  transform: translateY(10px) scale(0.95);
+  padding: 0.5rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.sidebar.collapsed .user-dropdown.show {
+  transform: translateY(0) scale(1);
+}
+
+.sidebar.collapsed .user-dropdown::before {
+  left: 50%; 
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* Hide text in dropdown items when collapsed */
+.sidebar.collapsed .dropdown-item span {
+  display: none;
+}
+
+/* Center icons in dropdown items when collapsed */
+.sidebar.collapsed .dropdown-item {
+  justify-content: center;
+  padding: 0.8rem 0;
+  width: 100%;
+}
+
+.sidebar.collapsed .dropdown-item i {
+  margin: 0;
+  font-size: 1.1rem;
+}
+/* --- End Collapsed State --- */
+
+/* ... (Keep the rest of the file: .main-section, .header, Components, etc.) ... */
 .main-section {
   flex: 1;
   display: flex;
@@ -250,6 +440,7 @@ body {
 
 
 /* 4. SHARED COMPONENTS (User Menu, Notification, Modal) */
+/* (Previous User Account, Notification, Modal styles remain unchanged) */
 
 /* User Account */
 .user-account-section {
@@ -275,6 +466,7 @@ body {
   font-size: 1rem;
   font-weight: 500;
   box-sizing: border-box;
+  white-space: nowrap;
 }
 
 .user-account-button:hover {
@@ -283,6 +475,8 @@ body {
 
 .user-account-button i:first-child {
   color: var(--primary);
+  min-width: 24px;
+  text-align: center;
 }
 
 .user-account-button i:last-child {
@@ -293,6 +487,7 @@ body {
   transform: rotate(180deg);
 }
 
+/* User Dropdown Default (Open Sidebar) */
 .user-dropdown {
   position: absolute;
   bottom: calc(100% - 10px);
@@ -311,6 +506,12 @@ body {
   overflow: hidden;
 }
 
+.user-dropdown.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
 .user-dropdown::before {
   content: '';
   position: absolute;
@@ -325,12 +526,7 @@ body {
   z-index: -1;
 }
 
-.user-dropdown.show {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(-50%) translateY(0) scale(1);
-}
-
+/* Dropdown Items */
 .dropdown-item {
   display: flex;
   align-items: center;
@@ -349,6 +545,38 @@ body {
   width: 20px;
   text-align: center;
   color: var(--text-secondary);
+}
+
+.citation-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(26, 115, 232, 0.08);
+    border: 1px solid rgba(26, 115, 232, 0.25);
+    color: var(--primary);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 0.75em;
+    font-weight: 500;
+    vertical-align: middle;
+    margin: 0 2px;
+    white-space: nowrap;
+    cursor: pointer;              /* ← was 'default' */
+    transition: background 0.2s, border-color 0.2s;
+}
+.citation-badge:hover {
+    background: rgba(26, 115, 232, 0.18);
+    border-color: rgba(26, 115, 232, 0.5);
+    text-decoration: underline;
+}
+.citation-badge i { font-size: 0.85em; opacity: 0.65; }
+[data-theme="dark"] .citation-badge {
+    background: rgba(138, 180, 248, 0.1);
+    border-color: rgba(138, 180, 248, 0.3);
+}
+[data-theme="dark"] .citation-badge:hover {
+    background: rgba(138, 180, 248, 0.22);
+    border-color: rgba(138, 180, 248, 0.6);
 }
 
 .dropdown-divider {
@@ -548,16 +776,22 @@ body {
   
   /* Mobile dropdown fix */
   .user-dropdown {
-    width: calc(100% - 2rem);
+    width: auto; /* Let it stretch */
     left: 1rem;
     right: 1rem;
+    bottom: 100%;
+    margin-bottom: 10px;
+    transform-origin: bottom center;
     transform: translateY(10px) scale(0.95);
   }
-  .user-dropdown::before {
-    left: 50%;
-  }
+  
   .user-dropdown.show {
     transform: translateY(0) scale(1);
+  }
+  
+  .user-dropdown::before {
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
   }
   
   /* Mobile overlay */
