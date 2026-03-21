@@ -89,4 +89,5 @@ jobs:
             -e COGNITO_CLIENT_ID="${{ secrets.COGNITO_CLIENT_ID }}" \
             -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
             -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
+            -e COGNITO_CLIENT_SECRET="${{ secrets.COGNITO_CLIENT_SECRET }}" \
             $IMAGE_URI
