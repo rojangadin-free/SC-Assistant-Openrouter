@@ -159,7 +159,8 @@ body {
 }
 
 .samar-college-text {
-  color: #1f2d3d !important;
+  color: #ffffff !important;
+  text-shadow: 1px 1px var(--dark-bg);
   font-size: inherit;
   font-weight: bolder;
   line-height: 1.5;
@@ -170,7 +171,7 @@ body {
 .collapse-btn {
   background: transparent;
   border: none;
-  color: var(--dark-bg);
+  color: var(--light-bg);
   cursor: pointer;
   font-size: 1.1rem;
   width: 32px;
@@ -474,7 +475,7 @@ body {
 }
 
 .user-account-button i:first-child {
-  color: var(--primary);
+  color: green;
   min-width: 24px;
   text-align: center;
 }

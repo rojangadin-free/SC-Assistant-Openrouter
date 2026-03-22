@@ -153,59 +153,127 @@ def _compute_remarks(gpa: float) -> str:
 
 def format_student_context(student: dict) -> str:
     """
-    Convert a student record into a plain-text block that the RAG
-    chain can include in the system prompt as personal context.
+    Convert a student record into a structured text block for the LLM.
+    Wrapped in <student_record> XML tags so the model always knows
+    exactly where the personal data is.
     """
     if not student:
         return ""
 
-    lines = [
-        "=== STUDENT PERSONAL ACADEMIC RECORD ===",
-        f"Name          : {student.get('full_name', 'N/A')}",
-        f"Student No.   : {student.get('student_number', 'N/A')}",
-        f"Program       : {student.get('program', 'N/A')}",
-        f"Year / Section: {student.get('year_level', 'N/A')} - {student.get('section', 'N/A')}",
-        f"Semester      : {student.get('semester', 'N/A')} Sem, S.Y. {student.get('school_year', 'N/A')}",
-        f"GPA           : {student.get('gpa', 'N/A')}",
-        f"Standing      : {student.get('remarks', 'N/A')}",
-        "",
-    ]
+    try:
+        lines = []
 
-    # Enrolled subjects
-    subjects = student.get("enrolled_subjects", [])
-    if subjects:
-        lines.append("ENROLLED SUBJECTS:")
-        lines.append(f"{'Code':<12} {'Subject':<45} {'Units':<6} {'Schedule':<25} Instructor")
-        lines.append("-" * 110)
-        for s in subjects:
+        # ── Header ────────────────────────────────────────────
+        lines += [
+            "<student_record>",
+            "STUDENT PERSONAL ACADEMIC RECORD",
+            f"Name          : {student.get('full_name', 'N/A')}",
+            f"Student No.   : {student.get('student_number', 'N/A')}",
+            f"Program       : {student.get('program', 'N/A')}",
+            f"Year / Section: {student.get('year_level', 'N/A')} - {student.get('section', 'N/A')}",
+            f"Semester      : {student.get('semester', 'N/A')} Sem, S.Y. {student.get('school_year', 'N/A')}",
+            f"GPA           : {student.get('gpa', 'N/A')}",
+            f"Standing      : {student.get('remarks', 'N/A')}",
+            "",
+        ]
+
+        # ── Enrolled subjects ──────────────────────────────────
+        subjects = student.get("enrolled_subjects", [])
+        if subjects:
+            lines.append("ENROLLED SUBJECTS:")
+            lines.append(f"  {'Code':<10} {'Subject':<42} {'Units':<6} {'Schedule':<22} Instructor")
+            lines.append("  " + "-" * 100)
+            for s in subjects:
+                lines.append(
+                    f"  {s.get('subject_code',''):<10} "
+                    f"{s.get('subject_name',''):<42} "
+                    f"{s.get('units',''):<6} "
+                    f"{s.get('schedule',''):<22} "
+                    f"{s.get('instructor','')}"
+                )
+            lines.append("")
+
+        # ── Grades ────────────────────────────────────────────
+        grade_list = student.get("grades", [])
+        if grade_list:
+            lines.append("GRADES THIS SEMESTER:")
             lines.append(
-                f"{s.get('subject_code',''):<12} "
-                f"{s.get('subject_name',''):<45} "
-                f"{s.get('units',''):<6} "
-                f"{s.get('schedule',''):<25} "
-                f"{s.get('instructor','')}"
+                f"  {'Code':<10} {'Subject':<38} "
+                f"{'Units':<6} {'Prelim':<8} {'Midterm':<9} "
+                f"{'SemiFinal':<11} {'Final':<7} {'Grade':<7} Remarks"
             )
-        lines.append("")
+            lines.append("  " + "-" * 110)
+            for g in grade_list:
+                lines.append(
+                    f"  {g.get('subject_code',''):<10} "
+                    f"{g.get('subject_name',''):<38} "
+                    f"{str(g.get('units','')):<6} "
+                    f"{str(g.get('prelim','')):<8} "
+                    f"{str(g.get('midterm','')):<9} "
+                    f"{str(g.get('semi_final','')):<11} "
+                    f"{str(g.get('final','')):<7} "
+                    f"{str(g.get('final_grade','')):<7} "
+                    f"{g.get('remarks','')}"
+                )
+            lines.append("")
 
-    # Grades
-    grade_list = student.get("grades", [])
-    if grade_list:
-        lines.append("GRADES THIS SEMESTER:")
-        lines.append(f"{'Code':<12} {'Subject':<40} {'Units':<6} {'Prelim':<8} {'Midterm':<9} {'SemiFinal':<11} {'Final':<7} {'Grade':<7} Remarks")
-        lines.append("-" * 120)
-        for g in grade_list:
-            lines.append(
-                f"{g.get('subject_code',''):<12} "
-                f"{g.get('subject_name',''):<40} "
-                f"{g.get('units',''):<6} "
-                f"{str(g.get('prelim','')):<8} "
-                f"{str(g.get('midterm','')):<9} "
-                f"{str(g.get('semi_final','')):<11} "
-                f"{str(g.get('final','')):<7} "
-                f"{str(g.get('final_grade','')):<7} "
-                f"{g.get('remarks','')}"
-            )
-        lines.append("")
+        # ── Tuition & Balance ──────────────────────────────────
+        if student.get("total_tuition"):
+            lines.append("TUITION FEES THIS SEMESTER:")
+            lines.append(f"  {'Code':<10} {'Subject':<42} Fee (PHP)")
+            lines.append("  " + "-" * 65)
+            for item in student.get("tuition_breakdown", []):
+                fee = int(item.get('fee', 0))
+                lines.append(
+                    f"  {item.get('subject_code',''):<10} "
+                    f"{item.get('subject_name',''):<42} "
+                    f"PHP {fee:,}"
+                )
+            lines.append("")
 
-    lines.append("=== END OF STUDENT RECORD ===")
-    return "\n".join(lines)
+            misc = student.get("misc_fees", {})
+            if misc:
+                lines.append("MISCELLANEOUS FEES:")
+                for fee_name, amount in misc.items():
+                    lines.append(f"  {fee_name:<30} PHP {int(amount):,}")
+                lines.append("")
+
+            lines += [
+                f"  Tuition Subtotal : PHP {int(student.get('tuition_subtotal', 0)):,}",
+                f"  Misc Subtotal    : PHP {int(student.get('misc_subtotal', 0)):,}",
+                f"  TOTAL ASSESSMENT : PHP {int(student.get('total_tuition', 0)):,}",
+                f"  Total Paid       : PHP {int(student.get('total_paid', 0)):,}",
+                f"  BALANCE DUE      : PHP {int(student.get('balance', 0)):,}",
+                f"  Payment Status   : {student.get('payment_status', 'N/A')}",
+                f"  Minimum Payment  : PHP {int(student.get('minimum_payment', 1500)):,}",
+                "",
+            ]
+
+            payments = student.get("payment_history", [])
+            if payments:
+                lines.append("PAYMENT HISTORY:")
+                lines.append(f"  {'Date':<12} {'Amount (PHP)':<15} {'Method':<16} Reference No.")
+                lines.append("  " + "-" * 60)
+                for p in payments:
+                    amt = int(p.get('amount', 0))
+                    lines.append(
+                        f"  {p.get('date',''):<12} "
+                        f"PHP {amt:<12,} "
+                        f"{p.get('payment_method',''):<16} "
+                        f"{p.get('reference_no','')}"
+                    )
+                lines.append("")
+
+        lines.append("</student_record>")
+        return "\n".join(lines)
+
+    except Exception as e:
+        # Never crash the chain — return what we have
+        print(f"[format_student_context] Error: {e}")
+        return (
+            "<student_record>\n"
+            f"Name: {student.get('full_name', 'N/A')}\n"
+            f"GPA: {student.get('gpa', 'N/A')}\n"
+            f"Balance: PHP {student.get('balance', 'N/A')}\n"
+            "</student_record>"
+        )

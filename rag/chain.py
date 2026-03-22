@@ -95,10 +95,10 @@ class ChatState(TypedDict):
     user_email: Optional[str]
 
 
-# Student record is fetched for EVERY logged-in user on every request.
-# The LLM decides whether to use it — no brittle keyword matching needed.
-# Cost: one DynamoDB GetItem per message (~1ms, negligible).
-_STUDENT_CACHE: dict = {}   # in-process cache: uid → record (cleared on restart)
+# No in-process cache — always fetch fresh from DynamoDB.
+# Caching caused stale records (e.g. missing tuition data after re-seeding)
+# to persist for the entire server lifetime. DynamoDB GetItem is ~1-2ms
+# so the performance cost is negligible.
 
 
 def docs_to_context(docs) -> str:
@@ -129,104 +129,151 @@ def summarize_history(history: List[Dict[str, str]]) -> str:
     return summarizer.invoke(prompt).content
 
 
+def safe_prompt(template: str, **kwargs) -> str:
+    """
+    Replace {placeholder} tokens manually instead of using str.format().
+
+    str.format() crashes with KeyError/IndexError whenever any of the
+    substituted values contain curly braces — e.g. grade tables, JSON
+    snippets in chat history, or student data like "GPA {2.5}".
+    Manual replacement is immune to that because it never parses the
+    *values*, only the template placeholders.
+    """
+    result = template
+    for key, value in kwargs.items():
+        result = result.replace("{" + key + "}", str(value) if value is not None else "")
+    return result
+    if not history:
+        return ""
+    transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+    prompt = [
+        {"role": "system", "content": "Summarize the conversation to retain key context."},
+        {"role": "user",   "content": transcript},
+    ]
+    return summarizer.invoke(prompt).content
+
+
 # ====== LangGraph ======
 def create_graph():
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        user_text  = state["input"]
-        image_data = state.get("image_data")
-        history    = state.get("chat_history", [])
-        uid        = state.get("uid")
-        user_email = state.get("user_email")
+        try:
+            user_text  = state["input"]
+            image_data = state.get("image_data")
+            history    = state.get("chat_history", [])
+            uid        = state.get("uid")
+            user_email = state.get("user_email")
 
-        # ── 1. Image Analysis ──────────────────────────────────
-        if image_data:
-            vision_msg = HumanMessage(content=[
-                {"type": "text",
-                 "text": "Transcribe any text in this image and describe the visual layout in detail."},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
-            ])
-            image_description = summarizer.invoke([vision_msg]).content
-            print(f"Image Analysis: {image_description}")
+            # ── 1. Image Analysis ──────────────────────────────────
+            if image_data:
+                vision_msg = HumanMessage(content=[
+                    {"type": "text",
+                     "text": "Transcribe any text in this image and describe the visual layout in detail."},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+                ])
+                try:
+                    image_description = summarizer.invoke([vision_msg]).content
+                    print(f"Image Analysis: {image_description}")
+                except Exception as e:
+                    print(f"Image analysis failed (non-fatal): {e}")
 
-        # ── 2. Always fetch student record for logged-in users ────
-        # No keyword guessing — the LLM sees the record on every turn
-        # and uses it only when the question warrants it.
-        student_context = ""
-        if uid:
-            # Check in-process cache first (avoids DynamoDB on every token)
-            if uid not in _STUDENT_CACHE:
-                student = get_student_by_uid(uid)
-                if not student and user_email:
-                    student = get_student_by_email(user_email)
-                _STUDENT_CACHE[uid] = student  # None is cached too (no record)
-                if student:
-                    print(f"  Student record fetched: {student.get('full_name')}")
-                else:
-                    print("  No student record found for this user.")
+            # ── 2. Always fetch student record fresh from DynamoDB ────
+            student_context = ""
+            if uid:
+                try:
+                    student = get_student_by_uid(uid)
+                    if not student and user_email:
+                        student = get_student_by_email(user_email)
+                    if student:
+                        print(f"  Student record fetched: {student.get('full_name')} "
+                              f"| balance: PHP {student.get('balance', 'N/A')}")
+                        student_context = format_student_context(student)
+                    else:
+                        print("  No student record found for this user.")
+                except Exception as e:
+                    print(f"  Student record fetch failed (non-fatal): {e}")
+
+            # ── 3. Retrieval ───────────────────────────────────────
+            print(f"\n=== STEP 1: Retrieval (Query: '{user_text}') ===")
+            try:
+                initial_docs = retriever.invoke(user_text)
+                print(f"  RRF returned {len(initial_docs)} candidates")
+            except Exception as e:
+                print(f"  Retrieval failed (non-fatal): {e}")
+                initial_docs = []
+
+            # ── 4. Reranking ───────────────────────────────────────
+            print(f"\n=== STEP 2: Reranking to top {RERANK_TOP_K} ===")
+            try:
+                reranked_docs = rerank_docs(user_text, initial_docs)
+                for i, doc in enumerate(reranked_docs):
+                    src     = doc.metadata.get("source", "Unknown")
+                    pg      = doc.metadata.get("page", "?")
+                    snippet = doc.page_content.replace("\n", " ")[:80]
+                    print(f"  [{i+1}] {src} (Pg {pg}): {snippet}...")
+            except Exception as e:
+                print(f"  Reranking failed (non-fatal): {e}")
+                reranked_docs = initial_docs[:RERANK_TOP_K]
+
+            context_str = docs_to_context(reranked_docs)
+
+            # ── 5. History management ──────────────────────────────
+            if len(history) > 10:
+                try:
+                    summary = summarize_history(history[:-6])
+                    history = [
+                        {"role": "system",
+                         "content": f"Previous conversation summary: {summary}"}
+                    ] + history[-6:]
+                except Exception as e:
+                    print(f"  History summarization failed (non-fatal): {e}")
+                    history = history[-6:]
+
+            history_str = "\n".join(
+                [f"{m['role'].upper()}: {m['content']}" for m in history]
+            )
+
+            # ── 6. Build final prompt (safe substitution) ──────────
+            # Uses safe_prompt() instead of .format() — immune to curly
+            # braces inside retrieved docs, student data, or chat history.
+            final_system_prompt = safe_prompt(
+                system_prompt,
+                retrieved_docs=context_str,
+                chat_history=history_str,
+                student_context=student_context,
+            )
+
+            messages = [SystemMessage(content=final_system_prompt)]
+
+            if image_data:
+                content_block = [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+                ]
+                messages.append(HumanMessage(content=content_block))
             else:
-                student = _STUDENT_CACHE[uid]
+                messages.append(HumanMessage(content=user_text))
 
-            if student:
-                student_context = format_student_context(student)
+            response = chatModel.invoke(messages)
 
-        # ── 3. Retrieval (Ensemble RRF) ────────────────────────
-        print(f"\n=== STEP 1: Retrieval (Query: '{user_text}') ===")
-        initial_docs = retriever.invoke(user_text)
-        print(f"  RRF returned {len(initial_docs)} candidates")
-
-        # ── 4. Reranking ───────────────────────────────────────
-        print(f"\n=== STEP 2: Reranking to top {RERANK_TOP_K} ===")
-        reranked_docs = rerank_docs(user_text, initial_docs)
-        for i, doc in enumerate(reranked_docs):
-            src     = doc.metadata.get("source", "Unknown")
-            pg      = doc.metadata.get("page", "?")
-            snippet = doc.page_content.replace("\n", " ")[:80]
-            print(f"  [{i+1}] {src} (Pg {pg}): {snippet}...")
-
-        context_str = docs_to_context(reranked_docs)
-
-        # ── 5. History management ──────────────────────────────
-        if len(history) > 10:
-            summary = summarize_history(history[:-6])
-            history = [
-                {"role": "system",
-                 "content": f"Previous conversation summary: {summary}"}
-            ] + history[-6:]
-
-        history_str = "\n".join(
-            [f"{m['role'].upper()}: {m['content']}" for m in history]
-        )
-
-        # ── 6. Build final prompt ──────────────────────────────
-        final_system_prompt = system_prompt.format(
-            retrieved_docs=context_str,
-            chat_history=history_str,
-            student_context=student_context,   # ← new placeholder
-        )
-
-        messages = [SystemMessage(content=final_system_prompt)]
-
-        if image_data:
-            content_block = [
-                {"type": "text", "text": user_text},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+            new_history = history + [
+                {"role": "user",      "content": user_text + (" [Image Uploaded]" if image_data else "")},
+                {"role": "assistant", "content": response.content},
             ]
-            messages.append(HumanMessage(content=content_block))
-        else:
-            messages.append(HumanMessage(content=user_text))
 
-        response = chatModel.invoke(messages)
+            return {"answer": response.content, "chat_history": new_history}
 
-        new_history = history + [
-            {"role": "user",      "content": user_text + (" [Image Uploaded]" if image_data else "")},
-            {"role": "assistant", "content": response.content},
-        ]
-
-        return {"answer": response.content, "chat_history": new_history}
+        except Exception as e:
+            # Top-level safety net — nothing should ever reach the user as a raw traceback
+            import traceback
+            print(f"[chain] Unhandled error: {traceback.format_exc()}")
+            return {
+                "answer": "I'm sorry, I encountered an issue processing your request. Please try rephrasing your question.",
+                "chat_history": state.get("chat_history", []),
+            }
 
     graph.add_node("llm", call_llm)
     graph.set_entry_point("llm")

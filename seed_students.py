@@ -44,7 +44,43 @@ INSTRUCTORS = [
     "Mr. Mendoza, C.", "Ms. Villanueva, S.", "Dr. Aquino, F.", "Prof. Dela Cruz, E.",
 ]
 
-# ── Subject catalogue per program (code, name, units) ────────
+# ── Tuition fee per subject (in PHP) ─────────────────────────
+# Based on typical SC rates: 3-unit academic subjects = 3,000-5,000
+# Lab/clinical subjects (nursing) = higher due to equipment/facilities
+# PE and NSTP = lower flat rate
+TUITION_PER_SUBJECT = {
+    # General Education
+    "GE001": 3000, "GE002": 3000, "GE003": 3200, "GE004": 3000,
+    "PE001":  800, "NSTP1": 500,
+    # BSIT
+    "IT101": 3500, "IT102": 3800, "IT201": 3800, "IT202": 3800,
+    "IT203": 4000, "IT301": 4200, "IT302": 3800, "IT303": 4000,
+    "IT401": 4200, "IT402": 4500,
+    # BSCS
+    "CS101": 3500, "CS102": 3800, "CS201": 3800, "CS202": 4000,
+    "CS203": 4000, "CS301": 4200, "CS302": 4000, "CS303": 4200,
+    "CS401": 4500, "CS402": 4800,
+    # BSEd
+    "ED101": 3200, "ED102": 3200, "ED201": 3500, "ED202": 3500,
+    "ED203": 3500, "ED301": 4000, "ED302": 5000,
+    "MATH1": 3000, "SCI01": 3200,
+    # BEEd
+    "EE101": 3200, "EE102": 3200, "EE201": 3500, "EE202": 3500,
+    "EE203": 3500, "EE301": 4000, "EE302": 5000,
+    # BSCrim
+    "CR101": 3200, "CR102": 3500, "CR201": 3500, "CR202": 3500,
+    "CR203": 3800, "CR301": 3500, "CR302": 3500, "CR401": 5000,
+    # BSBA
+    "BA101": 3200, "BA102": 3500, "BA201": 3500, "BA202": 3500,
+    "BA203": 3800, "BA301": 3500, "BA302": 3500, "BA401": 4000,
+    # BSN — higher due to clinical/lab components
+    "NUR101": 4500, "NUR102": 5500, "NUR201": 5500, "NUR202": 5500,
+    "NUR203": 4500, "NUR301": 5500, "NUR302": 5500, "NUR401": 4000,
+}
+DEFAULT_TUITION = 3500   # fallback for any unlisted subject
+MINIMUM_PAYMENT = 1500   # SC enrollment minimum payment policy
+
+
 SUBJECTS_BY_PROGRAM = {
     "BSIT": [
         ("IT101", "Introduction to Computing",          3),
@@ -232,6 +268,109 @@ def make_grade_entry(code: str, name: str, units: int, performance: str) -> dict
     }
 
 
+def generate_tuition_payments(enrolled_subjects: list) -> dict:
+    """
+    Build a tuition breakdown and randomized payment history.
+
+    Each subject has a fee. The student has made 1-3 payments totalling
+    at least the minimum payment (1,500) but possibly still has a balance.
+    Returns a dict with:
+      - tuition_breakdown : fee per subject
+      - total_tuition     : sum of all subject fees + misc fees
+      - total_paid        : how much the student has paid so far
+      - balance           : remaining amount due
+      - payment_history   : list of payment transactions
+      - payment_status    : "Fully Paid" | "Partial" | "Minimum Paid"
+    """
+    # Per-subject fees
+    breakdown = []
+    tuition_total = 0
+    for subj in enrolled_subjects:
+        code = subj["subject_code"]
+        fee  = TUITION_PER_SUBJECT.get(code, DEFAULT_TUITION)
+        breakdown.append({
+            "subject_code": code,
+            "subject_name": subj["subject_name"],
+            "fee":          str(fee),
+        })
+        tuition_total += fee
+
+    # Miscellaneous fees (registration, library, athletic, etc.)
+    misc_fees = {
+        "Registration Fee":  500,
+        "Library Fee":       300,
+        "Athletic Fee":      200,
+        "Development Fee":   400,
+        "Student ID Fee":    150,
+    }
+    misc_total = sum(misc_fees.values())
+    total_tuition = tuition_total + misc_total
+
+    # Randomize payment scenario
+    scenario = random.choices(
+        ["fully_paid", "partial_high", "partial_mid", "minimum"],
+        weights=[0.25, 0.30, 0.30, 0.15],
+    )[0]
+
+    if scenario == "fully_paid":
+        total_paid = total_tuition
+    elif scenario == "partial_high":
+        total_paid = random.randint(int(total_tuition * 0.6), int(total_tuition * 0.9))
+    elif scenario == "partial_mid":
+        total_paid = random.randint(int(total_tuition * 0.3), int(total_tuition * 0.6))
+    else:  # minimum
+        total_paid = random.randint(MINIMUM_PAYMENT, int(total_tuition * 0.3))
+
+    # Ensure always at least the minimum payment
+    total_paid = max(total_paid, MINIMUM_PAYMENT)
+    total_paid = min(total_paid, total_tuition)  # can't overpay
+    balance    = total_tuition - total_paid
+
+    # Build realistic payment history (1-3 transactions)
+    num_payments = 1 if scenario == "minimum" else random.randint(1, 3)
+    payments_left = total_paid
+    payment_history = []
+    dates = ["2024-08-05", "2024-08-20", "2024-09-10", "2024-09-25", "2024-10-15"]
+    used_dates = random.sample(dates, min(num_payments, len(dates)))
+    used_dates.sort()
+
+    for i, date in enumerate(used_dates):
+        if i == len(used_dates) - 1:
+            amount = payments_left   # last payment gets the remainder
+        else:
+            # Split roughly but always at least 500 per transaction
+            max_amt = payments_left - (500 * (len(used_dates) - i - 1))
+            amount  = random.randint(500, max(500, max_amt))
+        payments_left -= amount
+        payment_history.append({
+            "date":           date,
+            "amount":         str(amount),
+            "reference_no":   f"OR-{random.randint(100000, 999999)}",
+            "payment_method": random.choice(["Cash", "GCash", "Bank Transfer", "Cash"]),
+        })
+
+    # Payment status label
+    if balance == 0:
+        status = "Fully Paid"
+    elif total_paid <= MINIMUM_PAYMENT + 500:
+        status = "Minimum Paid"
+    else:
+        status = "Partial"
+
+    return {
+        "tuition_breakdown": breakdown,
+        "misc_fees":         {k: str(v) for k, v in misc_fees.items()},
+        "tuition_subtotal":  str(tuition_total),
+        "misc_subtotal":     str(misc_total),
+        "total_tuition":     str(total_tuition),
+        "total_paid":        str(total_paid),
+        "balance":           str(balance),
+        "payment_history":   payment_history,
+        "payment_status":    status,
+        "minimum_payment":   str(MINIMUM_PAYMENT),
+    }
+
+
 def build_student_record(
     student_id, student_number, full_name, email,
     program_code, year_level, section
@@ -297,6 +436,9 @@ def build_student_record(
     elif gpa <= 3.0:  standing = "Satisfactory"
     else:             standing = "Probationary"
 
+    # Generate tuition fees and payment history
+    tuition = generate_tuition_payments(enrolled_subjects)
+
     return {
         "student_id":        student_id,
         "student_number":    student_number,
@@ -312,6 +454,17 @@ def build_student_record(
         "grades":            grades,
         "gpa":               str(gpa),
         "remarks":           standing,
+        # ── Tuition & payments ──
+        "tuition_breakdown": tuition["tuition_breakdown"],
+        "misc_fees":         tuition["misc_fees"],
+        "tuition_subtotal":  tuition["tuition_subtotal"],
+        "misc_subtotal":     tuition["misc_subtotal"],
+        "total_tuition":     tuition["total_tuition"],
+        "total_paid":        tuition["total_paid"],
+        "balance":           tuition["balance"],
+        "payment_history":   tuition["payment_history"],
+        "payment_status":    tuition["payment_status"],
+        "minimum_payment":   tuition["minimum_payment"],
     }
 
 
@@ -358,11 +511,19 @@ def create_table_if_not_exists():
 def seed_students(table):
     random.seed(42)  # reproducible data
     print(f"\nSeeding {len(DUMMY_STUDENTS)} student records ...")
+    print(f"  {'Name':<30} {'Program':<8} {'Yr'} {'GPA':<6} {'Standing':<16} {'Total':<10} {'Paid':<10} {'Balance':<10} Status")
+    print(f"  {'-'*115}")
     for args in DUMMY_STUDENTS:
         record = build_student_record(*args)
         table.put_item(Item=record)
-        print(f"  ✓ {record['full_name']:<30} {record['program_code']:<8} "
-              f"Year {record['year_level']}  GPA {record['gpa']}  ({record['remarks']})")
+        print(
+            f"  ✓ {record['full_name']:<30} {record['program_code']:<8} "
+            f"Y{record['year_level']}  {record['gpa']:<6} ({record['remarks']:<14}) "
+            f"PHP {int(record['total_tuition']):>7,}  "
+            f"PHP {int(record['total_paid']):>7,}  "
+            f"PHP {int(record['balance']):>7,}  "
+            f"{record['payment_status']}"
+        )
     print("\nSeeding complete.")
 
 
