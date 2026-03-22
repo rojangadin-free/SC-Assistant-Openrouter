@@ -105,7 +105,7 @@ $(document).ready(function() {
     const placeholders = [];
 
     const withPlaceholders = rawText.replace(
-      /\[SOURCE:([^\]|]+)\|p\.([^\]]+)\]/g,
+      /\[SOURCE:\s*([^\]|]+?)\s*\|\s*p\.?\s*([^\]]+?)\s*\]/g,
       function(match, filename, page) {
         const cleanPage = page.replace(/\.0$/, '').trim();
         let label = filename.trim();
