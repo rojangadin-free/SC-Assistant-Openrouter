@@ -163,46 +163,45 @@ def get_or_create_cognito_user(student_number: str, full_name: str, email: str) 
 
 def link_cognito_sub_to_dynamo(seed_id: str, cognito_sub: str, email: str):
     """
-    Update the StudentRecords row so student_id = cognito_sub.
-    If the seed record exists under seed_id, copy it under cognito_sub
-    and delete the old seed entry.
+    1. Fetch the canonical seed record (has all tuition data).
+    2. Write it under the Cognito sub as the new student_id.
+    3. Delete the seed record AND any stale UUID duplicates for this email.
     """
-    if seed_id == cognito_sub:
-        return  # already linked (e.g. script run twice)
-
-    # Fetch existing record by seed id
+    # ── Always fetch the seed record by seed_id first ──────────
     resp = table.get_item(Key={"student_id": seed_id})
-    record = resp.get("Item")
+    seed_record = resp.get("Item")
 
-    if not record:
-        # Try fetching by email (GSI) in case it was already re-keyed
-        try:
-            resp2 = table.query(
-                IndexName="email-index",
-                KeyConditionExpression=boto3.dynamodb.conditions.Key("email").eq(email),
-            )
-            items = resp2.get("Items", [])
-            if items:
-                record = items[0]
-                if record["student_id"] == cognito_sub:
-                    print(f"    Already linked: {email}")
-                    return
-        except Exception:
-            pass
-
-    if not record:
-        print(f"    [WARN] No DynamoDB record found for seed_id={seed_id} / email={email}")
+    if not seed_record:
+        print(f"    [WARN] Seed record '{seed_id}' not found — re-run seed_students.py first.")
         return
 
-    # Write under the real Cognito sub
-    record["student_id"] = cognito_sub
-    table.put_item(Item=record)
+    # ── Write the full (tuition-included) record under Cognito sub ──
+    new_record = dict(seed_record)
+    new_record["student_id"] = cognito_sub
+    table.put_item(Item=new_record)
+    print(f"    Linked: {seed_id} → {cognito_sub}  "
+          f"(balance: PHP {new_record.get('balance', 'N/A')})")
 
-    # Remove the old seed-id entry only if it was different
-    if seed_id != cognito_sub:
-        table.delete_item(Key={"student_id": seed_id})
-
-    print(f"    DynamoDB student_id updated: {seed_id} → {cognito_sub}")
+    # ── Delete ALL records for this email EXCEPT the new Cognito one ──
+    # This removes the seed record + any previous stale UUID copies
+    try:
+        resp2 = table.query(
+            IndexName="email-index",
+            KeyConditionExpression=boto3.dynamodb.conditions.Key("email").eq(email),
+        )
+        for item in resp2.get("Items", []):
+            old_id = item["student_id"]
+            if old_id != cognito_sub:
+                table.delete_item(Key={"student_id": old_id})
+                print(f"    Deleted stale record: {old_id}")
+    except Exception as e:
+        print(f"    [WARN] Could not clean up stale records: {e}")
+        # Manual fallback: at least delete the seed record
+        if seed_id != cognito_sub:
+            try:
+                table.delete_item(Key={"student_id": seed_id})
+            except Exception:
+                pass
 
 
 def print_login_table(results: list):

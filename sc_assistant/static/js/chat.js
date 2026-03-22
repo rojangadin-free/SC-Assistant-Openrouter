@@ -106,15 +106,17 @@ $(document).ready(function() {
 
     // Build one badge and register its placeholder
     function makeBadge(filename, rawPage) {
-      const cleanPage = rawPage.replace(/\.0$/, '').trim();
+      const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
       const file = filename.trim();
       let label = file;
       if (label.length > 35) label = label.substring(0, 32) + '…';
+      // Only show page number if one exists
       const displayText = cleanPage ? `${label} p.${cleanPage}` : label;
+      const titleText   = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
       const badge = (
         `<span class="citation-badge" ` +
         `data-source="${file}" ` +
-        `title="Click to view ${file}, page ${cleanPage}">` +
+        `title="${titleText}">` +
         `<i class="fas fa-file-alt"></i>&nbsp;${displayText}` +
         `</span>`
       );
@@ -123,18 +125,17 @@ $(document).ready(function() {
       return key;
     }
 
-    // Handles every format the LLM produces:
-    //   [SOURCE:file.pdf|p.20]
-    //   [SOURCE: file.pdf | p. 79.0]
-    //   [SOURCE: file.pdf | Page: 123.0]
-    //   [SOURCE: file.pdf | Page: 20.0, 146.0]  ← multi-page
-    //   [SOURCE: file.pdf | pages 5, 6]
-    //   [SOURCE: file.pdf | 42]
+    // Two patterns handled:
+    // 1. With page:    [SOURCE: file.pdf | p.20]  [SOURCE: file.pdf | Page: 20.0, 146.0]
+    // 2. Without page: [SOURCE: file.docx]
     const withPlaceholders = rawText.replace(
-      /\[SOURCE:\s*([^\]|]+?)\s*\|\s*(?:pages?[:\s]*|p\.?\s*)?([\d.,\s]+?)\s*\]/gi,
+      /\[SOURCE:\s*([^\]|]+?)\s*(?:\|\s*(?:pages?[:\s]*|p\.?\s*)?([\d.,\s]+?))?\s*\]/gi,
       function(match, filename, pagesRaw) {
+        if (!pagesRaw || !pagesRaw.trim()) {
+          // No page number — single badge with just the filename
+          return makeBadge(filename, '');
+        }
         const pages = pagesRaw.split(',').map(p => p.trim()).filter(Boolean);
-        // One badge per page number, returned as joined placeholder keys
         return pages.map(p => makeBadge(filename, p)).join('');
       }
     );

@@ -158,7 +158,7 @@ def delete_file(filename):
 # --- NEW: Routes for View/Download ---
 @bp.route("/api/files/view-url/<filename>")
 def get_view_url(filename):
-    if not session.get("user") or not is_admin():
+    if not session.get("user"):
         return jsonify({"success": False, "message": "Unauthorized"}), 403
     try:
         url = get_s3_presigned_url(filename, for_download=False)
@@ -171,7 +171,7 @@ def get_view_url(filename):
 
 @bp.route("/api/files/download-url/<filename>")
 def get_download_url(filename):
-    if not session.get("user") or not is_admin():
+    if not session.get("user"):
         return jsonify({"success": False, "message": "Unauthorized"}), 403
     try:
         url = get_s3_presigned_url(filename, for_download=True)
