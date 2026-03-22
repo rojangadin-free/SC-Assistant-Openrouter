@@ -6,25 +6,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
 
-# UPDATED IMPORTS: Added EnsembleRetriever
 from langchain_community.retrievers import PineconeHybridSearchRetriever
 from langchain.retrievers import EnsembleRetriever
 from pinecone_text.sparse import BM25Encoder
-
 from sentence_transformers import CrossEncoder
 
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, GOOGLE_API_KEY, PINECONE_API_KEY
 
+# Student records
+from aws.students import get_student_by_uid, get_student_by_email, format_student_context
+
 # ====== Setup ======
 embeddings = get_local_embeddings()
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
 
-# --- 1. SETUP RETRIEVERS FOR RRF ---
-
-# Load BM25 params
+# --- Retrievers ---
 bm25_path = "bm25_values.json"
 if os.path.exists(bm25_path):
     bm25 = BM25Encoder().load(bm25_path)
@@ -32,65 +31,58 @@ else:
     print("WARNING: bm25_values.json not found. Using default BM25.")
     bm25 = BM25Encoder().default()
 
-# A. Sparse Retriever (Keyword Search only)
-# alpha=0.0 means 100% sparse score
 sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
-    top_k=10, 
-    alpha=0.0 
+    top_k=10,
+    alpha=0.0,
 )
 
-# B. Dense Retriever (Semantic Search only)
-# alpha=1.0 means 100% dense score
 dense_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
-    sparse_encoder=bm25, # Required by class structure, even if unused for scoring
+    sparse_encoder=bm25,
     index=index,
     top_k=10,
-    alpha=1.0
+    alpha=1.0,
 )
 
-# C. Ensemble Retriever (Reciprocal Rank Fusion)
-# Combines the results of both retrievers using RRF
 retriever = EnsembleRetriever(
     retrievers=[sparse_retriever, dense_retriever],
-    weights=[0.5, 0.5] # Equal weight to both strategies
+    weights=[0.5, 0.5],
 )
 
-# D. Cross-Encoder Reranker
-# Scores query+doc pairs together — much more accurate than bi-encoder alone.
-# Runs locally, no extra API cost. Reranks the RRF candidates down to top 6.
+# Cross-encoder reranker
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
 RERANK_TOP_K = 8
 
 
 def rerank_docs(query: str, docs: list) -> list:
-    """Score each retrieved doc against the query jointly, keep only the best."""
     if not docs:
         return docs
-    pairs = [(query, doc.page_content) for doc in docs]
+    pairs  = [(query, doc.page_content) for doc in docs]
     scores = reranker.predict(pairs)
     ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-    top_docs = [doc for _, doc in ranked[:RERANK_TOP_K]]
-    print(f"  Reranked {len(docs)} → top {len(top_docs)} docs")
-    return top_docs
+    top    = [doc for _, doc in ranked[:RERANK_TOP_K]]
+    print(f"  Reranked {len(docs)} → top {len(top)} docs")
+    return top
+
 
 chatModel = ChatGoogleGenerativeAI(
     model=CHAT_MODEL_NAME,
     google_api_key=GOOGLE_API_KEY,
-    temperature=0.3,  # Lower = more faithful to retrieved context, fewer hallucinations
+    temperature=0.3,
     max_tokens=None,
     timeout=None,
-    max_retries=2
+    max_retries=2,
 )
 
 summarizer = ChatGoogleGenerativeAI(
     model=SUMMARIZER_MODEL_NAME,
     google_api_key=GOOGLE_API_KEY,
-    temperature=0
+    temperature=0,
 )
+
 
 # ====== Chat State ======
 class ChatState(TypedDict):
@@ -98,18 +90,24 @@ class ChatState(TypedDict):
     image_data: Optional[str]
     chat_history: List[Dict[str, str]]
     answer: str
+    # Optional — injected per request, not stored in LangGraph state
+    uid: Optional[str]
+    user_email: Optional[str]
+
+
+# Student record is fetched for EVERY logged-in user on every request.
+# The LLM decides whether to use it — no brittle keyword matching needed.
+# Cost: one DynamoDB GetItem per message (~1ms, negligible).
+_STUDENT_CACHE: dict = {}   # in-process cache: uid → record (cleared on restart)
+
 
 def docs_to_context(docs) -> str:
-    """
-    Format retrieved docs with explicit [DOCUMENT N] headers so the LLM
-    has unambiguous anchors to reference when generating [SOURCE:…] citations.
-    """
+    """Format retrieved docs with clear citation anchors."""
     context_parts = []
     for i, d in enumerate(docs):
         source = d.metadata.get("source", "Unknown")
-        page = d.metadata.get("page", "?")
-        # Structured header gives the LLM a clear, parseable citation anchor
-        text = (
+        page   = d.metadata.get("page", "?")
+        text   = (
             f"[DOCUMENT {i + 1}]\n"
             f"Source: {source} | Page: {page}\n"
             f"Content:\n{d.page_content}"
@@ -119,76 +117,103 @@ def docs_to_context(docs) -> str:
         return "No relevant context found."
     return "\n\n---\n\n".join(context_parts)
 
+
 def summarize_history(history: List[Dict[str, str]]) -> str:
-    if not history: return ""
+    if not history:
+        return ""
     transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
-    summary_prompt = [
+    prompt = [
         {"role": "system", "content": "Summarize the conversation to retain key context."},
-        {"role": "user", "content": transcript}
+        {"role": "user",   "content": transcript},
     ]
-    return summarizer.invoke(summary_prompt).content
+    return summarizer.invoke(prompt).content
+
 
 # ====== LangGraph ======
 def create_graph():
     graph = StateGraph(ChatState)
 
     def call_llm(state: ChatState):
-        user_text = state["input"]
+        user_text  = state["input"]
         image_data = state.get("image_data")
-        history = state.get("chat_history", [])
-        
-        # Direct user input without rewriting
-        refined_query = user_text 
+        history    = state.get("chat_history", [])
+        uid        = state.get("uid")
+        user_email = state.get("user_email")
 
-        # --- 1. Image Analysis (Vision) ---
-        image_description = ""
+        # ── 1. Image Analysis ──────────────────────────────────
         if image_data:
-            vision_message = HumanMessage(content=[
-                {"type": "text", "text": "Transcribe any text in this image and describe the visual layout in detail."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+            vision_msg = HumanMessage(content=[
+                {"type": "text",
+                 "text": "Transcribe any text in this image and describe the visual layout in detail."},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
             ])
-            image_description = summarizer.invoke([vision_message]).content
+            image_description = summarizer.invoke([vision_msg]).content
             print(f"Image Analysis: {image_description}")
 
-        # --- 2. Retrieval (Ensemble RRF) + Reranking ---
-        print(f"\n=== 🔍 STEP 1: Retrieval (Query: '{refined_query}') ===")
-        
-        # Ensemble RRF: merges sparse (BM25) + dense (semantic) candidates
-        initial_docs = retriever.invoke(refined_query)
+        # ── 2. Always fetch student record for logged-in users ────
+        # No keyword guessing — the LLM sees the record on every turn
+        # and uses it only when the question warrants it.
+        student_context = ""
+        if uid:
+            # Check in-process cache first (avoids DynamoDB on every token)
+            if uid not in _STUDENT_CACHE:
+                student = get_student_by_uid(uid)
+                if not student and user_email:
+                    student = get_student_by_email(user_email)
+                _STUDENT_CACHE[uid] = student  # None is cached too (no record)
+                if student:
+                    print(f"  Student record fetched: {student.get('full_name')}")
+                else:
+                    print("  No student record found for this user.")
+            else:
+                student = _STUDENT_CACHE[uid]
+
+            if student:
+                student_context = format_student_context(student)
+
+        # ── 3. Retrieval (Ensemble RRF) ────────────────────────
+        print(f"\n=== STEP 1: Retrieval (Query: '{user_text}') ===")
+        initial_docs = retriever.invoke(user_text)
         print(f"  RRF returned {len(initial_docs)} candidates")
 
-        # Cross-encoder rerank: scores each doc against the query jointly
-        print(f"\n=== ⚖️  STEP 2: Reranking to top {RERANK_TOP_K} ===")
-        reranked_docs = rerank_docs(refined_query, initial_docs)
-        
-        # DEBUG: Print final docs sent to LLM
+        # ── 4. Reranking ───────────────────────────────────────
+        print(f"\n=== STEP 2: Reranking to top {RERANK_TOP_K} ===")
+        reranked_docs = rerank_docs(user_text, initial_docs)
         for i, doc in enumerate(reranked_docs):
-            src = doc.metadata.get("source", "Unknown")
-            pg = doc.metadata.get("page", "?")
+            src     = doc.metadata.get("source", "Unknown")
+            pg      = doc.metadata.get("page", "?")
             snippet = doc.page_content.replace("\n", " ")[:80]
             print(f"  [{i+1}] {src} (Pg {pg}): {snippet}...")
 
         context_str = docs_to_context(reranked_docs)
 
-        # --- 3. History Management ---
+        # ── 5. History management ──────────────────────────────
         if len(history) > 10:
             summary = summarize_history(history[:-6])
-            history = [{"role": "system", "content": f"Previous conversation summary: {summary}"}] + history[-6:]
+            history = [
+                {"role": "system",
+                 "content": f"Previous conversation summary: {summary}"}
+            ] + history[-6:]
 
-        history_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
+        history_str = "\n".join(
+            [f"{m['role'].upper()}: {m['content']}" for m in history]
+        )
 
-        # --- 4. Answer Generation ---
+        # ── 6. Build final prompt ──────────────────────────────
         final_system_prompt = system_prompt.format(
             retrieved_docs=context_str,
-            chat_history=history_str 
+            chat_history=history_str,
+            student_context=student_context,   # ← new placeholder
         )
 
         messages = [SystemMessage(content=final_system_prompt)]
-        
+
         if image_data:
             content_block = [
                 {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
             ]
             messages.append(HumanMessage(content=content_block))
         else:
@@ -197,8 +222,8 @@ def create_graph():
         response = chatModel.invoke(messages)
 
         new_history = history + [
-            {"role": "user", "content": user_text + (" [Image Uploaded]" if image_data else "")},
-            {"role": "assistant", "content": response.content}
+            {"role": "user",      "content": user_text + (" [Image Uploaded]" if image_data else "")},
+            {"role": "assistant", "content": response.content},
         ]
 
         return {"answer": response.content, "chat_history": new_history}
@@ -207,5 +232,6 @@ def create_graph():
     graph.set_entry_point("llm")
     graph.add_edge("llm", END)
     return graph.compile(checkpointer=InMemorySaver())
+
 
 app_graph = create_graph()
