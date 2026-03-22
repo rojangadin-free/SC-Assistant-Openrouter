@@ -104,28 +104,38 @@ $(document).ready(function() {
   function renderCitations(rawText) {
     const placeholders = [];
 
+    // Build one badge and register its placeholder
+    function makeBadge(filename, rawPage) {
+      const cleanPage = rawPage.replace(/\.0$/, '').trim();
+      const file = filename.trim();
+      let label = file;
+      if (label.length > 35) label = label.substring(0, 32) + '…';
+      const displayText = cleanPage ? `${label} p.${cleanPage}` : label;
+      const badge = (
+        `<span class="citation-badge" ` +
+        `data-source="${file}" ` +
+        `title="Click to view ${file}, page ${cleanPage}">` +
+        `<i class="fas fa-file-alt"></i>&nbsp;${displayText}` +
+        `</span>`
+      );
+      const key = `CITATIONPLACEHOLDER${placeholders.length}END`;
+      placeholders.push({ key, badge });
+      return key;
+    }
+
+    // Handles every format the LLM produces:
+    //   [SOURCE:file.pdf|p.20]
+    //   [SOURCE: file.pdf | p. 79.0]
+    //   [SOURCE: file.pdf | Page: 123.0]
+    //   [SOURCE: file.pdf | Page: 20.0, 146.0]  ← multi-page
+    //   [SOURCE: file.pdf | pages 5, 6]
+    //   [SOURCE: file.pdf | 42]
     const withPlaceholders = rawText.replace(
-      /\[SOURCE:\s*([^\]|]+?)\s*\|\s*p\.?\s*([^\]]+?)\s*\]/g,
-      function(match, filename, page) {
-        const cleanPage = page.replace(/\.0$/, '').trim();
-        let label = filename.trim();
-        if (label.length > 35) {
-          label = label.substring(0, 32) + '…';
-        }
-        const displayText = (cleanPage && cleanPage !== '?')
-          ? `${label} p.${cleanPage}`
-          : label;
-        // data-source stores the raw filename so the click handler can fetch the URL
-        const badge = (
-          `<span class="citation-badge" ` +
-          `data-source="${filename.trim()}" ` +
-          `title="Click to view ${filename.trim()}, page ${cleanPage}">` +
-          `<i class="fas fa-file-alt"></i>&nbsp;${displayText}` +
-          `</span>`
-        );
-        const key = `CITATIONPLACEHOLDER${placeholders.length}END`;
-        placeholders.push({ key, badge });
-        return key;
+      /\[SOURCE:\s*([^\]|]+?)\s*\|\s*(?:pages?[:\s]*|p\.?\s*)?([\d.,\s]+?)\s*\]/gi,
+      function(match, filename, pagesRaw) {
+        const pages = pagesRaw.split(',').map(p => p.trim()).filter(Boolean);
+        // One badge per page number, returned as joined placeholder keys
+        return pages.map(p => makeBadge(filename, p)).join('');
       }
     );
 
