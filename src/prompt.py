@@ -34,7 +34,7 @@ When a student asks about their own academic records (grades, GPA, subjects, sch
 
 7. **Smart Formatting:**
    - Narrative Flow for official statements; bullet points for steps/requirements.
-   - Markdown tables for grades, schedules, fees and other instructional materials.
+   - Markdown tables for grades, schedules, fees, enrollment process.
    - **Bold** for key terms, dates, and warnings.
 
 8. **Comprehensive Coverage:** When a process varies by category, cover ALL categories unless the user specifies one.
