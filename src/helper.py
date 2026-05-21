@@ -250,11 +250,17 @@ def get_vision_client() -> ChatGoogleGenerativeAI:
     return _VISION_CLIENT
 
 
-def encode_image(image: Image.Image) -> str:
+def encode_image(img: Image.Image) -> str:
+    """
+    Convert a PIL Image to a plain base64 string (no data URI prefix).
+    Gemini expects raw base64 bytes — NOT 'data:image/jpeg;base64,...'.
+    RGBA/P mode images are converted to RGB first to ensure JPEG compatibility.
+    """
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+ 
     buf = io.BytesIO()
-    if image.mode in ("RGBA", "P"):
-        image = image.convert("RGB")
-    image.save(buf, format="JPEG", quality=90, optimize=True)
+    img.save(buf, format="JPEG", quality=90)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 

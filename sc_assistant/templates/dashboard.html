@@ -140,6 +140,87 @@
       </div>
     </div>
 
+    <!-- Reports Section -->
+    <div id="reportsSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromReports">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Student Reports</h2>
+      </div>
+
+      <div style="background:var(--card-bg);border-radius:12px;box-shadow:0 4px 12px var(--shadow);overflow:hidden;">
+
+        <!-- Filter Tabs -->
+        <div style="display:flex;gap:.5rem;padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;">
+          <button class="report-filter-btn active" data-filter="pending"
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            Pending <span id="rbadge-pending" style="background:#ef4444;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+          </button>
+          <button class="report-filter-btn" data-filter="done"
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            Done <span id="rbadge-done" style="background:#22c55e;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+          </button>
+          <button class="report-filter-btn" data-filter="ignored"
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            Ignored <span id="rbadge-ignored" style="background:#94a3b8;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+          </button>
+          <button class="report-filter-btn" data-filter="all"
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;transition:all .15s;">
+            All
+          </button>
+        </div>
+
+        <!-- Table -->
+        <div style="width:100%;overflow-x:auto;">
+          <table id="reportsTable" style="width:100%;border-collapse:collapse;font-size:.875rem;">
+            <thead>
+              <tr style="background:var(--light-bg);">
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Date</th>
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Student</th>
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Reason</th>
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Message Snippet</th>
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Status</th>
+                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="reportsTbody">
+              <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+                <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading…
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report Detail Modal -->
+    <div class="confirm-dialog" id="reportDetailModal">
+      <div class="confirm-box" style="max-width:520px;">
+        <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Report Detail</span>
+          <button id="closeReportDetailBtn" style="background:none;border:none;font-size:1.4rem;color:var(--text-secondary);cursor:pointer;">&times;</button>
+        </h3>
+        <div style="display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem;">
+          <div style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Student</span><span id="rd-email">—</span></div>
+          <div style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Date</span><span id="rd-date">—</span></div>
+          <div style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Reason</span><span id="rd-reason">—</span></div>
+          <div id="rd-other-row" style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Details</span><span id="rd-other">—</span></div>
+          <div style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Status</span><span id="rd-status">—</span></div>
+        </div>
+        <div style="background:var(--light-bg);border-radius:8px;padding:.9rem;border:1px solid var(--border);margin-bottom:1.25rem;">
+          <div style="font-size:.72rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.4rem;">AI Response Snippet</div>
+          <div id="rd-snippet" style="font-size:.875rem;color:var(--text-secondary);font-style:italic;line-height:1.5;max-height:110px;overflow-y:auto;">—</div>
+        </div>
+        <div class="confirm-buttons" id="rdActions">
+          <button class="confirm-button cancel-button" id="cancelReportDetailBtn">Cancel</button>
+          <button id="rdIgnoreBtn" style="padding:.5rem 1rem;border-radius:8px;border:1px solid var(--border);background:var(--light-bg);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-ban"></i> Ignore</button>
+          <button id="rdDoneBtn" style="padding:.5rem 1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-check"></i> Mark Done</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Edit User Modal -->
     <div class="confirm-dialog" id="editUserModal">
       <div class="confirm-box" id="editUserBox" style="max-width: 500px;">
@@ -181,6 +262,153 @@
   {% endblock %}
 
 {% block extra_body %}
-  {{ super() }} {# <-- Loads main.js #}
+  {{ super() }}
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  <script>
+  // ── Reports section wiring (runs after dashboard.js) ────────────
+  $(function() {
+
+    // Hook into existing showSection from dashboard.js
+    const _origShowSection = window._dashShowSection || null;
+
+    function showReportsSection() {
+      // Hide all dashboard sections
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#reportsSection').addClass('active');
+      $('#reportsMenuItem').addClass('active');
+      $('.header-left span').text('Reports');
+      loadReports();
+    }
+
+    // Sidebar Reports click
+    $('#reportsMenuItem').on('click', showReportsSection);
+
+    // Back button inside Reports section
+    $(document).on('click', '#backToOverviewFromReports', function() {
+      // Delegate back to dashboard.js showSection
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    // ── Filter tabs ──────────────────────────────────────────────
+    let allReports   = [];
+    let currentRFilter = 'pending';
+
+    $(document).on('click', '.report-filter-btn', function() {
+      $('.report-filter-btn').css({ background: 'var(--card-bg)', color: 'var(--text-secondary)', borderColor: 'var(--border)' });
+      $(this).css({ background: '#6366f1', color: '#fff', borderColor: '#6366f1' });
+      currentRFilter = $(this).data('filter');
+      renderReports();
+    });
+
+    function loadReports() {
+      $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading…</td></tr>');
+      $.getJSON('/admin/reports/api/list', function(data) {
+        allReports = data;
+        const p = data.filter(r => r.status === 'pending').length;
+        const d = data.filter(r => r.status === 'done').length;
+        const i = data.filter(r => r.status === 'ignored').length;
+        $('#rbadge-pending').text(p);
+        $('#rbadge-done').text(d);
+        $('#rbadge-ignored').text(i);
+        // Sidebar badge
+        if (p > 0) { $('#sidebarReportBadge').text(p).show(); }
+        else        { $('#sidebarReportBadge').hide(); }
+        renderReports();
+      }).fail(function() {
+        $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:2rem;">Failed to load reports.</td></tr>');
+      });
+    }
+
+    function formatRDate(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+           + ' ' + d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function renderReports() {
+      const filtered = currentRFilter === 'all'
+        ? allReports
+        : allReports.filter(r => r.status === currentRFilter);
+
+      if (!filtered.length) {
+        $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2.5rem;">No reports found.</td></tr>');
+        return;
+      }
+
+      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--light-bg);color:var(--text-secondary)' };
+      const rows = filtered.map(r => {
+        const snippet = (r.msg_snippet || '').substring(0, 70) + ((r.msg_snippet||'').length > 70 ? '…' : '');
+        const reason  = r.reason === 'Others' && r.other_text ? 'Others: ' + r.other_text.substring(0,35) : (r.reason || '—');
+        const st      = statusStyle[r.status] || '';
+        const isPending = r.status === 'pending';
+        return `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:.75rem 1rem;white-space:nowrap;color:var(--text-primary);">${formatRDate(r.created_at)}</td>
+          <td style="padding:.75rem 1rem;color:var(--text-primary);">${r.reporter_email||'—'}</td>
+          <td style="padding:.75rem 1rem;color:var(--text-primary);">${reason}</td>
+          <td style="padding:.75rem 1rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary);font-style:italic;font-size:.82rem;" title="${(r.msg_snippet||'').replace(/"/g,'&quot;')}">${snippet||'—'}</td>
+          <td style="padding:.75rem 1rem;"><span style="display:inline-block;padding:.2rem .65rem;border-radius:999px;font-size:.75rem;font-weight:600;${st};">${r.status}</span></td>
+          <td style="padding:.75rem 1rem;">
+            <button class="file-action r-view-btn" data-id="${r.report_id}" title="View" style="color:var(--primary);"><i class="fas fa-eye"></i></button>
+            ${isPending ? `
+            <button class="file-action r-done-btn" data-id="${r.report_id}" title="Mark Done" style="color:#15803d;margin-left:4px;"><i class="fas fa-check"></i></button>
+            <button class="file-action r-ignore-btn" data-id="${r.report_id}" title="Ignore" style="color:var(--text-secondary);margin-left:4px;"><i class="fas fa-ban"></i></button>` : ''}
+          </td>
+        </tr>`;
+      });
+      $('#reportsTbody').html(rows.join(''));
+    }
+
+    // ── Inline action buttons ────────────────────────────────────
+    $(document).on('click', '.r-done-btn',   function() { resolveReport($(this).data('id'), 'done'); });
+    $(document).on('click', '.r-ignore-btn', function() { resolveReport($(this).data('id'), 'ignored'); });
+    $(document).on('click', '.r-view-btn',   function() { openReportDetail($(this).data('id')); });
+
+    function resolveReport(id, status) {
+      $.ajax({
+        url: '/admin/reports/api/resolve', method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ report_id: id, status: status }),
+        success: function() { $('#reportDetailModal').removeClass('active'); loadReports(); },
+        error:   function() { window.showNotification('Failed to update report.', 'error'); }
+      });
+    }
+
+    // ── Detail Modal ─────────────────────────────────────────────
+    let currentRid = null;
+
+    function openReportDetail(id) {
+      currentRid = id;
+      const r = allReports.find(x => x.report_id === id);
+      if (!r) return;
+      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--light-bg);color:var(--text-secondary)' };
+      $('#rd-email').text(r.reporter_email || '—');
+      $('#rd-date').text(formatRDate(r.created_at));
+      $('#rd-reason').text(r.reason || '—');
+      $('#rd-other').text(r.other_text || '—');
+      $('#rd-other-row').toggle(!!(r.other_text));
+      $('#rd-status').html(`<span style="display:inline-block;padding:.2rem .65rem;border-radius:999px;font-size:.75rem;font-weight:600;${statusStyle[r.status]||''}">${r.status}</span>`);
+      $('#rd-snippet').text(r.msg_snippet || '—');
+      const isPending = r.status === 'pending';
+      $('#rdDoneBtn, #rdIgnoreBtn').toggle(isPending);
+      $('#reportDetailModal').addClass('active');
+    }
+
+    $('#rdDoneBtn').on('click',   function() { resolveReport(currentRid, 'done'); });
+    $('#rdIgnoreBtn').on('click', function() { resolveReport(currentRid, 'ignored'); });
+    $('#cancelReportDetailBtn, #closeReportDetailBtn').on('click', function() { $('#reportDetailModal').removeClass('active'); });
+    $('#reportDetailModal').on('click', function(e) { if ($(e.target).is('#reportDetailModal')) $(this).removeClass('active'); });
+
+    // Load pending badge count on page load for sidebar
+    $.getJSON('/admin/reports/api/list?status=pending', function(items) {
+      if (items.length > 0) { $('#sidebarReportBadge').text(items.length).show(); }
+    });
+
+  });
+  </script>
 {% endblock %}

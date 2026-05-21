@@ -7,7 +7,8 @@ from PIL import Image
 from rag.chain import app_graph
 from aws.dynamodb import (
     upsert_conversation, list_conversations,
-    get_conversation, delete_conversation_from_db
+    get_conversation, delete_conversation_from_db,
+    save_report
 )
 from .utils import get_session_id, is_admin
 from src.helper import encode_image
@@ -36,9 +37,16 @@ def chat():
 
         # Image handling
         image_data = None
+        image_mime = "image/jpeg"
         if 'image' in request.files and request.files['image'].filename != '':
             try:
-                img = Image.open(request.files['image'])
+                uploaded = request.files['image']
+                img = Image.open(uploaded)
+                fmt = (img.format or "JPEG").upper()
+                image_mime = "image/png" if fmt == "PNG" else "image/jpeg"
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                    image_mime = "image/jpeg"
                 image_data = encode_image(img)
             except Exception as img_err:
                 print(f"Error processing upload: {img_err}")
@@ -46,8 +54,7 @@ def chat():
         session_id = get_session_id()
         config     = {"configurable": {"thread_id": session_id}}
 
-        # Load conversation history
-        conv_id          = session.get("current_conv_id")
+        conv_id            = session.get("current_conv_id")
         current_db_history = []
         if conv_id:
             conversation = get_conversation(session.get("uid"), conv_id)
@@ -55,12 +62,10 @@ def chat():
                 current_db_history = conversation["messages"]
                 app_graph.update_state(config, values={"chat_history": current_db_history})
 
-        # ── Build input payload including identity so chain can
-        #    look up the student record ──────────────────────────
         input_payload = {
             "input":      msg,
             "image_data": image_data if image_data else None,
-            # These let chain.py fetch the student record:
+            "image_mime": image_mime  if image_data else None,
             "uid":        session.get("uid"),
             "user_email": session.get("user"),
         }
@@ -68,7 +73,6 @@ def chat():
         result = app_graph.invoke(input_payload, config=config)
         answer = result.get("answer", "Sorry, I encountered an issue.")
 
-        # Persist conversation
         new_conversation_created = False
         title = None
         if not conv_id:
@@ -89,15 +93,42 @@ def chat():
         upsert_conversation(session.get("uid"), conv_id, full_history_to_save, created_at)
 
         return jsonify({
-            "answer":                  answer,
-            "conv_id":                 conv_id,
+            "answer":                   answer,
+            "conv_id":                  conv_id,
             "new_conversation_created": new_conversation_created,
-            "new_conv_title":          title,
+            "new_conv_title":           title,
         })
 
     except Exception as e:
         print(f"Error in /get endpoint: {e}")
         return jsonify({"answer": f"Sorry, an error occurred: {str(e)}"}), 500
+
+
+@bp.route("/report", methods=["POST"])
+def submit_report():
+    if not session.get("user"):
+        return jsonify({"error": "Not authenticated"}), 401
+    try:
+        data        = request.get_json()
+        msg_snippet = data.get("msg_snippet", "")
+        reason      = data.get("reason", "")
+        other_text  = data.get("other_text", "")
+        conv_id     = data.get("conv_id")
+        msg_id      = data.get("msg_id", "")
+
+        save_report({
+            "reporter_email": session.get("user"),
+            "reporter_uid":   session.get("uid"),
+            "conv_id":        conv_id,
+            "msg_id":         msg_id,
+            "reason":         reason,
+            "other_text":     other_text,
+            "msg_snippet":    msg_snippet,
+        })
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print(f"Error saving report: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @bp.route("/clear", methods=["POST"])
