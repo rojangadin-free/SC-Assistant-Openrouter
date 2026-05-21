@@ -32,7 +32,6 @@
       {% endif %}
 
     {% elif active_page == 'settings' %}
-      {# Dynamic Back Button Logic - Made entire button clickable #}
       {% if origin == 'dashboard' %}
         <a href="{{ url_for('admin.dashboard') }}" class="new-chat-btn" style="text-decoration: none;">
           <i class="fas fa-arrow-left"></i>
@@ -66,11 +65,22 @@
         <span>User Management</span>
       </div>
 
+      <div class="menu-item" id="reportsMenuItem">
+        <i class="fas fa-flag"></i>
+        <span>
+          Reports
+          <span id="sidebarReportBadge"
+                style="display:none; background:#ef4444; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
       <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">
         <i class="fas fa-comments"></i>
         <span>Chatbot</span>
       </a>
-    
+
     {% endif %}
 
     {% if not user and active_page != 'chat' %}
@@ -116,3 +126,17 @@
     </div>
   {% endif %}
 </div>
+
+{% if active_page == 'dashboard' %}
+<script>
+// Load pending report count and show badge in sidebar
+(function loadReportBadge() {
+  $.getJSON('/admin/reports/api/list?status=pending', function(items) {
+    var count = items.length;
+    if (count > 0) {
+      $('#sidebarReportBadge').text(count).show();
+    }
+  });
+})();
+</script>
+{% endif %}

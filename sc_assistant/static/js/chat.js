@@ -197,11 +197,25 @@ $(document).ready(function() {
       ? '<div class="avatar"><i class="fas fa-user"></i></div>'
       : `<div class="avatar"><img src="${logoPath}" alt="AI Assistant"></div>`;
 
+    const msgId = 'msg-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+
+    // Report button sits in its own row BELOW the bubble, bottom-left of assistant messages
+    const reportRow = !isUser
+      ? `<div class="message-report-row">
+           <button class="report-btn" data-msg-id="${msgId}" title="Report this response">
+             <i class="fas fa-flag"></i>
+           </button>
+         </div>`
+      : '';
+
     const html = `
-      <div class="message ${isUser ? 'user' : 'assistant'}">
-        ${isUser ? '' : avatar}
-        <div class="message-bubble">${processedContent}</div>
-        ${isUser ? avatar : ''}
+      <div class="message ${isUser ? 'user' : 'assistant'}" id="${msgId}">
+        <div class="message-row">
+          ${isUser ? '' : avatar}
+          <div class="message-bubble">${processedContent}</div>
+          ${isUser ? avatar : ''}
+        </div>
+        ${reportRow}
       </div>
     `;
 
@@ -568,4 +582,83 @@ $(document).ready(function() {
   }
 
   initializeChat();
+
+  // ── Report Button ──────────────────────────────────────────────
+  let reportTargetMsgId = null;
+
+  $(document).on('click', '.report-btn', function() {
+    reportTargetMsgId = $(this).data('msg-id');
+    // Get snippet of the message text for context
+    const snippet = $('#' + reportTargetMsgId + ' .message-bubble').text().trim().substring(0, 200);
+    $('#reportMsgSnippet').text(snippet ? '"' + snippet + '…"' : '');
+    $('#reportReasonSelect').val('');
+    $('#reportOtherBox').hide();
+    $('#reportOtherText').val('');
+    $('#reportModal').fadeIn(150);
+  });
+
+  $('#reportReasonSelect').on('change', function() {
+    if ($(this).val() === 'Others') {
+      $('#reportOtherBox').slideDown(150);
+    } else {
+      $('#reportOtherBox').slideUp(150);
+      $('#reportOtherText').val('');
+    }
+  });
+
+  $('#reportCancelBtn').on('click', function() {
+    $('#reportModal').fadeOut(150);
+    reportTargetMsgId = null;
+  });
+
+  // Close on backdrop click
+  $('#reportModal').on('click', function(e) {
+    if ($(e.target).is('#reportModal')) {
+      $('#reportModal').fadeOut(150);
+      reportTargetMsgId = null;
+    }
+  });
+
+  $('#reportSubmitBtn').on('click', function() {
+    const reason = $('#reportReasonSelect').val();
+    if (!reason) {
+      alert('Please select a reason.');
+      return;
+    }
+    const otherText = reason === 'Others' ? $('#reportOtherText').val().trim() : '';
+    if (reason === 'Others' && !otherText) {
+      alert('Please describe the issue.');
+      return;
+    }
+
+    const msgSnippet = $('#' + reportTargetMsgId + ' .message-bubble').text().trim().substring(0, 500);
+    const convId = activeConversationId || null;
+
+    $('#reportSubmitBtn').prop('disabled', true).text('Submitting…');
+
+    $.ajax({
+      url: '/chat/report',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({
+        msg_id:      reportTargetMsgId,
+        conv_id:     convId,
+        reason:      reason,
+        other_text:  otherText,
+        msg_snippet: msgSnippet,
+      }),
+      success: function() {
+        $('#reportModal').fadeOut(150);
+        reportTargetMsgId = null;
+        showNotification('Report submitted. Thank you!', 'success');
+      },
+      error: function() {
+        showNotification('Failed to submit report. Please try again.', 'error');
+      },
+      complete: function() {
+        $('#reportSubmitBtn').prop('disabled', false).text('Submit Report');
+      }
+    });
+  });
+
 });

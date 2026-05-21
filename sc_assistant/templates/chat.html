@@ -9,34 +9,207 @@
         type="text/css"
         href="{{ url_for('static', filename='css/chat.css') }}"/>
   <style>
+    /* ── Image preview ──────────────────────────────── */
     .image-preview-container {
-        display: none;
-        padding: 10px 15px;
-        background: var(--light-bg);
-        border-top: 1px solid var(--border);
+      display: none;
+      padding: 10px 15px;
+      background: var(--light-bg);
+      border-top: 1px solid var(--border);
     }
     .preview-thumb {
-        height: 60px;
-        border-radius: 5px;
-        border: 1px solid var(--border);
+      height: 60px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
     }
     .remove-image {
-        color: #ef4444;
-        cursor: pointer;
-        margin-left: 10px;
-        font-size: 1.2rem;
+      color: #ef4444;
+      cursor: pointer;
+      margin-left: 10px;
+      font-size: 1.2rem;
     }
     .upload-btn {
-        background: none;
-        border: none;
-        color: var(--text-secondary);
-        font-size: 1.2rem;
-        cursor: pointer;
-        padding: 0 10px;
-        margin-top: 5px;
-        transition: color 0.2s;
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 0 10px;
+      margin-top: 5px;
+      transition: color 0.2s;
     }
     .upload-btn:hover { color: var(--primary); }
+
+    /* ── Message layout: column so report row sits below bubble ── */
+    .message {
+      flex-direction: column !important;
+    }
+    .message-row {
+      display: flex;
+      align-items: flex-start;
+      width: 100%;
+    }
+    .message.user .message-row  { justify-content: flex-end; }
+    .message.assistant .message-row { justify-content: flex-start; }
+    /* Bubble still respects max-width inside the row */
+    .message-row .message-bubble { max-width: 90%; }
+
+    /* ── Report row: sits below the bubble, left-aligned ─────── */
+    .message-report-row {
+      display: flex;
+      justify-content: flex-start;
+      padding-left: 52px;
+      margin-top: 3px;
+      margin-bottom: 4px;
+    }
+
+    /* ── Report Button ─────────────────────────────────────────── */
+    .report-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      color: #c8d0da;
+      font-size: .72rem;
+      cursor: pointer;
+      transition: color .2s;
+      line-height: 1;
+    }
+    .report-btn:hover { color: #c0392b; }
+
+    /* ── Report Modal ───────────────────────────────── */
+    .report-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .report-modal-box {
+      background: #fff;
+      border-radius: 14px;
+      width: 460px;
+      max-width: 94vw;
+      box-shadow: 0 20px 60px rgba(0,0,0,.2);
+      overflow: hidden;
+    }
+    [data-theme="dark"] .report-modal-box {
+      background: var(--card-bg);
+    }
+    .report-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .report-modal-header h3 {
+      margin: 0;
+      font-size: 1rem;
+      color: var(--text-primary);
+    }
+    .report-modal-header h3 i { color: #ef4444; margin-right: .4rem; }
+    .report-modal-close {
+      background: none;
+      border: none;
+      font-size: 1rem;
+      color: #94a3b8;
+      cursor: pointer;
+    }
+    .report-modal-close:hover { color: #ef4444; }
+
+    .report-modal-body { padding: 1.1rem 1.25rem; }
+    .report-intro {
+      color: #64748b;
+      font-size: .875rem;
+      margin: 0 0 .75rem;
+    }
+    .report-snippet {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: .6rem .85rem;
+      font-size: .8rem;
+      color: #64748b;
+      font-style: italic;
+      margin-bottom: .9rem;
+      max-height: 70px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+    .report-snippet:empty { display: none; }
+
+    .report-label {
+      display: block;
+      font-size: .8rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: .35rem;
+    }
+    .report-select {
+      width: 100%;
+      padding: .55rem .75rem;
+      border-radius: 8px;
+      border: 1.5px solid #e2e8f0;
+      font-size: .875rem;
+      color: var(--text-primary);
+      background: var(--card-bg);
+      outline: none;
+      transition: border-color .15s;
+    }
+    .report-select:focus { border-color: #6366f1; }
+
+    .report-textarea {
+      width: 100%;
+      padding: .6rem .75rem;
+      border-radius: 8px;
+      border: 1.5px solid #e2e8f0;
+      font-size: .875rem;
+      color: var(--text-primary);
+      background: var(--card-bg);
+      resize: vertical;
+      outline: none;
+      font-family: inherit;
+      transition: border-color .15s;
+      box-sizing: border-box;
+    }
+    .report-textarea:focus { border-color: #6366f1; }
+
+    .report-modal-footer {
+      display: flex;
+      gap: .5rem;
+      padding: .9rem 1.25rem;
+      border-top: 1px solid #f1f5f9;
+      justify-content: flex-end;
+    }
+    .report-submit-btn {
+      padding: .5rem 1.1rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: .875rem;
+      background: #6366f1;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+    }
+    .report-submit-btn:hover:not(:disabled) { background: #4f46e5; }
+    .report-submit-btn:disabled { opacity: .6; cursor: not-allowed; }
+    .report-cancel-btn {
+      padding: .5rem 1rem;
+      border-radius: 8px;
+      border: 1.5px solid #e2e8f0;
+      background: var(--card-bg);
+      color: #94a3b8;
+      cursor: pointer;
+      font-size: .875rem;
+      font-weight: 600;
+    }
+    .report-cancel-btn:hover { background: #f8fafc; }
   </style>
 {% endblock %}
 
@@ -62,19 +235,17 @@
 
     <div class="chat-input-area">
       <div id="imagePreviewContainer" class="image-preview-container">
-          <div style="display: flex; align-items: center;">
-              <img id="imagePreview" src="" class="preview-thumb">
-              <i class="fas fa-times-circle remove-image" id="removeImageBtn"></i>
-          </div>
+        <div style="display: flex; align-items: center;">
+          <img id="imagePreview" src="" class="preview-thumb">
+          <i class="fas fa-times-circle remove-image" id="removeImageBtn"></i>
+        </div>
       </div>
 
       <form id="messageForm" class="message-form" enctype="multipart/form-data">
         <input type="file" id="imageInput" accept="image/*" style="display: none;">
-        
         <button type="button" class="upload-btn" id="uploadBtn" title="Attach Image">
-            <i class="fas fa-paperclip"></i>
+          <i class="fas fa-paperclip"></i>
         </button>
-
         <textarea id="messageInput"
                   class="message-input"
                   placeholder="Ask a question..."
@@ -86,9 +257,58 @@
       </form>
     </div>
   </div>
-  {% endblock %}
+
+  <!-- ═══════════════════════════════════════════════
+       REPORT MODAL
+       ═══════════════════════════════════════════════ -->
+  <div id="reportModal" class="report-modal-overlay" style="display:none;">
+    <div class="report-modal-box">
+      <div class="report-modal-header">
+        <h3><i class="fas fa-flag"></i> Report Response</h3>
+        <button id="reportCancelBtn" class="report-modal-close">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="report-modal-body">
+        <p class="report-intro">
+          Help us improve SC Assistant by letting us know what's wrong.
+        </p>
+        <div id="reportMsgSnippet" class="report-snippet"></div>
+
+        <label class="report-label">
+          Reason <span style="color:#ef4444">*</span>
+        </label>
+        <select id="reportReasonSelect" class="report-select">
+          <option value="">— Select a reason —</option>
+          <option value="Request to update information">Request to update information</option>
+          <option value="Others">Others</option>
+        </select>
+
+        <div id="reportOtherBox" style="display:none; margin-top:.75rem;">
+          <label class="report-label">Please describe the issue</label>
+          <textarea id="reportOtherText"
+                    class="report-textarea"
+                    placeholder="Describe what's wrong or what should be updated…"
+                    rows="3"></textarea>
+        </div>
+      </div>
+      <div class="report-modal-footer">
+        <button id="reportSubmitBtn" class="report-submit-btn">
+          <i class="fas fa-paper-plane"></i> Submit Report
+        </button>
+        <button id="reportCancelBtn2" class="report-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}
 
 {% block extra_body %}
-  {{ super() }} 
+  {{ super() }}
   <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+  <script>
+    // Second cancel button alias
+    $(document).on('click', '#reportCancelBtn2', function() {
+      $('#reportModal').fadeOut(150);
+    });
+  </script>
 {% endblock %}
