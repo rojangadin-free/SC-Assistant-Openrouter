@@ -42,24 +42,17 @@ table    = dynamodb.Table(TABLE_NAME)
 # ── The same list from seed_students.py ─────────────────────
 # (student_id_seed, student_number, full_name, email, program_code, year, section)
 DUMMY_STUDENTS = [
-    # (seed_id, student_number, full_name, email, program_code, year, section)
-    ("uid-bsit-001", "2021-00101", "Juan Dela Cruz",        "juan.delacruz@spc.edu.ph",    "BSIT",   3, "BSIT-3A"),
-    ("uid-bsit-002", "2022-00202", "Maria Santos",          "maria.santos@spc.edu.ph",     "BSIT",   2, "BSIT-2B"),
-    ("uid-bsit-003", "2020-00303", "Carlo Reyes",           "carlo.reyes@spc.edu.ph",      "BSIT",   4, "BSIT-4A"),
-    ("uid-bsit-004", "2023-00404", "Ana Lim",               "ana.lim@spc.edu.ph",          "BSIT",   1, "BSIT-1A"),
-    ("uid-bsit-005", "2022-00505", "Jose Garcia",           "jose.garcia@spc.edu.ph",      "BSIT",   2, "BSIT-2A"),
-    ("uid-bscs-001", "2021-00601", "Rizalina Cruz",         "rizalina.cruz@spc.edu.ph",    "BSCS",   3, "BSCS-3A"),
-    ("uid-bscs-002", "2022-00702", "Miguel Flores",         "miguel.flores@spc.edu.ph",    "BSCS",   2, "BSCS-2A"),
-    ("uid-bsed-001", "2021-00801", "Luisa Villanueva",      "luisa.villanueva@spc.edu.ph", "BSEd",   3, "BSEd-3A"),
-    ("uid-bsed-002", "2022-00902", "Ramon Aquino",          "ramon.aquino@spc.edu.ph",     "BSEd",   2, "BSEd-2A"),
-    ("uid-beed-001", "2021-01001", "Pia Mendoza",           "pia.mendoza@spc.edu.ph",      "BEEd",   3, "BEEd-3A"),
-    ("uid-beed-002", "2023-01102", "Felix Bautista",        "felix.bautista@spc.edu.ph",   "BEEd",   1, "BEEd-1A"),
-    ("uid-crim-001", "2020-01201", "Andres Tan",            "andres.tan@spc.edu.ph",       "BSCrim", 4, "BSCrim-4A"),
-    ("uid-crim-002", "2022-01302", "Celia Ramos",           "celia.ramos@spc.edu.ph",      "BSCrim", 2, "BSCrim-2A"),
-    ("uid-bsba-001", "2021-01401", "Nathaniel Ocampo",      "nathaniel.ocampo@spc.edu.ph", "BSBA",   3, "BSBA-3A"),
-    ("uid-bsba-002", "2023-01502", "Sophia Torres",         "sophia.torres@spc.edu.ph",    "BSBA",   1, "BSBA-1A"),
-    ("uid-bsn-001",  "2021-01601", "Angeline Castillo",     "angeline.castillo@spc.edu.ph","BSN",    3, "BSN-3A"),
-    ("uid-bsn-002",  "2022-01702", "Eduardo Navarro",       "eduardo.navarro@spc.edu.ph",  "BSN",    2, "BSN-2A"),
+    # (seed_id, student_number, full_name, email, gender)
+    ("uid-bsit-3a-001", "2023-00101", "Carl Anthony Unay",   "carl.unay@spc.edu.ph",         "Male"),
+    ("uid-bsit-3a-002", "2023-00102", "Rojan Gadin",          "rojan.gadin@spc.edu.ph",        "Male"),
+    ("uid-bsit-3a-003", "2023-00103", "Rose Ann Gabon",       "roseann.gabon@spc.edu.ph",      "Female"),
+    ("uid-bsit-3a-004", "2023-00104", "Jennie Rose Abayan",   "jennierose.abayan@spc.edu.ph",  "Female"),
+    ("uid-bsit-3a-005", "2023-00105", "Chris Diocton",        "chris.diocton@spc.edu.ph",      "Male"),
+    ("uid-bsit-3a-006", "2023-00106", "Hannah Joy Nacario",   "hannahjoy.nacario@spc.edu.ph",  "Female"),
+    ("uid-bsit-3a-007", "2023-00107", "Rajeth Jamorawon",     "rajeth.jamorawon@spc.edu.ph",   "Male"),
+    ("uid-bsit-3a-008", "2023-00108", "Mariz Berber",         "mariz.berber@spc.edu.ph",       "Male"),
+    ("uid-bsit-3a-009", "2023-00109", "Philip Brian Alvarez", "philipbrian.alvarez@spc.edu.ph","Male"),
+    ("uid-bsit-3a-010", "2023-00110", "Patrick Dacles",       "patrick.dacles@spc.edu.ph",     "Male"),
 ]
 
 
@@ -220,7 +213,7 @@ def main():
     print(f"Linking {len(DUMMY_STUDENTS)} dummy students to Cognito pool: {USER_POOL_ID}\n")
 
     successes = []
-    for seed_id, student_number, full_name, email, *_ in DUMMY_STUDENTS:
+    for seed_id, student_number, full_name, email, _gender in DUMMY_STUDENTS:
         print(f"\n→ {full_name} ({email})")
 
         cognito_sub = get_or_create_cognito_user(student_number, full_name, email)

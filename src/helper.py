@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from config import GOOGLE_API_KEY, VISION_MODEL_NAME
+from config import VERTEX_EXPRESS_API_KEY, CHAT_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -238,13 +238,12 @@ def get_local_embeddings():
 
 _VISION_CLIENT: Optional[ChatGoogleGenerativeAI] = None
 
-
 def get_vision_client() -> ChatGoogleGenerativeAI:
     global _VISION_CLIENT
     if _VISION_CLIENT is None:
         _VISION_CLIENT = ChatGoogleGenerativeAI(
-            model=VISION_MODEL_NAME,
-            google_api_key=GOOGLE_API_KEY,
+            model=CHAT_MODEL_NAME,
+            api_key=VERTEX_EXPRESS_API_KEY, # Using the new Express Key
             temperature=0.1,
         )
     return _VISION_CLIENT

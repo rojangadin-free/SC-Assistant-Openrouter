@@ -39,10 +39,8 @@
     }
     .upload-btn:hover { color: var(--primary); }
 
-    /* ── Message layout: column so report row sits below bubble ── */
-    .message {
-      flex-direction: column !important;
-    }
+    /* ── Message layout ─────────────────────────────── */
+    .message { flex-direction: column !important; }
     .message-row {
       display: flex;
       align-items: flex-start;
@@ -50,10 +48,9 @@
     }
     .message.user .message-row  { justify-content: flex-end; }
     .message.assistant .message-row { justify-content: flex-start; }
-    /* Bubble still respects max-width inside the row */
     .message-row .message-bubble { max-width: 90%; }
 
-    /* ── Report row: sits below the bubble, left-aligned ─────── */
+    /* ── Report row ─────────────────────────────────── */
     .message-report-row {
       display: flex;
       justify-content: flex-start;
@@ -61,8 +58,6 @@
       margin-top: 3px;
       margin-bottom: 4px;
     }
-
-    /* ── Report Button ─────────────────────────────────────────── */
     .report-btn {
       background: none;
       border: none;
@@ -75,145 +70,147 @@
     }
     .report-btn:hover { color: #c0392b; }
 
+    /* ══════════════════════════════════════════════════
+       GUEST BANNER
+       ══════════════════════════════════════════════════ */
+    .guest-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 18px;
+      background: linear-gradient(90deg, rgba(251,188,5,0.13) 0%, rgba(251,188,5,0.06) 100%);
+      border-bottom: 1px solid rgba(251,188,5,0.30);
+      font-size: 13px;
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+    .guest-banner i { color: #d4920a; font-size: 14px; flex-shrink: 0; }
+    .guest-banner span { flex: 1; }
+    .guest-banner a {
+      color: var(--primary);
+      font-weight: 600;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: opacity .2s;
+    }
+    .guest-banner a:hover { opacity: .75; text-decoration: underline; }
+    [data-theme="dark"] .guest-banner {
+      background: linear-gradient(90deg, rgba(251,188,5,0.08) 0%, rgba(251,188,5,0.03) 100%);
+      border-bottom-color: rgba(251,188,5,0.20);
+    }
+    [data-theme="dark"] .guest-banner i { color: #fdd663; }
+
     /* ── Report Modal ───────────────────────────────── */
     .report-modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,.5);
+      background: rgba(0,0,0,.6);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 9999;
+      backdrop-filter: blur(2px);
     }
     .report-modal-box {
-      background: #fff;
+      background: var(--bg-main);
       border-radius: 14px;
       width: 460px;
       max-width: 94vw;
-      box-shadow: 0 20px 60px rgba(0,0,0,.2);
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
       overflow: hidden;
-    }
-    [data-theme="dark"] .report-modal-box {
-      background: var(--card-bg);
     }
     .report-modal-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 1rem 1.25rem;
-      border-bottom: 1px solid #f1f5f9;
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
     }
-    .report-modal-header h3 {
-      margin: 0;
-      font-size: 1rem;
-      color: var(--text-primary);
-    }
+    .report-modal-header h3 { margin: 0; font-size: 1.1rem; color: var(--text-primary); }
     .report-modal-header h3 i { color: #ef4444; margin-right: .4rem; }
     .report-modal-close {
       background: none;
       border: none;
-      font-size: 1rem;
-      color: #94a3b8;
+      font-size: 1.2rem;
+      color: var(--text-secondary);
       cursor: pointer;
     }
     .report-modal-close:hover { color: #ef4444; }
-
-    .report-modal-body { padding: 1.1rem 1.25rem; }
-    .report-intro {
-      color: #64748b;
-      font-size: .875rem;
-      margin: 0 0 .75rem;
-    }
+    .report-modal-body { padding: 1.25rem 1.5rem; }
+    .report-intro { color: var(--text-secondary); font-size: 0.9rem; margin: 0 0 1rem; }
     .report-snippet {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
       border-radius: 8px;
-      padding: .6rem .85rem;
-      font-size: .8rem;
-      color: #64748b;
+      padding: 0.8rem;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
       font-style: italic;
-      margin-bottom: .9rem;
-      max-height: 70px;
-      overflow: hidden;
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
+      margin-bottom: 1rem;
+      max-height: 80px;
+      overflow-y: auto;
     }
     .report-snippet:empty { display: none; }
-
-    .report-label {
-      display: block;
-      font-size: .8rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: .35rem;
-    }
-    .report-select {
+    .report-label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.4rem; }
+    .report-select, .report-textarea {
       width: 100%;
-      padding: .55rem .75rem;
+      padding: 0.75rem;
       border-radius: 8px;
-      border: 1.5px solid #e2e8f0;
-      font-size: .875rem;
+      border: 1px solid var(--border);
+      font-size: 0.9rem;
       color: var(--text-primary);
-      background: var(--card-bg);
+      background: var(--bg-main);
       outline: none;
-      transition: border-color .15s;
-    }
-    .report-select:focus { border-color: #6366f1; }
-
-    .report-textarea {
-      width: 100%;
-      padding: .6rem .75rem;
-      border-radius: 8px;
-      border: 1.5px solid #e2e8f0;
-      font-size: .875rem;
-      color: var(--text-primary);
-      background: var(--card-bg);
-      resize: vertical;
-      outline: none;
+      transition: border-color .2s;
       font-family: inherit;
-      transition: border-color .15s;
-      box-sizing: border-box;
     }
-    .report-textarea:focus { border-color: #6366f1; }
-
+    .report-textarea {
+      resize: vertical;
+      box-sizing: border-box;
+      min-height: 80px;
+    }
+    .report-select:focus, .report-textarea:focus { border-color: var(--sc-green); }
     .report-modal-footer {
       display: flex;
-      gap: .5rem;
-      padding: .9rem 1.25rem;
-      border-top: 1px solid #f1f5f9;
+      gap: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      border-top: 1px solid var(--border);
       justify-content: flex-end;
+      background: var(--bg-surface);
     }
     .report-submit-btn {
-      padding: .5rem 1.1rem;
+      padding: 0.6rem 1.2rem;
       border-radius: 8px;
       border: none;
       cursor: pointer;
       font-weight: 600;
-      font-size: .875rem;
-      background: #6366f1;
+      font-size: 0.9rem;
+      background: var(--sc-green);
       color: #fff;
       display: flex;
       align-items: center;
       gap: .4rem;
+      transition: background .2s;
     }
-    .report-submit-btn:hover:not(:disabled) { background: #4f46e5; }
+    .report-submit-btn:hover:not(:disabled) { background: var(--sc-green-light); }
     .report-submit-btn:disabled { opacity: .6; cursor: not-allowed; }
     .report-cancel-btn {
-      padding: .5rem 1rem;
+      padding: 0.6rem 1.2rem;
       border-radius: 8px;
-      border: 1.5px solid #e2e8f0;
-      background: var(--card-bg);
-      color: #94a3b8;
+      border: 1px solid var(--border);
+      background: var(--bg-main);
+      color: var(--text-primary);
       cursor: pointer;
-      font-size: .875rem;
+      font-size: 0.9rem;
       font-weight: 600;
+      transition: background .2s;
     }
-    .report-cancel-btn:hover { background: #f8fafc; }
+    .report-cancel-btn:hover { background: var(--bg-surface); }
   </style>
 {% endblock %}
 
-{% block body_attrs %}data-start-new="{{ start_new }}"{% endblock %}
+{% block body_attrs %}data-start-new="{{ start_new }}" data-is-guest="{{ 'true' if user.is_guest else 'false' }}" data-avatar="{{ user.avatar_url if user.avatar_url else 'https://ui-avatars.com/api/?name=' ~ user.username ~ '&background=fbbc05&color=0d4503&bold=true' }}"{% endblock %}
 
 {% block layout %}
   <div class="sidebar" id="sidebar">
@@ -223,11 +220,27 @@
   <div class="chat-section">
     {% include "partials/header.html" %}
 
+    {% if user.is_guest %}
+  
+    {% endif %}
+
     <div class="loader-overlay" id="conversationLoader" style="display: none;">
       <div class="loader-spinner"></div>
     </div>
 
-    <div class="messages-container" id="messagesContainer"></div>
+    <div class="messages-container" id="messagesContainer">
+      <div class="empty-chat-state" id="emptyChatState" style="display: none;">
+        <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="empty-logo">
+        <h2>Welcome to Samar College</h2>
+        <p>How can I help you today? Try asking one of these:</p>
+        <div class="faq-suggestions">
+          <button class="faq-btn">How do I enroll?</button>
+          <button class="faq-btn">List of Deans</button>
+          <button class="faq-btn">What are the admission requirements?</button>
+          <button class="faq-btn">Tuition fee for Nursing</button>
+        </div>
+      </div>
+    </div>
 
     <div class="typing-indicator" id="typingIndicator" style="display:none;">
       <span></span><span></span><span></span>
@@ -248,7 +261,7 @@
         </button>
         <textarea id="messageInput"
                   class="message-input"
-                  placeholder="Ask a question..."
+                  placeholder="Ask a question…"
                   rows="1"
                   required></textarea>
         <button type="submit" id="sendButton" class="send-button">
@@ -258,9 +271,6 @@
     </div>
   </div>
 
-  <!-- ═══════════════════════════════════════════════
-       REPORT MODAL
-       ═══════════════════════════════════════════════ -->
   <div id="reportModal" class="report-modal-overlay" style="display:none;">
     <div class="report-modal-box">
       <div class="report-modal-header">
@@ -310,5 +320,22 @@
     $(document).on('click', '#reportCancelBtn2', function() {
       $('#reportModal').fadeOut(150);
     });
+
+    // ── Guest: disable report button with tooltip ─────────────
+    {% if user.is_guest %}
+    $(document).on('click', '.report-btn', function(e) {
+      e.stopImmediatePropagation();
+      window.showNotification('Please sign in to report responses.', 'error');
+    });
+
+    // Guest: wire "New chat" button in sidebar
+    $(document).on('click', '#guestNewChatBtn', function() {
+      $.post('/chat/clear', function() {
+        $('#messagesContainer').find('.message').remove();
+        $('#emptyChatState').fadeIn(200);
+        window.guestActiveConv = null;
+      });
+    });
+    {% endif %}
   </script>
 {% endblock %}

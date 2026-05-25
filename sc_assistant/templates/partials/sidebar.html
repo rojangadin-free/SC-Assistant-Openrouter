@@ -2,7 +2,7 @@
   <div class="sidebar-logo-container">
     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="sidebar-logo">
   </div>
-  <span class="samar-college-text">Samar Colleges, Inc.</span>
+  <a href="{{ url_for('chat.index') }}" class="samar-college-text">Samar Colleges, Inc.</a>
   <button id="sidebarCollapseBtn" class="collapse-btn" title="Toggle Sidebar">
     <i class="fa-solid fa-bars"></i>
   </button>
@@ -13,15 +13,24 @@
 
     {% if active_page == 'chat' %}
       {% if user %}
-        <div class="new-chat-btn">
-          <i class="fas fa-plus-circle"></i>
-          <span>New chat</span>
-        </div>
-        <div class="conversation-header">Conversation History</div>
-        <div id="conversationList"></div>
-        <div id="conversationHistoryLoader" style="display: none;">
-          <div class="history-loader-spinner"></div>
-        </div>
+        {% if not user.is_guest %}
+          {# Registered user — full history UI #}
+          <div class="new-chat-btn">
+            <i class="fas fa-plus-circle"></i>
+            <span>New chat</span>
+          </div>
+          <div class="conversation-header">Conversation History</div>
+          <div id="conversationList"></div>
+          <div id="conversationHistoryLoader" style="display: none;">
+            <div class="history-loader-spinner"></div>
+          </div>
+        {% else %}
+          {# Guest user — new chat only, no history #}
+          <div class="new-chat-btn" id="guestNewChatBtn">
+            <i class="fas fa-plus-circle"></i>
+            <span>New chat</span>
+          </div>
+        {% endif %}
       {% else %}
         <div class="menu-item">
           <i class="fas fa-user-circle"></i>
@@ -43,7 +52,7 @@
           <span>Back to Chat</span>
         </a>
       {% endif %}
-      
+
       <div class="menu-item active">
         <i class="fas fa-cog"></i>
         <span>Account</span>
@@ -97,28 +106,40 @@
 
 <div class="user-account-section">
   {% if user %}
-    <div class="user-account-button" id="userAccountButton">
-      <i class="fas fa-user-circle"></i>
-      <span>{{ user.username if user.username else 'Account' }}</span>
-      <i class="fas fa-chevron-up"></i>
-    </div>
-    <div class="user-dropdown" id="userDropdown">
-      <a href="#" class="dropdown-item" id="profileButton">
-        <i class="fas fa-envelope"></i>
-        <span>{{ user.email }}</span>
+    {% if user.is_guest %}
+      {# ── Guest footer — prompt to sign in ── #}
+      <a href="{{ url_for('auth.auth_page') }}"
+         class="user-account-button"
+         style="text-decoration: none; justify-content: center; gap: 8px; background: rgba(251,188,5,0.12); border: 1px solid rgba(251,188,5,0.35);"
+         title="Sign in for full access">
+        <i class="fas fa-sign-in-alt" style="color: var(--accent);"></i>
+        <span style="color: var(--accent); font-weight: 600;">Sign In for Full Access</span>
       </a>
-      <a href="#" class="dropdown-item" id="settingsButton">
-        <i class="fas fa-cog"></i>
-        <span>Settings</span>
-      </a>
-      <div class="dropdown-divider"></div>
-      <a href="{{ url_for('auth.logout') }}"
-         class="dropdown-item"
-         id="logoutButton">
-        <i class="fas fa-sign-out-alt"></i>
-        <span>Logout</span>
-      </a>
-    </div>
+    {% else %}
+      {# ── Registered user dropdown ── #}
+      <div class="user-account-button" id="userAccountButton">
+        <img src="{{ user.avatar_url if user.avatar_url else 'https://ui-avatars.com/api/?name=' ~ user.username ~ '&background=fbbc05&color=0d4503&bold=true' }}" alt="Profile" class="profile-avatar">
+        <span>{{ user.username if user.username else 'Account' }}</span>
+        <i class="fas fa-chevron-up"></i>
+      </div>
+      <div class="user-dropdown" id="userDropdown">
+        <a href="#" class="dropdown-item" id="profileButton">
+          <i class="fas fa-envelope"></i>
+          <span>{{ user.email }}</span>
+        </a>
+        <a href="#" class="dropdown-item" id="settingsButton">
+          <i class="fas fa-cog"></i>
+          <span>Settings</span>
+        </a>
+        <div class="dropdown-divider"></div>
+        <a href="{{ url_for('auth.logout') }}"
+           class="dropdown-item"
+           id="logoutButton">
+          <i class="fas fa-sign-out-alt"></i>
+          <span>Logout</span>
+        </a>
+      </div>
+    {% endif %}
   {% else %}
     <div class="menu-item">
       <i class="fas fa-user"></i>
@@ -129,7 +150,6 @@
 
 {% if active_page == 'dashboard' %}
 <script>
-// Load pending report count and show badge in sidebar
 (function loadReportBadge() {
   $.getJSON('/admin/reports/api/list?status=pending', function(items) {
     var count = items.length;

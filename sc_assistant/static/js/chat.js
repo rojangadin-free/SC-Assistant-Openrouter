@@ -5,6 +5,14 @@
  */
 
 $(document).ready(function() {
+  // --- MARKDOWN CONFIGURATION ---
+  if (typeof marked !== 'undefined') {
+    marked.setOptions({
+      breaks: true, // Forces single line breaks to actually break the line
+      gfm: true     // Enables GitHub Flavored Markdown (better lists/tables)
+    });
+  }
+
   // Check if showNotification exists, if not, create a fallback
   if (typeof window.showNotification === 'undefined') {
     window.showNotification = function(message, type) {
@@ -18,6 +26,7 @@ $(document).ready(function() {
   const sendButton = $('#sendButton');
   const typingIndicator = $('#typingIndicator');
   const messageForm = $('#messageForm');
+  const emptyChatState = $('#emptyChatState');
   
   const conversationList = $("#conversationList");
   const conversationLoader = $('#conversationLoader');
@@ -84,7 +93,7 @@ $(document).ready(function() {
         const reader = new FileReader();
         reader.onload = function(e) {
             previewImg.attr('src', e.target.result);
-            previewContainer.css('display', 'flex'); // Show preview
+            previewContainer.css('display', 'flex'); 
         }
         reader.readAsDataURL(this.files[0]);
     }
@@ -95,22 +104,23 @@ $(document).ready(function() {
     previewContainer.hide();
   });
 
+  // --- FAQ Click Handler ---
+  $('.faq-btn').on('click', function() {
+    const question = $(this).text();
+    $('#messageInput').val(question);
+    $('#messageForm').submit();
+  });
+
 
   // --- Citation badge renderer ---
-  // 3-pass approach so marked.js never escapes the badge HTML:
-  //   1. Replace [SOURCE:…] with safe placeholders
-  //   2. Run marked.parse on placeholders
-  //   3. Swap placeholders back for final badge HTML
   function renderCitations(rawText) {
     const placeholders = [];
 
-    // Build one badge and register its placeholder
     function makeBadge(filename, rawPage) {
       const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
       const file = filename.trim();
       let label = file;
       if (label.length > 35) label = label.substring(0, 32) + '…';
-      // Only show page number if one exists
       const displayText = cleanPage ? `${label} p.${cleanPage}` : label;
       const titleText   = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
       const badge = (
@@ -125,14 +135,10 @@ $(document).ready(function() {
       return key;
     }
 
-    // Two patterns handled:
-    // 1. With page:    [SOURCE: file.pdf | p.20]  [SOURCE: file.pdf | Page: 20.0, 146.0]
-    // 2. Without page: [SOURCE: file.docx]
     const withPlaceholders = rawText.replace(
       /\[SOURCE:\s*([^\]|]+?)\s*(?:\|\s*(?:pages?[:\s]*|p\.?\s*)?([\d.,\s]+?))?\s*\]/gi,
       function(match, filename, pagesRaw) {
         if (!pagesRaw || !pagesRaw.trim()) {
-          // No page number — single badge with just the filename
           return makeBadge(filename, '');
         }
         const pages = pagesRaw.split(',').map(p => p.trim()).filter(Boolean);
@@ -150,7 +156,6 @@ $(document).ready(function() {
   }
 
   // --- Citation click handler ---
-  // Uses the same /api/files/view-url/<filename> endpoint as the dashboard.
   $(document).on('click', '.citation-badge', function() {
     const filename = $(this).data('source');
     if (!filename) return;
@@ -158,7 +163,6 @@ $(document).ready(function() {
     const $badge = $(this);
     const originalHtml = $badge.html();
 
-    // Show loading spinner inside the badge while fetching
     $badge.html('<i class="fas fa-spinner fa-spin"></i>&nbsp;Opening…').css('pointer-events', 'none');
 
     $.get(`/api/files/view-url/${encodeURIComponent(filename)}`)
@@ -179,27 +183,27 @@ $(document).ready(function() {
 
   // --- Chat rendering helpers ---
   function addMessage(content, isUser = false, autoScroll = true, hasImage = false) {
+    emptyChatState.hide(); // Hide empty state on message
+
     let processedContent = '';
     
     if (isUser) {
-       // Sanitize user input
        processedContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
        if (hasImage) {
-           // Add a clean badge for the image
            processedContent += ' <br><span style="font-size:0.85em; color:var(--text-secondary); display:inline-flex; align-items:center; margin-top:5px;"><i class="fas fa-paperclip" style="margin-right:4px;"></i> Image Attached</span>';
        }
     } else {
-       // Run citation rendering (which also calls marked.parse internally)
        processedContent = renderCitations(content);
     }
 
+    const userAvatarUrl = $('body').data('avatar');
+
     const avatar = isUser
-      ? '<div class="avatar"><i class="fas fa-user"></i></div>'
+      ? `<div class="avatar"><img src="${userAvatarUrl}" class="profile-avatar-chat" alt="User"></div>`
       : `<div class="avatar"><img src="${logoPath}" alt="AI Assistant"></div>`;
 
     const msgId = 'msg-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
 
-    // Report button sits in its own row BELOW the bubble, bottom-left of assistant messages
     const reportRow = !isUser
       ? `<div class="message-report-row">
            <button class="report-btn" data-msg-id="${msgId}" title="Report this response">
@@ -230,13 +234,18 @@ $(document).ready(function() {
   }
 
   function renderChatHistory(history) {
-    messagesContainer.empty();
-    if (!Array.isArray(history)) return;
+    messagesContainer.find('.message').remove(); 
+    
+    if (!Array.isArray(history) || history.length === 0) {
+      emptyChatState.show();
+      return;
+    }
+    
+    emptyChatState.hide();
 
     history.forEach(msg => {
       if (msg.role === 'system') return;
       
-      // Clean up history tags
       let content = msg.content;
       const hasImageTag = content.includes('[Image Uploaded]');
       content = content.replace(' [Image Uploaded]', '');
@@ -296,7 +305,6 @@ $(document).ready(function() {
 
     typingIndicator.removeClass('fade-out').show();
 
-    // Prepare FormData
     const formData = new FormData();
     formData.append("msg", message);
     if (imageFile) {
@@ -374,27 +382,22 @@ $(document).ready(function() {
     e.preventDefault();
     const message = messageInput.val().trim();
     
-    // 1. Get file immediately
     const hasImage = imageInput[0].files.length > 0;
     const imageFile = hasImage ? imageInput[0].files[0] : null;
 
     if (!message && !hasImage) return;
 
-    // 2. Add message to UI immediately
     addMessage(message, true, true, hasImage);
     
-    // 3. Clear Inputs & Preview IMMEDIATELY
     messageInput.val('').css('height', 'auto');
     if (hasImage) {
-        imageInput.val(''); // Clear file input
-        previewContainer.hide(); // Hide preview box
+        imageInput.val('');
+        previewContainer.hide();
     }
     
-    // 4. Disable controls
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
 
-    // 5. Send
     sendMessage(message, imageFile);
   });
 
@@ -460,7 +463,8 @@ $(document).ready(function() {
     localStorage.setItem('activeConversationId', convId);
     applyActiveHighlight();
 
-    messagesContainer.empty();
+    messagesContainer.find('.message').remove();
+    emptyChatState.hide();
     conversationLoader.show();
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
@@ -509,7 +513,8 @@ $(document).ready(function() {
 
   function startNewChat() {
     $.post('/chat/clear', function() {
-      messagesContainer.empty();
+      messagesContainer.find('.message').remove();
+      emptyChatState.fadeIn(200); 
       activeConversationId = null;
       isNewConversation = true;
       localStorage.removeItem('activeConversationId');
@@ -588,7 +593,6 @@ $(document).ready(function() {
 
   $(document).on('click', '.report-btn', function() {
     reportTargetMsgId = $(this).data('msg-id');
-    // Get snippet of the message text for context
     const snippet = $('#' + reportTargetMsgId + ' .message-bubble').text().trim().substring(0, 200);
     $('#reportMsgSnippet').text(snippet ? '"' + snippet + '…"' : '');
     $('#reportReasonSelect').val('');
@@ -611,7 +615,6 @@ $(document).ready(function() {
     reportTargetMsgId = null;
   });
 
-  // Close on backdrop click
   $('#reportModal').on('click', function(e) {
     if ($(e.target).is('#reportModal')) {
       $('#reportModal').fadeOut(150);

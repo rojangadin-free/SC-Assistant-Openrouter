@@ -3,6 +3,7 @@ from flask import (
 )
 import datetime
 import uuid
+import os
 from PIL import Image
 from rag.chain import app_graph
 from aws.dynamodb import (
@@ -15,6 +16,10 @@ from src.helper import encode_image
 
 bp = Blueprint('chat', __name__, url_prefix='/chat')
 
+def _is_guest():
+    """Returns True if the current session belongs to a guest user."""
+    return session.get("is_guest", False) or session.get("user") == "guest"
+
 
 @bp.route("/")
 def chat_page():
@@ -24,6 +29,7 @@ def chat_page():
     user_obj = {
         "email":    session.get("user"),
         "username": session.get("username", session.get("user", "").split("@")[0]),
+        "is_guest": _is_guest(),
     }
     return render_template("chat.html", user=user_obj, start_new=str(start_new).lower())
 
@@ -34,6 +40,7 @@ def chat():
         return jsonify({"error": "Please log in to use the chatbot."}), 401
     try:
         msg = request.form.get("msg", "")
+        guest = _is_guest()
 
         # Image handling
         image_data = None
@@ -52,11 +59,12 @@ def chat():
                 print(f"Error processing upload: {img_err}")
 
         session_id = get_session_id()
-        config     = {"configurable": {"thread_id": session_id}}
+        config = {"configurable": {"thread_id": session_id}}
 
-        conv_id            = session.get("current_conv_id")
+        conv_id = None if guest else session.get("current_conv_id")
         current_db_history = []
-        if conv_id:
+
+        if not guest and conv_id:
             conversation = get_conversation(session.get("uid"), conv_id)
             if conversation and "messages" in conversation:
                 current_db_history = conversation["messages"]
@@ -66,12 +74,20 @@ def chat():
             "input":      msg,
             "image_data": image_data if image_data else None,
             "image_mime": image_mime  if image_data else None,
-            "uid":        session.get("uid"),
-            "user_email": session.get("user"),
+            "uid":        None if guest else session.get("uid"),
+            "user_email": None if guest else session.get("user"),
         }
 
         result = app_graph.invoke(input_payload, config=config)
         answer = result.get("answer", "Sorry, I encountered an issue.")
+
+        if guest:
+            return jsonify({
+                "answer":                   answer,
+                "conv_id":                  None,
+                "new_conversation_created": False,
+                "new_conv_title":           None,
+            })
 
         new_conversation_created = False
         title = None
@@ -90,7 +106,9 @@ def chat():
             {"role": "assistant", "content": answer},
         ]
         full_history_to_save = current_db_history + new_messages
-        upsert_conversation(session.get("uid"), conv_id, full_history_to_save, created_at)
+        
+        if session.get("uid"):
+            upsert_conversation(session.get("uid"), conv_id, full_history_to_save, created_at)
 
         return jsonify({
             "answer":                   answer,
@@ -108,6 +126,8 @@ def chat():
 def submit_report():
     if not session.get("user"):
         return jsonify({"error": "Not authenticated"}), 401
+    if _is_guest():
+        return jsonify({"error": "Guests cannot submit reports. Please log in."}), 403
     try:
         data        = request.get_json()
         msg_snippet = data.get("msg_snippet", "")
@@ -143,14 +163,14 @@ def clear_memory():
 
 @bp.route("/conversations", methods=["GET"])
 def conversations():
-    if not session.get("user"):
+    if not session.get("user") or _is_guest():
         return jsonify([])
     return jsonify(list_conversations(session.get("uid")))
 
 
 @bp.route("/conversation/<conv_id>", methods=["GET"])
 def conversation(conv_id):
-    if not session.get("user"):
+    if not session.get("user") or _is_guest():
         return jsonify({"error": "Not authenticated"}), 401
     conv = get_conversation(session.get("uid"), conv_id)
     if not conv:
@@ -160,7 +180,7 @@ def conversation(conv_id):
 
 @bp.route("/conversation/<conv_id>/restore", methods=["POST"])
 def restore_conversation(conv_id):
-    if not session.get("user"):
+    if not session.get("user") or _is_guest():
         return jsonify({"error": "Not authenticated"}), 401
     conv = get_conversation(session.get("uid"), conv_id)
     if not conv or "messages" not in conv:
@@ -181,7 +201,7 @@ def restore_conversation(conv_id):
 
 @bp.route("/conversation/<conv_id>/delete", methods=["DELETE"])
 def delete_conversation(conv_id):
-    if not session.get("user"):
+    if not session.get("user") or _is_guest():
         return jsonify({"error": "Not authenticated"}), 401
     delete_conversation_from_db(session.get("uid"), conv_id)
     return jsonify({"status": "success", "message": "Conversation deleted"})

@@ -14,8 +14,13 @@ bp = Blueprint('auth', __name__)
 
 @bp.route("/auth")
 def auth_page():
-    if session.get("user"):
+    user = session.get("user")
+    is_guest = session.get("is_guest", False) or user == "guest"
+    
+    # Only redirect if they have an active session AND they are not a guest
+    if user and not is_guest:
         return redirect(url_for("chat.index"))
+        
     return render_template("auth.html")
 
 @bp.route("/signup", methods=["POST"])
@@ -33,7 +38,6 @@ def signup():
             "user": email, "uid": result.get("user_sub"),
             "username": username, "role": "user"
         })
-        # Note: url_for uses 'blueprint_name.function_name'
         return jsonify({"success": True, "redirect": url_for("chat.chat_page")})
     return jsonify(result)
 
@@ -50,20 +54,32 @@ def login():
         auth_result = result["auth_result"]
         id_token = auth_result["IdToken"]
         claims = jwt.get_unverified_claims(id_token)
-        
-        # Store both email and the actual Cognito username
+
         session.update({
-            "user": identifier, 
-            "uid": claims["sub"], 
+            "user": identifier,
+            "uid": claims["sub"],
             "id_token": id_token,
             "username": claims.get("name", identifier.split("@")[0]),
-            "cognito_username": claims.get("cognito:username", identifier),  # Store actual Cognito username
-            "role": get_user_role_from_claims(id_token)
+            "cognito_username": claims.get("cognito:username", identifier),
+            "role": get_user_role_from_claims(id_token),
+            "is_guest": False # Explicitly clear guest status on real login
         })
         session['start_new_chat'] = True
         redirect_url = url_for("admin.dashboard") if is_admin() else url_for("chat.chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
     return jsonify(result)
+
+@bp.route("/guest", methods=["POST"])
+def guest_login():
+    """Allow unenrolled visitors to use the general inquiry chatbot without an account."""
+    session.clear()
+    session["user"] = "guest"
+    session["uid"] = None
+    session["username"] = "Guest"
+    session["role"] = "guest"
+    session["is_guest"] = True
+    session["start_new_chat"] = True
+    return jsonify({"success": True, "redirect": url_for("chat.chat_page")})
 
 @bp.route("/forgot-password", methods=["POST"])
 def handle_forgot_password():

@@ -8,6 +8,71 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/auth.css')}}"/>
+    <style>
+        /* ── Guest divider ─────────────────────────── */
+        .or-divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 0 0 1rem;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+        .or-divider::before,
+        .or-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── Guest button ──────────────────────────── */
+        .guest-button {
+            width: 100%;
+            padding: 13px;
+            background: transparent;
+            border: 1.5px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-secondary);
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: all 0.25s ease;
+            font-family: inherit;
+            margin-bottom: 1rem;
+        }
+        .guest-button:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(26, 115, 232, 0.04);
+            transform: translateY(-1px);
+        }
+        .guest-button i {
+            font-size: 15px;
+            opacity: 0.75;
+        }
+
+        /* ── Guest disclaimer ──────────────────────── */
+        .guest-disclaimer {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            text-align: center;
+            line-height: 1.5;
+            margin-bottom: 0.5rem;
+            padding: 0 4px;
+        }
+        .guest-disclaimer i {
+            color: var(--accent);
+            margin-right: 4px;
+        }
+
+        /* ── Only show guest section on login form ─── */
+        #guestSection { display: block; }
+    </style>
 </head>
 <body>
     <div class="login-container">
@@ -21,7 +86,8 @@
             <h1 id="formTitle">Welcome Back</h1>
             <p id="formSubtitle">Sign in to access Samar College Assistant</p>
         </div>
-        
+
+        <!-- ── Login Form ───────────────────────────────── -->
         <form id="loginForm">
             <div class="form-group">
                 <label for="email">Email Address</label>
@@ -49,8 +115,22 @@
                 <a href="#" class="forgot-password" id="forgotPasswordLink">Forgot Password?</a>
             </div>
             <button type="submit" class="login-button" id="loginButton">Sign In</button>
+
+            <!-- ── Guest access (only shown on login form) ── -->
+            <div id="guestSection">
+                <div class="or-divider">or</div>
+                <p class="guest-disclaimer">
+                    <i class="fas fa-info-circle"></i>
+                    Not enrolled? You can still ask general questions about Samar College.
+                </p>
+                <button type="button" class="guest-button" id="guestButton">
+                    <i class="fas fa-user-circle"></i>
+                    Continue as Guest
+                </button>
+            </div>
         </form>
-        
+
+        <!-- ── Sign-up Form ──────────────────────────────── -->
         <form id="signupForm" style="display:none;">
             <div class="form-group">
                 <label for="signupUsername">Username</label>
@@ -76,7 +156,8 @@
             </div>
             <button type="submit" class="login-button" id="signupButton">Sign Up</button>
         </form>
-        
+
+        <!-- ── Forgot-password Form ──────────────────────── -->
         <form id="forgotPasswordForm" style="display:none;">
             <div class="form-group">
                 <label for="resetEmail">Email Address</label>
@@ -91,10 +172,11 @@
                 <a href="#" id="backToLoginFromForgot">Back to Login</a>
             </div>
         </form>
-        
+
+        <!-- ── Reset-flow Form ───────────────────────────── -->
         <form id="resetFlowForm" style="display:none;">
             <input type="hidden" id="resetFlowEmail" name="email" value="">
-            
+
             <div class="form-group">
                 <label>Verification Code</label>
                 <div class="code-input-container">
@@ -126,7 +208,7 @@
                     <div class="requirement" id="specialReq"><i class="fas fa-circle"></i><span>One special character</span></div>
                 </div>
             </div>
-            
+
             <div class="form-group">
                 <label for="confirmPassword">Confirm Password</label>
                 <div class="input-wrapper">
@@ -138,23 +220,23 @@
                     <i class="fas fa-times-circle"></i><span>Passwords do not match</span>
                 </div>
             </div>
-            
+
             <button type="submit" class="login-button" id="resetButton">Reset Password</button>
 
             <div class="resend-code">
                 Didn't receive the code? <a href="#" id="resendCodeLink">Resend Code</a>
             </div>
-
             <div class="back-to-login">
                 <a href="#" id="backToLoginFromReset">Back to Login</a>
             </div>
         </form>
 
-        <div class="signup-link" id="toggleLink">
+        {#<div class="signup-link" id="toggleLink">
             Don't have an account? <a href="#" id="switchToSignup">Sign up here</a>
-        </div>
+        </div> #}
     </div>
-    
+
+    <!-- Notification toast -->
     <div class="notification" id="notification">
         <div class="notification-icon">
             <i class="fas fa-check"></i>
@@ -164,7 +246,47 @@
             <div class="notification-message">Operation completed successfully</div>
         </div>
     </div>
-    
+
     <script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+    <script>
+    // ── Guest login handler ─────────────────────────────────────
+    $(document).ready(function () {
+        $('#guestButton').on('click', function () {
+            const btn = $(this);
+            btn.prop('disabled', true).html('<span class="loading"></span>Entering as Guest…');
+
+            $.post('/guest', function (response) {
+                if (response.success) {
+                    window.location.href = response.redirect;
+                } else {
+                    showNotification('Could not start guest session. Please try again.', 'error');
+                    btn.prop('disabled', false).html('<i class="fas fa-user-circle"></i> Continue as Guest');
+                }
+            }).fail(function () {
+                showNotification('Network error. Please try again.', 'error');
+                btn.prop('disabled', false).html('<i class="fas fa-user-circle"></i> Continue as Guest');
+            });
+        });
+
+        // Hide guest section when switching to signup / forgot-password forms
+        $(document).on('click', '#switchToSignup, #forgotPasswordLink', function () {
+            $('#guestSection').hide();
+        });
+        $(document).on('click', '#switchToLogin, #backToLoginFromForgot, #backToLoginFromReset', function () {
+            $('#guestSection').show();
+        });
+
+        // Re-expose showNotification for the guest button fallback
+        function showNotification(message, type) {
+            const n = $('#notification');
+            n.removeClass('success error').addClass(type);
+            n.find('.notification-title').text(type === 'success' ? 'Success' : 'Error');
+            n.find('.notification-message').text(message);
+            n.find('.notification-icon i').attr('class', type === 'success' ? 'fas fa-check' : 'fas fa-exclamation-triangle');
+            n.addClass('show');
+            setTimeout(() => n.removeClass('show'), 4000);
+        }
+    });
+    </script>
 </body>
 </html>
