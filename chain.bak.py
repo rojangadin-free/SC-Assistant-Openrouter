@@ -7,16 +7,13 @@ from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
 
 from langchain_community.retrievers import PineconeHybridSearchRetriever
-from langchain_classic.retrievers import EnsembleRetriever
+from langchain.retrievers import EnsembleRetriever
 from pinecone_text.sparse import BM25Encoder
 from sentence_transformers import CrossEncoder
 
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
-from config import (
-    INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, 
-    PINECONE_API_KEY, VERTEX_EXPRESS_API_KEY
-)
+from config import INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, GOOGLE_API_KEY, PINECONE_API_KEY
 
 # Student records
 from aws.students import get_student_by_uid, get_student_by_email, format_student_context
@@ -65,39 +62,24 @@ def rerank_docs(query: str, docs: list) -> list:
         return docs
     pairs  = [(query, doc.page_content) for doc in docs]
     scores = reranker.predict(pairs)
-    
-    boosted_ranked = []
-    for score, doc in zip(scores, docs):
-        source = doc.metadata.get("source", "").lower()
-        
-        # 🚀 MATHEMATICAL BOOST FOR NEW DOCUMENTS
-        # If the document is NOT the base 2024 handbook, we give its relevance score 
-        # a massive artificial boost (+15.0) so it mathematically destroys the 
-        # old handbook in the ranking algorithm and jumps to the top of the AI's memory.
-        if "samar-college-2024.pdf" not in source:
-            score += 15.0 
-            
-        boosted_ranked.append((score, doc))
-        
-    ranked = sorted(boosted_ranked, key=lambda x: x[0], reverse=True)
+    ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
     top    = [doc for _, doc in ranked[:RERANK_TOP_K]]
     print(f"  Reranked {len(docs)} → top {len(top)} docs")
     return top
 
 
-# --- VERTEX AI EXPRESS MODE INSTANTIATION ---
 chatModel = ChatGoogleGenerativeAI(
     model=CHAT_MODEL_NAME,
-    api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,  # Triggers the Vertex AI endpoint
+    google_api_key=GOOGLE_API_KEY,
     temperature=0.3,
+    max_tokens=None,
+    timeout=None,
     max_retries=2,
 )
 
 summarizer = ChatGoogleGenerativeAI(
     model=SUMMARIZER_MODEL_NAME,
-    api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,  # Triggers the Vertex AI endpoint
+    google_api_key=GOOGLE_API_KEY,
     temperature=0,
 )
 
@@ -108,23 +90,19 @@ class ChatState(TypedDict):
     image_data: Optional[str]
     chat_history: List[Dict[str, str]]
     answer: str
+    # Optional — injected per request, not stored in LangGraph state
     uid: Optional[str]
     user_email: Optional[str]
 
 
 def docs_to_context(docs) -> str:
-    """Format retrieved docs with clear citation anchors and priority tags."""
+    """Format retrieved docs with clear citation anchors."""
     context_parts = []
     for i, d in enumerate(docs):
         source = d.metadata.get("source", "Unknown")
         page   = d.metadata.get("page", "?")
-        
-        # 🚀 INJECT PRIORITY TAGS FOR THE AI
-        is_base = "samar-college-2024.pdf" in source.lower()
-        priority_tag = "" if is_base else " [🚨 NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
-        
         text   = (
-            f"[DOCUMENT {i + 1}]{priority_tag}\n"
+            f"[DOCUMENT {i + 1}]\n"
             f"Source: {source} | Page: {page}\n"
             f"Content:\n{d.page_content}"
         )
@@ -146,6 +124,15 @@ def summarize_history(history: List[Dict[str, str]]) -> str:
 
 
 def safe_prompt(template: str, **kwargs) -> str:
+    """
+    Replace {placeholder} tokens manually instead of using str.format().
+
+    str.format() crashes with KeyError/IndexError whenever any of the
+    substituted values contain curly braces — e.g. grade tables, JSON
+    snippets in chat history, or student data like "GPA {2.5}".
+    Manual replacement is immune to that because it never parses the
+    *values*, only the template placeholders.
+    """
     result = template
     for key, value in kwargs.items():
         result = result.replace("{" + key + "}", str(value) if value is not None else "")
@@ -164,6 +151,7 @@ def create_graph():
             uid        = state.get("uid")
             user_email = state.get("user_email")
 
+            # ── 1. Image Analysis ──────────────────────────────────
             if image_data:
                 vision_msg = HumanMessage(content=[
                     {"type": "text",
@@ -177,6 +165,7 @@ def create_graph():
                 except Exception as e:
                     print(f"Image analysis failed (non-fatal): {e}")
 
+            # ── 2. Always fetch student record fresh from DynamoDB ────
             student_context = ""
             if uid:
                 try:
@@ -192,6 +181,8 @@ def create_graph():
                 except Exception as e:
                     print(f"  Student record fetch failed (non-fatal): {e}")
 
+            # ── 3. Query Contextualization ─────────────────────────
+            # Rewrite "for new student?" to "how to enroll for new student?" based on history
             standalone_query = user_text
             if history:
                 try:
@@ -200,20 +191,24 @@ def create_graph():
                         {"role": "system", "content": "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone search query that can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it exactly as is."},
                         {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
                     ]
+                    # Use summarizer model for quick rewriting
                     standalone_query = summarizer.invoke(context_prompt).content.strip()
                     print(f"  Contextualized Query: {standalone_query}")
                 except Exception as e:
                     print(f"  Contextualization failed (non-fatal): {e}")
                     standalone_query = user_text
 
+            # ── 4. Retrieval ───────────────────────────────────────
             print(f"\n=== STEP 1: Retrieval (Query: '{standalone_query}') ===")
             try:
+                # Use the contextualized query for Pinecone
                 initial_docs = retriever.invoke(standalone_query)
                 print(f"  RRF returned {len(initial_docs)} candidates")
             except Exception as e:
                 print(f"  Retrieval failed (non-fatal): {e}")
                 initial_docs = []
 
+            # ── 5. Reranking ───────────────────────────────────────
             print(f"\n=== STEP 2: Reranking to top {RERANK_TOP_K} ===")
             try:
                 reranked_docs = rerank_docs(standalone_query, initial_docs)
@@ -228,6 +223,7 @@ def create_graph():
 
             context_str = docs_to_context(reranked_docs)
 
+            # ── 6. History management ──────────────────────────────
             if len(history) > 10:
                 try:
                     summary = summarize_history(history[:-6])
@@ -243,6 +239,7 @@ def create_graph():
                 [f"{m['role'].upper()}: {m['content']}" for m in history]
             )
 
+            # ── 7. Build final prompt (safe substitution) ──────────
             final_system_prompt = safe_prompt(
                 system_prompt,
                 retrieved_docs=context_str,
@@ -254,7 +251,7 @@ def create_graph():
 
             if image_data:
                 content_block = [
-                    {"type": "text", "text": user_text}, 
+                    {"type": "text", "text": user_text}, # Pass the raw user_text to the final LLM
                     {"type": "image_url",
                      "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
                 ]
@@ -264,21 +261,12 @@ def create_graph():
 
             response = chatModel.invoke(messages)
 
-            # --- FIX FOR GEMINI 3.1 CONTENT BLOCKS ---
-            # Extract the string regardless of whether it's a string (2.5) or a list of blocks (3.1)
-            answer_text = response.content
-            if isinstance(answer_text, list):
-                answer_text = "".join(
-                    block.get("text", "") for block in answer_text 
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
-
             new_history = history + [
                 {"role": "user",      "content": user_text + (" [Image Uploaded]" if image_data else "")},
-                {"role": "assistant", "content": answer_text},
+                {"role": "assistant", "content": response.content},
             ]
 
-            return {"answer": answer_text, "chat_history": new_history}
+            return {"answer": response.content, "chat_history": new_history}
 
         except Exception as e:
             import traceback

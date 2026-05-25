@@ -59,6 +59,7 @@
         <div class="activity-list">
           </div>
       </div>
+
     </div>
 
     <div id="uploadSection" class="dashboard-section">
@@ -81,9 +82,6 @@
         <div class="upload-area" id="uploadArea">
           <i class="fas fa-cloud-upload-alt upload-icon-large"></i>
           <p class="upload-text">Drag and drop your files here</p>
-          <!-- 
-            FIX: Re-added the subtext as requested.
-          -->
           <p class="upload-subtext">or click to browse files</p>
           <input type="file" id="fileInput" class="file-input" multiple>
           <label for="fileInput" class="upload-button">Browse Files</label>
@@ -133,14 +131,12 @@
               </tr>
             </thead>
             <tbody id="userListBody">
-              <!-- User rows will be inserted here by JS -->
-            </tbody>
+              </tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- Reports Section -->
     <div id="reportsSection" class="dashboard-section">
       <div class="section-header">
         <button class="back-button" id="backToOverviewFromReports">
@@ -150,33 +146,31 @@
         <h2>Student Reports</h2>
       </div>
 
-      <div style="background:var(--card-bg);border-radius:12px;box-shadow:0 4px 12px var(--shadow);overflow:hidden;">
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);overflow:hidden;border-top:4px solid var(--sc-yellow);">
 
-        <!-- Filter Tabs -->
         <div style="display:flex;gap:.5rem;padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;">
           <button class="report-filter-btn active" data-filter="pending"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
             Pending <span id="rbadge-pending" style="background:#ef4444;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
           </button>
           <button class="report-filter-btn" data-filter="done"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
             Done <span id="rbadge-done" style="background:#22c55e;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
           </button>
           <button class="report-filter-btn" data-filter="ignored"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
             Ignored <span id="rbadge-ignored" style="background:#94a3b8;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
           </button>
           <button class="report-filter-btn" data-filter="all"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--card-bg);color:var(--text-secondary);font-size:.82rem;cursor:pointer;transition:all .15s;">
+            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;transition:all .15s;">
             All
           </button>
         </div>
 
-        <!-- Table -->
         <div style="width:100%;overflow-x:auto;">
           <table id="reportsTable" style="width:100%;border-collapse:collapse;font-size:.875rem;">
             <thead>
-              <tr style="background:var(--light-bg);">
+              <tr style="background:var(--bg-main);">
                 <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Date</th>
                 <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Student</th>
                 <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Reason</th>
@@ -195,7 +189,6 @@
       </div>
     </div>
 
-    <!-- Report Detail Modal -->
     <div class="confirm-dialog" id="reportDetailModal">
       <div class="confirm-box" style="max-width:520px;">
         <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
@@ -209,19 +202,18 @@
           <div id="rd-other-row" style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Details</span><span id="rd-other">—</span></div>
           <div style="display:flex;gap:.75rem;font-size:.875rem;"><span style="min-width:80px;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;">Status</span><span id="rd-status">—</span></div>
         </div>
-        <div style="background:var(--light-bg);border-radius:8px;padding:.9rem;border:1px solid var(--border);margin-bottom:1.25rem;">
+        <div style="background:var(--bg-main);border-radius:8px;padding:.9rem;border:1px solid var(--border);margin-bottom:1.25rem;">
           <div style="font-size:.72rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.4rem;">AI Response Snippet</div>
           <div id="rd-snippet" style="font-size:.875rem;color:var(--text-secondary);font-style:italic;line-height:1.5;max-height:110px;overflow-y:auto;">—</div>
         </div>
         <div class="confirm-buttons" id="rdActions">
           <button class="confirm-button cancel-button" id="cancelReportDetailBtn">Cancel</button>
-          <button id="rdIgnoreBtn" style="padding:.5rem 1rem;border-radius:8px;border:1px solid var(--border);background:var(--light-bg);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-ban"></i> Ignore</button>
+          <button id="rdIgnoreBtn" style="padding:.5rem 1rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-main);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-ban"></i> Ignore</button>
           <button id="rdDoneBtn" style="padding:.5rem 1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-check"></i> Mark Done</button>
         </div>
       </div>
     </div>
 
-    <!-- Edit User Modal -->
     <div class="confirm-dialog" id="editUserModal">
       <div class="confirm-box" id="editUserBox" style="max-width: 500px;">
         <h3 class="confirm-title" style="display: flex; justify-content: space-between; align-items: center;">
@@ -264,15 +256,14 @@
 {% block extra_body %}
   {{ super() }}
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  
   <script>
+
   // ── Reports section wiring (runs after dashboard.js) ────────────
   $(function() {
-
-    // Hook into existing showSection from dashboard.js
     const _origShowSection = window._dashShowSection || null;
 
     function showReportsSection() {
-      // Hide all dashboard sections
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
       $('#reportsSection').addClass('active');
@@ -281,12 +272,9 @@
       loadReports();
     }
 
-    // Sidebar Reports click
     $('#reportsMenuItem').on('click', showReportsSection);
 
-    // Back button inside Reports section
     $(document).on('click', '#backToOverviewFromReports', function() {
-      // Delegate back to dashboard.js showSection
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
       $('#overviewSection').addClass('active');
@@ -299,7 +287,7 @@
     let currentRFilter = 'pending';
 
     $(document).on('click', '.report-filter-btn', function() {
-      $('.report-filter-btn').css({ background: 'var(--card-bg)', color: 'var(--text-secondary)', borderColor: 'var(--border)' });
+      $('.report-filter-btn').css({ background: 'var(--bg-main)', color: 'var(--text-secondary)', borderColor: 'var(--border)' });
       $(this).css({ background: '#6366f1', color: '#fff', borderColor: '#6366f1' });
       currentRFilter = $(this).data('filter');
       renderReports();
@@ -341,7 +329,7 @@
         return;
       }
 
-      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--light-bg);color:var(--text-secondary)' };
+      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--bg-main);color:var(--text-secondary)' };
       const rows = filtered.map(r => {
         const snippet = (r.msg_snippet || '').substring(0, 70) + ((r.msg_snippet||'').length > 70 ? '…' : '');
         const reason  = r.reason === 'Others' && r.other_text ? 'Others: ' + r.other_text.substring(0,35) : (r.reason || '—');
@@ -354,7 +342,7 @@
           <td style="padding:.75rem 1rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary);font-style:italic;font-size:.82rem;" title="${(r.msg_snippet||'').replace(/"/g,'&quot;')}">${snippet||'—'}</td>
           <td style="padding:.75rem 1rem;"><span style="display:inline-block;padding:.2rem .65rem;border-radius:999px;font-size:.75rem;font-weight:600;${st};">${r.status}</span></td>
           <td style="padding:.75rem 1rem;">
-            <button class="file-action r-view-btn" data-id="${r.report_id}" title="View" style="color:var(--primary);"><i class="fas fa-eye"></i></button>
+            <button class="file-action r-view-btn" data-id="${r.report_id}" title="View" style="color:var(--sc-green);"><i class="fas fa-eye"></i></button>
             ${isPending ? `
             <button class="file-action r-done-btn" data-id="${r.report_id}" title="Mark Done" style="color:#15803d;margin-left:4px;"><i class="fas fa-check"></i></button>
             <button class="file-action r-ignore-btn" data-id="${r.report_id}" title="Ignore" style="color:var(--text-secondary);margin-left:4px;"><i class="fas fa-ban"></i></button>` : ''}
@@ -386,7 +374,7 @@
       currentRid = id;
       const r = allReports.find(x => x.report_id === id);
       if (!r) return;
-      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--light-bg);color:var(--text-secondary)' };
+      const statusStyle = { pending: 'background:#fef3c7;color:#b45309', done: 'background:#dcfce7;color:#15803d', ignored: 'background:var(--bg-main);color:var(--text-secondary)' };
       $('#rd-email').text(r.reporter_email || '—');
       $('#rd-date').text(formatRDate(r.created_at));
       $('#rd-reason').text(r.reason || '—');
