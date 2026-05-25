@@ -115,21 +115,35 @@ $(document).ready(function() {
   // --- Citation badge renderer ---
   function renderCitations(rawText) {
     const placeholders = [];
+    const uniqueSources = []; 
 
     function makeBadge(filename, rawPage) {
       const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
       const file = filename.trim();
-      let label = file;
-      if (label.length > 35) label = label.substring(0, 32) + '…';
-      const displayText = cleanPage ? `${label} p.${cleanPage}` : label;
-      const titleText   = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
+      
+      // Assign a sequential number to this specific file
+      let sourceIndex = uniqueSources.indexOf(file);
+      if (sourceIndex === -1) {
+        uniqueSources.push(file);
+        sourceIndex = uniqueSources.length - 1;
+      }
+      const citationNumber = sourceIndex + 1;
+
+      // --- FIX: Strictly just the number! ---
+      const displayText = `[${citationNumber}]`;
+      
+      // Keep the full filename and page in the hover tooltip 
+      const titleText = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
+      
       const badge = (
         `<span class="citation-badge" ` +
         `data-source="${file}" ` +
-        `title="${titleText}">` +
-        `<i class="fas fa-file-alt"></i>&nbsp;${displayText}` +
+        `title="${titleText}" ` +
+        `style="padding: 2px 6px; font-size: 0.85em; cursor: pointer; white-space: nowrap;">` +
+        `<sup>${displayText}</sup>` +
         `</span>`
       );
+      
       const key = `CITATIONPLACEHOLDER${placeholders.length}END`;
       placeholders.push({ key, badge });
       return key;
