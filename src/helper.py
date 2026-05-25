@@ -281,7 +281,17 @@ def generate_image_caption(image: Image.Image, prompt: str = "Analyze this image
     for attempt in range(1, 4):
         try:
             resp = chat.invoke([msg])
-            return (resp.content or "").strip()
+            
+            # --- FIX FOR GEMINI 3 CONTENT BLOCKS ---
+            answer_text = resp.content
+            if isinstance(answer_text, list):
+                answer_text = "".join(
+                    block.get("text", "") for block in answer_text 
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+                
+            return (answer_text or "").strip()
+            
         except Exception as e:
             last_err = e
             sleep_s = min(8, 2 ** attempt)

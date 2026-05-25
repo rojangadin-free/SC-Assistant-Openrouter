@@ -1,9 +1,15 @@
 import boto3
-import mimetypes # --- NEW IMPORT ---
+import mimetypes
 from botocore.exceptions import ClientError
-from config import S3_BUCKET_NAME
+from botocore.client import Config
+from config import S3_BUCKET_NAME, AWS_REGION
 
-s3_client = boto3.client('s3')
+# Explicitly set the region and signature version so URLs work on EC2!
+s3_client = boto3.client(
+    's3',
+    region_name=AWS_REGION,
+    config=Config(signature_version='s3v4')
+)
 
 def upload_file_to_s3(file_path, object_name):
     """
