@@ -8,6 +8,10 @@ def create_app():
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app.secret_key = FLASK_SECRET_KEY
 
+    @app.route('/health')
+    def health_check():
+        return "OK", 200
+
     with app.app_context():
         from . import auth
         app.register_blueprint(auth.bp)
