@@ -86,21 +86,36 @@ def rerank_docs(query: str, docs: list) -> list:
 
 
 # --- VERTEX AI EXPRESS MODE INSTANTIATION ---
-chatModel = ChatGoogleGenerativeAI(
+
+# 1. The Main Model (Attempts to answer within 30 seconds)
+primary_model = ChatGoogleGenerativeAI(
     model=CHAT_MODEL_NAME,
     api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,  # Triggers the Vertex AI endpoint
+    vertexai=True,
     temperature=0.3,
-    max_retries=2,
+    max_retries=0,   # CRITICAL: Set to 0 so it immediately falls back on timeout
+    timeout=30.0,    # 30-second strict cutoff
 )
 
+# 2. The Fallback Model (Fast model to save the day)
+fallback_model = ChatGoogleGenerativeAI(
+    model=SUMMARIZER_MODEL_NAME, 
+    api_key=VERTEX_EXPRESS_API_KEY,
+    vertexai=True,
+    temperature=0.3,
+    max_retries=2,   # The fallback is allowed to retry if there's a network blip
+)
+
+# 3. Combine them using LangChain's built-in fallback router
+chatModel = primary_model.with_fallbacks([fallback_model])
+
+# (Leave your summarizer below exactly as it is)
 summarizer = ChatGoogleGenerativeAI(
     model=SUMMARIZER_MODEL_NAME,
     api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,  # Triggers the Vertex AI endpoint
+    vertexai=True, 
     temperature=0,
 )
-
 
 # ====== Chat State ======
 class ChatState(TypedDict):
