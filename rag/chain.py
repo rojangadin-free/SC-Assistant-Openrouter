@@ -38,7 +38,7 @@ sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
-    top_k=10,
+    top_k=20,
     alpha=0.0,
 )
 
@@ -46,7 +46,7 @@ dense_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
-    top_k=10,
+    top_k=20,
     alpha=1.0,
 )
 
@@ -57,7 +57,7 @@ retriever = EnsembleRetriever(
 
 # Cross-encoder reranker
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
-RERANK_TOP_K = 8
+RERANK_TOP_K = 15
 
 
 def rerank_docs(query: str, docs: list) -> list:
@@ -208,18 +208,19 @@ def create_graph():
                     print(f"  Student record fetch failed (non-fatal): {e}")
 
             standalone_query = user_text
-            if history:
-                try:
-                    recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]])
-                    context_prompt = [
-                        {"role": "system", "content": "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone search query that can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it exactly as is."},
-                        {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
-                    ]
-                    standalone_query = summarizer.invoke(context_prompt).content.strip()
-                    print(f"  Contextualized Query: {standalone_query}")
-                except Exception as e:
-                    print(f"  Contextualization failed (non-fatal): {e}")
-                    standalone_query = user_text
+           
+            # ALWAYS run query optimization to catch terminology mismatches (even on first message)
+            try:
+                recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]])
+                context_prompt = [
+                    {"role": "system", "content": "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone search query that can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it exactly as is."},
+                    {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
+                ]
+                standalone_query = summarizer.invoke(context_prompt).content.strip()
+                print(f"  Contextualized Query: {standalone_query}")
+            except Exception as e:
+                print(f"  Contextualization failed (non-fatal): {e}")
+                standalone_query = user_text
 
             print(f"\n=== STEP 1: Retrieval (Query: '{standalone_query}') ===")
             try:
