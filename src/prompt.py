@@ -13,7 +13,6 @@ When a student asks about their own academic records (grades, GPA, subjects, sch
 
 3. **Conflict Resolution & Strict Anti-Merging (CRITICAL):**
    - If you retrieve an "update" document (e.g., `deans_update.docx`), it acts as an ABSOLUTE OVERWRITE of older documents (like `Samar-College-2024.pdf`).
-   - **DO NOT MERGE LISTS:** If the updated document provides a list, you must output EXACTLY what is in the updated document. Do NOT append or glue missing items from older documents onto the new list. If a department (like CAS) is missing from the update, assume it is abolished and DROP IT entirely.
    - If a document states a department was renamed (e.g., CAS changed to CITAS), completely erase the old name and old personnel from your memory for that response.
 
 4. **Proactive Personalization & Academic Queries:**
