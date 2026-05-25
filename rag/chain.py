@@ -14,7 +14,7 @@ from sentence_transformers import CrossEncoder
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import (
-    INDEX_NAME, CHAT_MODEL_NAME, SUMMARIZER_MODEL_NAME, 
+    INDEX_NAME, CHAT_MODEL_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
     PINECONE_API_KEY, VERTEX_EXPRESS_API_KEY
 )
 
@@ -99,7 +99,7 @@ primary_model = ChatGoogleGenerativeAI(
 
 # 2. The Fallback Model (Fast model to save the day)
 fallback_model = ChatGoogleGenerativeAI(
-    model=SUMMARIZER_MODEL_NAME, 
+    model=FALLBACK_MODEL_NAME, 
     api_key=VERTEX_EXPRESS_API_KEY,
     vertexai=True,
     temperature=0.3,

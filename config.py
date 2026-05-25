@@ -23,6 +23,7 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 
 # LLM Configuration
 CHAT_MODEL_NAME = "gemini-3-flash-preview" 
+FALLBACK_MODEL_NAME = "gemini-3.5-flash"
 SUMMARIZER_MODEL_NAME = "gemini-2.5-flash"
 
 if not PINECONE_API_KEY:
