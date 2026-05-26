@@ -93,7 +93,7 @@ primary_model = ChatGoogleGenerativeAI(
     api_key=VERTEX_EXPRESS_API_KEY,
     vertexai=True,
     temperature=0.3,
-    max_retries=0,   # CRITICAL: Set to 0 so it immediately falls back on timeout
+    max_retries=1,   # CRITICAL: Set to 0 so it immediately falls back on timeout
     timeout=30.0,    # 30-second strict cutoff
 )
 
@@ -103,7 +103,7 @@ fallback_model = ChatGoogleGenerativeAI(
     api_key=VERTEX_EXPRESS_API_KEY,
     vertexai=True,
     temperature=0.3,
-    max_retries=2,   # The fallback is allowed to retry if there's a network blip
+    max_retries=0,   # The fallback is allowed to retry if there's a network blip
 )
 
 # 3. Combine them using LangChain's built-in fallback router
@@ -211,13 +211,36 @@ def create_graph():
            
             # ALWAYS run query optimization to catch terminology mismatches (even on first message)
             try:
-                recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]])
+                recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
+                
                 context_prompt = [
-                    {"role": "system", "content": "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone search query that can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it exactly as is."},
+                    {
+                        "role": "system", 
+                        "content": (
+                            "You are a search query optimizer. Given a chat history and the latest user question, formulate a standalone search query.\n"
+                            "CRITICAL SEARCH RULES: \n"
+                            "1. If the user asks about 'enrollment requirements' or 'requirements to enroll', you MUST output exactly: 'Admission Requirements for Freshmen, Transferees, and Continuing Students'.\n"
+                            "2. Do NOT answer the question, just output the optimized search query."
+                        )
+                    },
                     {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
                 ]
-                standalone_query = summarizer.invoke(context_prompt).content.strip()
+                
+                summary_resp = summarizer.invoke(context_prompt).content
+                
+                # --- BULLETPROOF STRING CONVERSION ---
+                if isinstance(summary_resp, list):
+                    # Safely combine it whether it's a list of dicts or a list of strings
+                    summary_resp = "".join([
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in summary_resp
+                    ])
+                elif not isinstance(summary_resp, str):
+                    summary_resp = str(summary_resp)
+                    
+                standalone_query = summary_resp.strip()
                 print(f"  Contextualized Query: {standalone_query}")
+                
             except Exception as e:
                 print(f"  Contextualization failed (non-fatal): {e}")
                 standalone_query = user_text

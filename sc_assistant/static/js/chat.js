@@ -121,27 +121,32 @@ $(document).ready(function() {
       const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
       const file = filename.trim();
       
-      // Assign a sequential number to this specific file
       let sourceIndex = uniqueSources.indexOf(file);
       if (sourceIndex === -1) {
         uniqueSources.push(file);
         sourceIndex = uniqueSources.length - 1;
       }
       const citationNumber = sourceIndex + 1;
-
-      // --- FIX: Strictly just the number! ---
       const displayText = `[${citationNumber}]`;
-      
-      // Keep the full filename and page in the hover tooltip 
       const titleText = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
       
+      // --- UPDATE THIS LINE ---
+      // Add /chat to the beginning of the URL so it matches your Blueprint
+      let url = `/chat/document/${encodeURIComponent(file)}`;
+      
+      // If it's a PDF and has a page number, append the #page= command
+      if (cleanPage && file.toLowerCase().endsWith('.pdf')) {
+        url += `#page=${cleanPage}`;
+      }
+      
+      // --- FIX: Removed citation-badge class and forced transparent background ---
       const badge = (
-        `<span class="citation-badge" ` +
+        `<a href="${url}" target="_blank" ` +
         `data-source="${file}" ` +
         `title="${titleText}" ` +
-        `style="padding: 2px 6px; font-size: 0.85em; cursor: pointer; white-space: nowrap;">` +
+        `style="background: transparent; border: none; padding: 0 2px; font-size: 0.85em; cursor: pointer; white-space: nowrap; text-decoration: none; color: #007bff; font-weight: bold;">` +
         `<sup>${displayText}</sup>` +
-        `</span>`
+        `</a>`
       );
       
       const key = `CITATIONPLACEHOLDER${placeholders.length}END`;

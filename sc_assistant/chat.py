@@ -1,5 +1,5 @@
 from flask import (
-    Blueprint, render_template, jsonify, request, session, redirect, url_for
+    Blueprint, render_template, jsonify, request, send_from_directory, session, redirect, url_for
 )
 import datetime
 import uuid
@@ -149,6 +149,18 @@ def submit_report():
     except Exception as e:
         print(f"Error saving report: {e}")
         return jsonify({"error": str(e)}), 500
+    
+
+# Assuming you are using blueprints, change @app.route to @bp.route if necessary
+@bp.route('/document/<filename>')
+def serve_document(filename):
+    # Find the absolute path to your data folder
+    # This assumes your 'data' folder is in the root SC-Assistant-Main directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(current_dir, '..', 'data')
+    
+    # Send the file securely to the browser
+    return send_from_directory(data_dir, filename)
 
 
 @bp.route("/clear", methods=["POST"])
