@@ -117,7 +117,7 @@ $(document).ready(function() {
     const placeholders = [];
     const uniqueSources = []; 
 
-    function makeBadge(filename, rawPage) {
+    function makeBadge(filename, rawPage, precedingText) {
       const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
       const file = filename.trim();
       
@@ -130,16 +130,30 @@ $(document).ready(function() {
       const displayText = `[${citationNumber}]`;
       const titleText = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
       
-      // --- UPDATE THIS LINE ---
-      // Add /chat to the beginning of the URL so it matches your Blueprint
       let url = `/chat/document/${encodeURIComponent(file)}`;
       
-      // If it's a PDF and has a page number, append the #page= command
       if (cleanPage && file.toLowerCase().endsWith('.pdf')) {
-        url += `#page=${cleanPage}`;
+        let bestWord = "";
+        
+        if (precedingText) {
+          const allWords = precedingText.split(/\s+/);
+          const lastWords = allWords.slice(-8);
+          
+          for (let w of lastWords) {
+            let cleanWord = w.replace(/[^\w-]/g, '');
+            if (isNaN(cleanWord) && cleanWord.length > bestWord.length) {
+              bestWord = cleanWord;
+            }
+          }
+        }
+        
+        if (bestWord.length > 3) {
+          url += `#page=${cleanPage}&search=${encodeURIComponent(bestWord)}`;
+        } else {
+          url += `#page=${cleanPage}`;
+        }
       }
       
-      // --- FIX: Removed citation-badge class and forced transparent background ---
       const badge = (
         `<a href="${url}" target="_blank" ` +
         `data-source="${file}" ` +
@@ -154,14 +168,28 @@ $(document).ready(function() {
       return key;
     }
 
+    // --- FIX: Bulletproof Regex that catches ANY page formatting ---
     const withPlaceholders = rawText.replace(
-      /\[SOURCE:\s*([^\]|]+?)\s*(?:\|\s*(?:pages?[:\s]*|p\.?\s*)?([\d.,\s]+?))?\s*\]/gi,
-      function(match, filename, pagesRaw) {
-        if (!pagesRaw || !pagesRaw.trim()) {
-          return makeBadge(filename, '');
+      /\[SOURCE:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\s*\]/gi,
+      function(match, filename, rawPageStr, offset, fullString) {
+        
+        const precedingText = fullString.slice(0, offset);
+
+        // If the AI didn't provide a page section at all
+        if (!rawPageStr || !rawPageStr.trim()) {
+          return makeBadge(filename, '', precedingText);
         }
-        const pages = pagesRaw.split(',').map(p => p.trim()).filter(Boolean);
-        return pages.map(p => makeBadge(filename, p)).join('');
+
+        // Smart extractor: strips out words like "Pg" or "Page" and just grabs the numbers
+        const pageMatches = rawPageStr.match(/\d+(\.\d+)?/g);
+
+        // If it still couldn't find a number, just link the doc without a page
+        if (!pageMatches || pageMatches.length === 0) {
+          return makeBadge(filename, '', precedingText);
+        }
+
+        // Create a clickable badge for each page number found
+        return pageMatches.map(p => makeBadge(filename, p, precedingText)).join('');
       }
     );
 
