@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request, session, render_template, redirect, url_for
 from .utils import is_admin
-from aws.dynamodb import list_reports, update_report_status
+from aws.dynamodb import list_reports, update_report_status, get_conversation
 
 bp_reports = Blueprint('reports', __name__, url_prefix='/admin/reports')
 
@@ -42,3 +42,15 @@ def api_resolve():
         return jsonify({"error": "Invalid request"}), 400
     update_report_status(report_id, status)
     return jsonify({"status": "ok"})
+
+
+@bp_reports.route("/api/conversation/<reporter_uid>/<conv_id>")
+def api_get_reported_conversation(reporter_uid, conv_id):
+    if not _require_admin():
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    conv = get_conversation(reporter_uid, conv_id)
+    if not conv:
+        return jsonify({"error": "Conversation context not found"}), 404
+        
+    return jsonify(conv)

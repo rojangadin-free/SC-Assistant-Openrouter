@@ -5,15 +5,15 @@ import base64
 import hashlib
 import logging
 import time
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 
 from PIL import Image
 from langchain_core.messages import HumanMessage
 # Updated imports: Added HuggingFaceEmbeddings, kept ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
-from config import VERTEX_EXPRESS_API_KEY, CHAT_MODEL_NAME
+from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 def remove_headers_footers(text: str) -> str:
     """
-    Removes lines that look like page numbers or shouty headers.
-    Heuristic: keep it conservative to avoid deleting real content.
+    Removes lines that look like page numbers.
+    FIXED: No longer deletes ALL-CAPS lines so we preserve Chapter Titles!
     """
     lines = text.splitlines()
     cleaned = []
@@ -32,11 +32,8 @@ def remove_headers_footers(text: str) -> str:
         s = ln.strip()
         if not s:
             continue
-        # page numbers only
+        # Only remove standalone page numbers
         if re.fullmatch(r"\d{1,4}", s):
-            continue
-        # very short all-caps lines (common headers)
-        if len(s) < 40 and s.isupper() and re.search(r"[A-Z]{3,}", s):
             continue
         cleaned.append(s)
     return "\n".join(cleaned)
@@ -112,22 +109,20 @@ def semantic_split_sentences(text: str) -> List[str]:
     return out
 
 
+# --- FIX 1: Allow running_header to be passed in and returned ---
 def smart_chunking(
     text: str,
     max_tokens: int = 1000,
     overlap: int = 150,
     token_counter: Optional[Callable[[str], int]] = None,
-) -> List[str]:
+    running_header: str = "General College Information" 
+) -> Tuple[List[str], str]:
     """
-    Hybrid chunking:
-    - Clean text (preserve paragraphs)
-    - Paragraph-first packing
-    - Sentence fallback for large paragraphs
-    - Always applies overlap between emitted chunks
+    Hybrid chunking WITH Contextual Header Tracking across pages.
     """
     text = clean_text(text)
     if not text:
-        return []
+        return [], running_header
 
     count = token_counter or approx_tokens
     paragraphs = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
@@ -141,11 +136,11 @@ def smart_chunking(
         if not current_parts:
             return
 
-        chunk = " ".join(current_parts).strip()
-        if chunk:
+        chunk_body = " ".join(current_parts).strip()
+        if chunk_body:
+            chunk = f"[SECTION: {running_header}]\n{chunk_body}"
             chunks.append(chunk)
 
-        # build overlap from the end of current_parts
         if overlap > 0:
             keep: List[str] = []
             keep_tokens = 0
@@ -161,10 +156,21 @@ def smart_chunking(
             current_tokens = 0
 
     for para in paragraphs:
+        if len(para) < 100 and '\n' not in para:
+            clean_p = para.strip("*#- \t")
+            is_header = False
+            
+            if clean_p.isupper() and len(clean_p) > 4:
+                is_header = True
+            elif clean_p.lower().startswith(("chapter", "course offering", "college of", "department of", "history of")):
+                is_header = True
+                
+            if is_header:
+                running_header = clean_p
+        
         para_tokens = count(para)
 
         if para_tokens > max_tokens:
-            # sentence fallback
             for sent in semantic_split_sentences(para):
                 sent_tokens = count(sent)
                 if current_tokens + sent_tokens > max_tokens and current_parts:
@@ -179,13 +185,11 @@ def smart_chunking(
         current_parts.append(para)
         current_tokens += para_tokens
 
-    # final flush (no need to overlap after last)
     if current_parts:
-        chunk = " ".join(current_parts).strip()
-        if chunk:
-            chunks.append(chunk)
+        emit_current()
 
-    return chunks
+    # --- FIX 2: Return the updated header so the next page can use it ---
+    return chunks, running_header
 
 
 # ============================================================
@@ -205,7 +209,7 @@ def is_low_value_chunk(text: str) -> bool:
     if not text:
         return True
     t = text.strip()
-    if len(t) < 80:
+    if len(t) < 40:
         return True
     alpha = sum(c.isalpha() for c in t)
     if alpha / max(len(t), 1) < 0.35:
@@ -236,15 +240,21 @@ def get_local_embeddings():
     )
 
 
-_VISION_CLIENT: Optional[ChatGoogleGenerativeAI] = None
+_VISION_CLIENT: Optional[ChatOpenAI] = None
 
-def get_vision_client() -> ChatGoogleGenerativeAI:
+def get_vision_client() -> ChatOpenAI:
     global _VISION_CLIENT
     if _VISION_CLIENT is None:
-        _VISION_CLIENT = ChatGoogleGenerativeAI(
-            model=CHAT_MODEL_NAME,
-            api_key=VERTEX_EXPRESS_API_KEY, # Using the new Express Key
+        _VISION_CLIENT = ChatOpenAI(
+            model=FALLBACK_MODEL_NAME,
+            openai_api_key=OPENROUTER_API_KEY,
+            openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.1,
+            max_tokens=2048,
+            default_headers={
+                "HTTP-Referer": "https://samarcollege.edu.ph", # Optional metadata for OpenRouter rankings
+                "X-Title": "SC-Assistant",
+            }
         )
     return _VISION_CLIENT
 

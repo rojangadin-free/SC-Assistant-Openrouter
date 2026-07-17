@@ -13,6 +13,59 @@ $(document).ready(function() {
     window.showNotification = function(message, type, details) {
       console.log(`Notification (${type}): ${message}`, details || '');
     };
+  } // <--- MOVE THE BRACE HERE!
+
+  // --- Update Data Consent ---
+  const dataConsentToggle = $('#data_consent');
+  const eulaModal = $('#eulaModal');
+  
+  if (dataConsentToggle.length) {
+    // 1. Intercept the switch being clicked
+    dataConsentToggle.on('change', function() {
+      const isChecked = $(this).is(':checked');
+      
+      if (isChecked) {
+        // If turning ON, show popup and wait for user decision
+        eulaModal.fadeIn('fast');
+      } else {
+        // If turning OFF, just send the update immediately
+        sendConsentUpdate(false);
+      }
+    });
+
+    // 2. User clicks "I Agree"
+    $('#btnAcceptEula').on('click', function() {
+      eulaModal.fadeOut('fast');
+      sendConsentUpdate(true);
+    });
+
+    // 3. User clicks "Decline" or clicks outside
+    $('#btnDeclineEula').on('click', function() {
+      eulaModal.fadeOut('fast');
+      dataConsentToggle.prop('checked', false); // Snap the switch back to OFF
+    });
+
+    // Helper function to handle the AJAX call
+    function sendConsentUpdate(consentState) {
+      $.ajax({
+        url: '/settings/update-consent',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ data_consent: consentState }),
+        success: function(response) {
+          if (response.success) {
+            window.showNotification(response.message, 'success');
+          } else {
+            window.showNotification(response.message || 'Failed to update settings', 'error');
+            dataConsentToggle.prop('checked', !consentState); // Revert switch if backend fails
+          }
+        },
+        error: function(xhr) {
+          window.showNotification('An error occurred while updating privacy settings.', 'error');
+          dataConsentToggle.prop('checked', !consentState); // Revert switch if network fails
+        }
+      });
+    }
   }
   
   const updateProfileForm = $('#updateProfileForm');

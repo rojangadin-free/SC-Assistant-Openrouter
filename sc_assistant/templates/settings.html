@@ -13,58 +13,187 @@
 
 {% block content %}
   <div class="settings-container">
-    <div class="settings-card">
-      <h2><i class="fas fa-user-circle"></i> Profile</h2>
-      <form id="updateProfileForm" class="settings-form">
-        <div class="form-group">
-          <label for="username">Username</label>
-          <input type="text"
-                 id="username"
-                 name="username"
-                 value="{{ user.username }}"
-                 required>
+    
+    <div class="settings-board">
+      
+      <div class="settings-section">
+        <div class="section-header">
+          <i class="fas fa-user-circle"></i> Profile
         </div>
-        <div class="form-group">
-          <label for="email">Email</label>
-          <input type="email"
-                 id="email"
-                 name="email"
-                 value="{{ user.email }}"
-                 disabled>
-          <small>Email cannot be changed.</small>
-        </div>
-        <button type="submit" class="btn btn-primary">
-          Update Profile
-        </button>
-      </form>
-    </div>
+        <form id="updateProfileForm">
+          <div class="form-row">
+            <label for="username">Username</label>
+            <div class="input-wrapper">
+              <input type="text" id="username" name="username" value="{{ user.username }}" required>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="email">Email Address</label>
+            <div class="input-wrapper">
+              <input type="email" id="email" name="email" value="{{ user.email }}" disabled>
+              <span class="helper-text">Email cannot be changed.</span>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Update Profile</button>
+          </div>
+        </form>
+      </div>
 
-    <div class="settings-card">
-      <h2><i class="fas fa-lock"></i> Security</h2>
-      <form id="changePasswordForm" class="settings-form">
-        <div class="form-group">
-          <label for="current_password">Current Password</label>
-          <input type="password"
-                 id="current_password"
-                 name="current_password"
-                 required>
+      <div class="settings-section">
+        <div class="section-header">
+          <i class="fas fa-lock"></i> Security
         </div>
-        <div class="form-group">
-          <label for="new_password">New Password</label>
-          <input type="password"
-                 id="new_password"
-                 name="new_password"
-                 required>
+        <form id="changePasswordForm">
+          <div class="form-row">
+            <label for="current_password">Current Password</label>
+            <div class="input-wrapper">
+              <input type="password" id="current_password" name="current_password" required>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="new_password">New Password</label>
+            <div class="input-wrapper">
+              <input type="password" id="new_password" name="new_password" required>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Change Password</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-header">
+          <i class="fas fa-shield-alt"></i> Privacy & Data
         </div>
-        <button type="submit" class="btn btn-primary">
-          Change Password
-        </button>
-      </form>
+        <div class="privacy-row">
+          <div class="privacy-label">Data Access</div>
+          <div class="privacy-controls">
+            <div class="toggle-container">
+              <label class="switch">
+                <input type="checkbox" id="data_consent" name="data_consent" {% if user.data_consent %}checked{% endif %}>
+                <span class="slider"></span>
+              </label>
+              <label for="data_consent" class="toggle-label">Allow AI to access my student data</label>
+            </div>
+            <span class="helper-text">If disabled, the AI will not be able to answer questions about your personal grades, schedules, or balances.</span>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
-  {% endblock %}
+
+  <style>
+    .eula-overlay {
+      display: none; position: fixed; z-index: 1050; left: 0; top: 0;
+      width: 100%; height: 100%; background-color: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+    }
+    .eula-flex-container {
+      display: flex; align-items: center; justify-content: center; height: 100%; padding: 20px;
+    }
+    .eula-modal {
+      background-color: var(--bg-main); width: 100%; max-width: 520px;
+      border-radius: 10px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      border: 1px solid var(--border); overflow: hidden;
+      animation: modalSlideUp 0.25s ease-out forwards; display: flex; flex-direction: column;
+    }
+    @keyframes modalSlideUp {
+      from { opacity: 0; transform: translateY(15px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .eula-header {
+      background-color: var(--bg-surface); padding: 14px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .eula-header h3 { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 600; }
+    .eula-header i { color: var(--sc-green); font-size: 1.1rem; }
+    .eula-body {
+      padding: 16px 20px; color: var(--text-secondary); line-height: 1.5; font-size: 0.85rem;
+      max-height: 50vh; overflow-y: auto;
+    }
+    .eula-terms-box {
+      margin: 10px 0; background: var(--bg-surface); padding: 10px 10px 10px 28px;
+      border-radius: 6px; border: 1px solid var(--border); color: var(--text-primary);
+    }
+    .eula-terms-box li { margin-bottom: 4px; }
+    .eula-checkbox-container {
+      padding: 0 20px 16px 20px; display: flex; align-items: center; gap: 8px;
+      font-size: 0.85rem; color: var(--text-primary); font-weight: 500;
+    }
+    .eula-footer {
+      padding: 14px 20px; border-top: 1px solid var(--border); background-color: var(--bg-surface);
+      display: flex; justify-content: flex-end; gap: 10px;
+    }
+    .btn-eula { padding: 6px 14px; border-radius: 6px; font-weight: 500; font-size: 0.85rem; cursor: pointer; border: none; transition: all 0.2s ease; }
+    .btn-eula-decline { background-color: var(--bg-main); border: 1px solid var(--border); color: var(--text-primary); }
+    .btn-eula-decline:hover { background-color: var(--border); }
+    .btn-eula-agree { background-color: var(--sc-green); color: white; }
+    .btn-eula-agree:hover:not(:disabled) { background-color: var(--sc-green-light); }
+    .btn-eula-agree:disabled { background-color: var(--text-tertiary); cursor: not-allowed; opacity: 0.6; }
+  </style>
+
+  <div id="eulaModal" class="eula-overlay">
+    <div class="eula-flex-container">
+      <div class="eula-modal">
+        
+        <div class="eula-header">
+          <i class="fas fa-file-signature"></i>
+          <h3>Student Data Access Agreement</h3>
+        </div>
+        
+        <div class="eula-body">
+          <p style="margin-top: 0;">By enabling this feature, you authorize the Samar College AI Assistant to securely access, process, and use your student information for personalized academic assistance.</p>
+          <p style="margin-bottom: 4px;"><strong>This access includes:</strong></p>
+          <ul class="eula-terms-box">
+            <li>Current and historical academic grades</li>
+            <li>Class schedules, enrolled subjects, and room assignments</li>
+            <li>Tuition assessments, financial balances, and payment history</li>
+          </ul>
+          <p>Your information is processed securely and is used solely within the Samar College AI Assistant. We do not sell or share your data with unauthorized third parties.</p>
+          <p style="font-size: 0.8rem; margin-bottom: 0;">
+            <i class="fas fa-info-circle"></i> Consent may be revoked at any time through your account settings.
+          </p>
+        </div>
+
+        <div class="eula-checkbox-container">
+          <input type="checkbox" id="eulaCheckbox">
+          <label for="eulaCheckbox" style="margin:0; cursor:pointer;">I have read and agree to the terms</label>
+        </div>
+        
+        <div class="eula-footer">
+          <button type="button" id="btnDeclineEula" class="btn-eula btn-eula-decline">Cancel</button>
+          <button type="button" id="btnAcceptEula" class="btn-eula btn-eula-agree" disabled>I Agree</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const checkbox = document.getElementById('eulaCheckbox');
+      const agreeBtn = document.getElementById('btnAcceptEula');
+      const declineBtn = document.getElementById('btnDeclineEula');
+
+      checkbox.addEventListener('change', function() {
+        agreeBtn.disabled = !this.checked;
+      });
+
+      function resetCheckbox() {
+        checkbox.checked = false;
+        agreeBtn.disabled = true;
+      }
+
+      declineBtn.addEventListener('click', resetCheckbox);
+      agreeBtn.addEventListener('click', resetCheckbox);
+    });
+  </script>
+{% endblock %}
 
 {% block extra_body %}
-  {{ super() }} {# <-- This loads main.js from base.html #}
+  {{ super() }}
   <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 {% endblock %}

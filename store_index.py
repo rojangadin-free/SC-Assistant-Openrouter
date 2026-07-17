@@ -28,6 +28,10 @@ from langchain_community.document_loaders import (
 )
 from pinecone_text.sparse import BM25Encoder
 
+# --- NEW IMPORTS FOR PYDANTIC EXTRACTION ---
+from pydantic import BaseModel, Field
+from langchain_core.messages import HumanMessage
+
 from src.helper import (
     smart_chunking,
     get_local_embeddings,
@@ -35,6 +39,8 @@ from src.helper import (
     clean_text,
     generate_chunk_id,
     is_low_value_chunk,
+    get_vision_client,     # Added for structured output
+    encode_image           # Added for structured output
 )
 
 from aws.s3 import upload_file_to_s3
@@ -47,6 +53,22 @@ if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set in environment.")
 
 BM25_VALUES_FILE = "bm25_values.json"
+
+
+# ============================================================
+# PYDANTIC STRUCTURED OUTPUT MODELS (For Tables)
+# ============================================================
+class TableRow(BaseModel):
+    column_1: str = Field(description="Data in the first column, or empty string")
+    column_2: str = Field(description="Data in the second column, or empty string")
+    column_3: str = Field(description="Data in the third column, or empty string")
+    column_4: str = Field(description="Data in the fourth column, or empty string")
+    column_5: str = Field(description="Data in the fifth column, or empty string")
+    column_6: str = Field(description="Data in the sixth column, or empty string")
+    column_7: str = Field(description="Data in the seventh column, or empty string")
+
+class ExtractedTable(BaseModel):
+    rows: List[TableRow] = Field(description="All rows extracted from the table in exact order")
 
 
 # ============================================================
@@ -385,8 +407,8 @@ def _extract_and_append_tables(
     fitz_page, existing_text: str, filename: str, page_num: int
 ) -> str:
     """
-    Detect tables on a native-text page, OCR them as Markdown,
-    and append to the existing page text.
+    Detect tables on a native-text page, OCR them using Pydantic Structured Outputs
+    for perfect parsing, and append the clean data to the existing page text.
     """
     try:
         tables = fitz_page.find_tables()
@@ -419,19 +441,37 @@ def _extract_and_append_tables(
 
             s3_key = f"tables/{filename}_p{page_num}_t{t_i}.png"
             if upload_file_to_s3(tmp_path, s3_key):
-                table_md = generate_image_caption(
-                    image,
-                    prompt=(
-                        "Extract this table as a precise Markdown table. "
-                        "Keep all numbers, names, and values exactly as shown. "
-                        "Use | column | separators and include a header row."
-                    ),
+                
+                # --- NEW: PYDANTIC STRUCTURED AI EXTRACTION ---
+                logger.info(f"Running structured table extraction for table {t_i} on page {page_num}")
+                chat = get_vision_client() 
+                structured_chat = chat.with_structured_output(ExtractedTable)
+                
+                image_base64 = encode_image(image)
+                msg = HumanMessage(
+                    content=[
+                        {"type": "text", "text": "Extract all rows from this curriculum or information table precisely. Keep all words and units together."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                    ]
                 )
-                if table_md and table_md.strip():
-                    page_text += f"\n\n[TABLE {t_i + 1}]\n{table_md}\n"
+                
+                try:
+                    result = structured_chat.invoke([msg])
+                    
+                    # Convert the perfect JSON back into a clean, readable text block for Pinecone
+                    # This builds rows like "Row: GE 1 | Readings in Philippine History | 3 | None | 3 | None | None"
+                    clean_table_text = "\n".join([
+                        f"Row: {r.column_1} | {r.column_2} | {r.column_3} | {r.column_4} | {r.column_5} | {r.column_6} | {r.column_7}".strip(' |')
+                        for r in result.rows
+                    ])
+                    
+                    if clean_table_text.strip():
+                        page_text += f"\n\n[TABLE {t_i + 1}]\n{clean_table_text}\n"
+                except Exception as e:
+                    logger.warning(f"Structured table extraction failed p{page_num} t{t_i}: {e}")
 
         except Exception as e:
-            logger.warning(f"Table extraction failed p{page_num} t{t_i}: {e}")
+            logger.warning(f"Table image generation failed p{page_num} t{t_i}: {e}")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -522,14 +562,6 @@ def _docx_table_to_markdown(table) -> str:
 def process_docx_linear(filepath: str, filename: str) -> List[Document]:
     """
     Read DOCX linearly, preserving document order.
-
-    Key improvements over the original:
-    - Heading-aware sectioning: each heading starts a new Document so
-      chunking never splits across section boundaries.
-    - Proper Markdown table output instead of pipe-joined raw strings.
-    - Merged-cell deduplication in tables.
-    - Context buffer extended to 5 lines and always includes the current heading.
-    - Image pre-processing (sharpen + contrast) before OCR.
     """
     logger.info(f"Linear DOCX processing: {filename}")
     try:
@@ -555,7 +587,6 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
             level = get_heading_level(block)
 
             if level is not None and text:
-                # Start a new section at each heading
                 flush_section()
                 current_section = {
                     "heading": text,
@@ -655,16 +686,42 @@ def ensure_index_exists(pc: Pinecone, index_name: str, dimension: int):
 
 
 # ============================================================
-# SHARED CHUNKING HELPER (eliminates duplicated logic)
+# SHARED CHUNKING HELPER
 # ============================================================
 def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
-    """Chunk a list of Documents and deduplicate by content hash."""
+    """Chunk a list of Documents with Cross-Page Stitching and Persistent Headers."""
     final_chunks: List[Document] = []
     seen_ids = set()
 
+    current_header = "General College Information"
+    current_source = None
+    previous_tail = ""
+
     for doc in raw_docs:
+        source = doc.metadata.get("source", "")
+        
+        # Reset trackers if we switch to a completely new PDF
+        if source != current_source:
+            current_header = "General College Information"
+            current_source = source
+            previous_tail = ""
+
         clean_metadata(doc)
-        chunks = smart_chunking(doc.page_content)
+        
+        # 🚀 CROSS-PAGE STITCHING: Attach the previous page's ending to this page's beginning
+        combined_content = doc.page_content
+        if previous_tail:
+            combined_content = f"{previous_tail}\n{combined_content}"
+        
+        # Save the last 40 words of THIS page to carry over to the NEXT page
+        words = doc.page_content.split()
+        previous_tail = " ".join(words[-40:]) if len(words) >= 40 else doc.page_content
+
+        # 🚀 PERSISTENT HEADERS: Pass the running header in, get the updated one back out
+        chunks, current_header = smart_chunking(
+            combined_content, 
+            running_header=current_header
+        )
 
         for idx, text in enumerate(chunks):
             if is_low_value_chunk(text):
@@ -693,7 +750,7 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
 # ============================================================
 def build_index(
     data_path: str = "data/",
-    index_name: str = "rag-google-v5",
+    index_name: str = "rag-google-v1",
     embeddings=None,
 ):
     if embeddings is None:
@@ -752,7 +809,7 @@ def build_index(
 
 def append_file_to_index(
     filepath: str,
-    index_name: str = "rag-google-v5",
+    index_name: str = "rag-google-v1",
     real_name: Optional[str] = None,
     embeddings=None,
 ) -> int:

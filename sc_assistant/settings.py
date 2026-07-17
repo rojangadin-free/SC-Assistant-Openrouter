@@ -13,16 +13,49 @@ def settings_page():
     if not session.get("user"):
         return redirect(url_for("auth.auth_page"))
     
-    # Capture origin parameter, defaulting to 'chat' if not provided
     origin = request.args.get('origin', 'chat')
     
     user_obj = {
         "email": session.get("user"),
-        "username": session.get("username", session.get("user", "").split("@")[0])
+        "username": session.get("username", session.get("user", "").split("@")[0]),
+        # Default to True if it hasn't been set yet
+        "data_consent": session.get("data_consent", False) 
     }
     
-    # Pass origin to template so sidebar can generate the correct back link
     return render_template("settings.html", user=user_obj, origin=origin)
+
+
+@bp.route("/update-consent", methods=["POST"])
+def update_consent():
+    if not session.get("user"):
+        return jsonify({"success": False, "message": "Not authenticated"}), 401
+
+    data = request.get_json(silent=True) or {}
+    consent = bool(data.get("data_consent", True))
+    
+    try:
+        cognito_username = get_cognito_username()
+        
+        # 🚀 Save the preference universally to AWS Cognito
+        cognito_client.admin_update_user_attributes(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Username=cognito_username,
+            UserAttributes=[
+                {'Name': 'custom:data_consent', 'Value': str(consent).lower()}
+            ]
+        )
+        
+        # Update current active session
+        session["data_consent"] = consent
+        session.modified = True 
+        
+        return jsonify({"success": True, "message": "Privacy settings updated universally."})
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        return jsonify({"success": False, "message": f"AWS Error: {error_code}. Ensure 'custom:data_consent' exists in Cognito."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "message": f"An unexpected error occurred: {str(e)}"}), 500
 
 @bp.route("/update-profile", methods=["POST"])
 def update_profile():

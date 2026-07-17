@@ -1,0 +1,83 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "CognitoAccess",
+            "Effect": "Allow",
+            "Action": [
+                "cognito-idp:AdminCreateUser",
+                "cognito-idp:ListUsers",
+                "cognito-idp:DescribeUserPool",
+                "cognito-idp:AdminGetUser",
+                "cognito-idp:AdminDeleteUser",
+                "cognito-idp:SignUp",
+                "cognito-idp:AdminConfirmSignUp",
+                "cognito-idp:AdminUpdateUserAttributes",
+                "cognito-idp:InitiateAuth",
+                "cognito-idp:ForgotPassword",
+                "cognito-idp:ConfirmForgotPassword",
+                "cognito-idp:AdminSetUserPassword"
+            ],
+            "Resource": "arn:aws:cognito-idp:*:*:userpool/*"
+        },
+        {
+            "Sid": "AllowListTables",
+            "Effect": "Allow",
+            "Action": "dynamodb:ListTables",
+            "Resource": "*"
+        },
+        {
+            "Sid": "DynamoDBAccess",
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:CreateTable",
+                "dynamodb:DescribeTable",
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+            ],
+            "Resource": [
+                "arn:aws:dynamodb:*:*:table/Files",
+                "arn:aws:dynamodb:*:*:table/Conversations",
+                "arn:aws:dynamodb:*:*:table/Conversations/index/*",
+                "arn:aws:dynamodb:us-east-1:225119180951:table/*"
+            ]
+        },
+        {
+            "Sid": "S3Access",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::sc-assistant-bucket",
+                "arn:aws:s3:::sc-assistant-bucket/*"
+            ]
+        },
+        {
+            "Sid": "ECRReadOnly",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:GetAuthorizationToken",
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:GetRepositoryPolicy",
+                "ecr:DescribeRepositories",
+                "ecr:ListImages",
+                "ecr:DescribeImages",
+                "ecr:BatchGetImage",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:PutImage"
+            ],
+            "Resource": "*"
+        }
+    ]
+}

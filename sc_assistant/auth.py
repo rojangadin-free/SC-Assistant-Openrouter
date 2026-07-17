@@ -36,7 +36,8 @@ def signup():
     if result["success"]:
         session.update({
             "user": email, "uid": result.get("user_sub"),
-            "username": username, "role": "user"
+            "username": username, "role": "user",
+            "data_consent": False  # Default to False until they log in and we fetch their actual setting
         })
         return jsonify({"success": True, "redirect": url_for("chat.chat_page")})
     return jsonify(result)
@@ -45,7 +46,6 @@ def signup():
 def login():
     identifier = request.form.get("email")
     password = request.form.get("password")
-
     if not all([identifier, password]):
         return jsonify({"success": False, "message": "Both identifier and password are required."})
 
@@ -54,7 +54,10 @@ def login():
         auth_result = result["auth_result"]
         id_token = auth_result["IdToken"]
         claims = jwt.get_unverified_claims(id_token)
-
+        
+        # 🚀 Fetch the universally saved setting from Cognito (defaults to "true" if they are a brand new user)
+        consent_claim = claims.get("custom:data_consent", "true")
+        
         session.update({
             "user": identifier,
             "uid": claims["sub"],
@@ -62,11 +65,14 @@ def login():
             "username": claims.get("name", identifier.split("@")[0]),
             "cognito_username": claims.get("cognito:username", identifier),
             "role": get_user_role_from_claims(id_token),
-            "is_guest": False # Explicitly clear guest status on real login
+            "is_guest": False,
+            "data_consent": consent_claim.lower() == "true" # 🚀 Apply their saved preference
         })
+        
         session['start_new_chat'] = True
         redirect_url = url_for("admin.dashboard") if is_admin() else url_for("chat.chat_page")
         return jsonify({"success": True, "redirect": redirect_url})
+        
     return jsonify(result)
 
 @bp.route("/guest", methods=["POST"])

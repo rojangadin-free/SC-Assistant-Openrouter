@@ -1,5 +1,8 @@
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI
+import requests
+import concurrent.futures
+from datetime import datetime
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -9,13 +12,12 @@ from pinecone import Pinecone
 from langchain_community.retrievers import PineconeHybridSearchRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 from pinecone_text.sparse import BM25Encoder
-from sentence_transformers import CrossEncoder
 
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from config import (
     INDEX_NAME, CHAT_MODEL_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
-    PINECONE_API_KEY, VERTEX_EXPRESS_API_KEY
+    PINECONE_API_KEY, OPENROUTER_API_KEY
 )
 
 # Student records
@@ -34,11 +36,12 @@ else:
     print("WARNING: bm25_values.json not found. Using default BM25.")
     bm25 = BM25Encoder().default()
 
+# ⚡ OPTIMIZATION: Reduced top_k from 20 to 8 to avoid RRF data-sprawl latency
 sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
-    top_k=20,
+    top_k=10,
     alpha=0.0,
 )
 
@@ -46,75 +49,88 @@ dense_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
-    top_k=20,
+    top_k=10,
     alpha=1.0,
 )
 
 retriever = EnsembleRetriever(
     retrievers=[sparse_retriever, dense_retriever],
-    weights=[0.5, 0.5],
+    weights=[0.4, 0.6],
 )
 
-# Cross-encoder reranker
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
-RERANK_TOP_K = 15
+# ⚡ OPTIMIZATION: Shifted from heavy local CPU CrossEncoder to ultra-fast OpenRouter Reranker
+RERANK_MODEL = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
+RERANK_TOP_K = 5  # ⚡ OPTIMIZATION: Reduced from 15 to 8 to maximize LLM generation speed
 
 
 def rerank_docs(query: str, docs: list) -> list:
     if not docs:
         return docs
-    pairs  = [(query, doc.page_content) for doc in docs]
-    scores = reranker.predict(pairs)
+        
+    doc_texts = [doc.page_content for doc in docs]
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://samarcollege.edu.ph",
+        "X-Title": "SC-Assistant"
+    }
+    payload = {
+        "model": RERANK_MODEL,
+        "query": query,
+        "documents": doc_texts,
+        "top_n": RERANK_TOP_K  # Since boosting is removed, we just request the exact Top K needed
+    }
     
-    boosted_ranked = []
-    for score, doc in zip(scores, docs):
-        source = doc.metadata.get("source", "").lower()
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/rerank",
+            headers=headers,
+            json=payload,
+            timeout=6
+        )
+        response.raise_for_status()
+        api_results = response.json().get("results", [])
         
-        # 🚀 MATHEMATICAL BOOST FOR NEW DOCUMENTS
-        # If the document is NOT the base 2024 handbook, we give its relevance score 
-        # a massive artificial boost (+15.0) so it mathematically destroys the 
-        # old handbook in the ranking algorithm and jumps to the top of the AI's memory.
-        if "samar-college-2024.pdf" not in source:
-            score += 15.0 
-            
-        boosted_ranked.append((score, doc))
+        # Map returned indices back to the original documents
+        top_docs = []
+        for res in api_results:
+            doc_idx = res["index"]
+            if doc_idx < len(docs):
+                top_docs.append(docs[doc_idx])
+                
+        print(f"Reranked via OpenRouter {len(docs)} → top {len(top_docs)} docs")
+        return top_docs
         
-    ranked = sorted(boosted_ranked, key=lambda x: x[0], reverse=True)
-    top    = [doc for _, doc in ranked[:RERANK_TOP_K]]
-    print(f"  Reranked {len(docs)} → top {len(top)} docs")
-    return top
+    except Exception as e:
+        print(f"OpenRouter Reranking API failed (falling back to initial order): {e}")
+        return docs[:RERANK_TOP_K]
 
 
-# --- VERTEX AI EXPRESS MODE INSTANTIATION ---
-
-# 1. The Main Model (Attempts to answer within 30 seconds)
-primary_model = ChatGoogleGenerativeAI(
+# --- MODEL INSTANTIATION ---
+primary_model = ChatOpenAI(
     model=CHAT_MODEL_NAME,
-    api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,
-    temperature=0.3,
-    max_retries=1,   # CRITICAL: Set to 0 so it immediately falls back on timeout
-    timeout=30.0,    # 30-second strict cutoff
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
+    temperature=0.2,
+    timeout=30,
 )
 
-# 2. The Fallback Model (Fast model to save the day)
-fallback_model = ChatGoogleGenerativeAI(
-    model=FALLBACK_MODEL_NAME, 
-    api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True,
+fallback_model = ChatOpenAI(
+    model=FALLBACK_MODEL_NAME,
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    max_retries=0,   # The fallback is allowed to retry if there's a network blip
+    timeout=30,
 )
 
-# 3. Combine them using LangChain's built-in fallback router
 chatModel = primary_model.with_fallbacks([fallback_model])
 
-# (Leave your summarizer below exactly as it is)
-summarizer = ChatGoogleGenerativeAI(
+summarizer = ChatOpenAI(
     model=SUMMARIZER_MODEL_NAME,
-    api_key=VERTEX_EXPRESS_API_KEY,
-    vertexai=True, 
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
     temperature=0,
+    timeout=30,
 )
 
 # ====== Chat State ======
@@ -125,16 +141,16 @@ class ChatState(TypedDict):
     answer: str
     uid: Optional[str]
     user_email: Optional[str]
+    data_consent: Optional[bool]
+    messages_to_llm: Optional[list]
 
 
 def docs_to_context(docs) -> str:
-    """Format retrieved docs with clear citation anchors and priority tags."""
     context_parts = []
     for i, d in enumerate(docs):
         source = d.metadata.get("source", "Unknown")
         page   = d.metadata.get("page", "?")
         
-        # 🚀 INJECT PRIORITY TAGS FOR THE AI
         is_base = "samar-college-2024.pdf" in source.lower()
         priority_tag = "" if is_base else " [🚨 NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
         
@@ -179,72 +195,97 @@ def create_graph():
             uid        = state.get("uid")
             user_email = state.get("user_email")
 
-            if image_data:
+            # 🚀 PARALLEL TASK 1: Image Analysis
+            def task_image_analysis():
+                if not image_data: return None
                 vision_msg = HumanMessage(content=[
-                    {"type": "text",
-                     "text": "Transcribe any text in this image and describe the visual layout in detail."},
-                    {"type": "image_url",
-                     "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+                    {"type": "text", "text": "Transcribe any text in this image and describe the visual layout in detail."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
                 ])
                 try:
-                    image_description = summarizer.invoke([vision_msg]).content
-                    print(f"Image Analysis: {image_description}")
+                    desc = summarizer.invoke([vision_msg]).content
+                    print(f"Image Analysis: {desc}")
+                    return desc
                 except Exception as e:
                     print(f"Image analysis failed (non-fatal): {e}")
+                    return None
 
-            student_context = ""
-            if uid:
+            # 🚀 PARALLEL TASK 2: DynamoDB Student Record Fetch
+            def task_student_fetch():
+                if not uid: return ""
                 try:
+                    # Always fetch the record so the system knows WHO they are
                     student = get_student_by_uid(uid)
                     if not student and user_email:
                         student = get_student_by_email(user_email)
+                        
                     if student:
-                        print(f"  Student record fetched: {student.get('full_name')} "
-                              f"| balance: PHP {student.get('balance', 'N/A')}")
-                        student_context = format_student_context(student)
+                        # If user disabled data consent, provide ONLY basic academic context for personalization
+                        if state.get("data_consent") is False:
+                            print("  Data consent disabled. Providing basic profile only.")
+                            return (
+                                "System Note: The user has explicitly opted out of sharing their personal student data. "
+                                "Do not provide specific grades, balances, or schedules."
+                                "The user has account so he/she is a continuing student already but no further details are available due to privacy settings. "
+                                f"Name: {student.get('full_name')}, "
+                            )
+                        
+                        # Full context if consent is enabled
+                        print(f"  Student record fetched: {student.get('full_name')} | balance: PHP {student.get('balance', 'N/A')}")
+                        return format_student_context(student)
                     else:
                         print("  No student record found for this user.")
+                        return f"System Note: User is logged in as {user_email} but no record was found."
                 except Exception as e:
                     print(f"  Student record fetch failed (non-fatal): {e}")
+                    return ""
 
-            standalone_query = user_text
-           
-            # ALWAYS run query optimization to catch terminology mismatches (even on first message)
-            try:
-                recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
-                
-                context_prompt = [
-                    {
-                        "role": "system", 
-                        "content": (
-                            "You are a search query optimizer. Given a chat history and the latest user question, formulate a standalone search query.\n"
-                            "CRITICAL SEARCH RULES: \n"
-                            "1. If the user asks about 'enrollment requirements' or 'requirements to enroll', you MUST output exactly: 'Admission Requirements for Freshmen, Transferees, and Continuing Students'.\n"
-                            "2. Do NOT answer the question, just output the optimized search query."
-                        )
-                    },
-                    {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
-                ]
-                
-                summary_resp = summarizer.invoke(context_prompt).content
-                
-                # --- BULLETPROOF STRING CONVERSION ---
-                if isinstance(summary_resp, list):
-                    # Safely combine it whether it's a list of dicts or a list of strings
-                    summary_resp = "".join([
-                        part.get("text", "") if isinstance(part, dict) else str(part)
-                        for part in summary_resp
-                    ])
-                elif not isinstance(summary_resp, str):
-                    summary_resp = str(summary_resp)
+            # 🚀 PARALLEL TASK 3: Query Optimization
+            def task_query_optimization():
+                try:
+                    recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
+                    context_prompt = [
+                        {
+                            "role": "system", 
+                            "content": (
+                                "You are a search query optimizer. Understand the user's intent and the provided context first. Formulate the best search query for RAG that uses sparse and dense retrieval. If you cannot understand the user's intent, return the user's original query.\n"
+                                "CRITICAL SEARCH RULES: \n"
+                                "1. CONTEXT AWARENESS: Only check chat history if the user asks and it is not a complete question.\n"
+                                "2. Do NOT answer the question, just output the optimized search query."
+                            )
+                        },
+                        {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
+                    ]
                     
-                standalone_query = summary_resp.strip()
-                print(f"  Contextualized Query: {standalone_query}")
-                
-            except Exception as e:
-                print(f"  Contextualization failed (non-fatal): {e}")
-                standalone_query = user_text
+                    summary_resp = summarizer.invoke(context_prompt).content
+                    
+                    if isinstance(summary_resp, list):
+                        summary_resp = "".join([
+                            part.get("text", "") if isinstance(part, dict) else str(part)
+                            for part in summary_resp
+                        ])
+                    elif not isinstance(summary_resp, str):
+                        summary_resp = str(summary_resp)
+                        
+                    q = summary_resp.strip()
+                    print(f"  Contextualized Query: {q}")
+                    return q
+                except Exception as e:
+                    print(f"  Contextualization failed (non-fatal): {e}")
+                    return user_text
 
+            # 🚀 EXECUTE ALL 3 TASKS SIMULTANEOUSLY
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                future_img     = executor.submit(task_image_analysis)
+                future_student = executor.submit(task_student_fetch)
+                future_query   = executor.submit(task_query_optimization)
+
+                # Wait for them to finish and collect results instantly
+                image_description = future_img.result()
+                student_context   = future_student.result()
+                standalone_query  = future_query.result()
+
+            # === STEP 1: Retrieval ===
             print(f"\n=== STEP 1: Retrieval (Query: '{standalone_query}') ===")
             try:
                 initial_docs = retriever.invoke(standalone_query)
@@ -253,6 +294,7 @@ def create_graph():
                 print(f"  Retrieval failed (non-fatal): {e}")
                 initial_docs = []
 
+            # === STEP 2: Reranking ===
             print(f"\n=== STEP 2: Reranking to top {RERANK_TOP_K} ===")
             try:
                 reranked_docs = rerank_docs(standalone_query, initial_docs)
@@ -267,6 +309,7 @@ def create_graph():
 
             context_str = docs_to_context(reranked_docs)
 
+            # === STEP 3: Handle Conversation Summary ===
             if len(history) > 10:
                 try:
                     summary = summarize_history(history[:-6])
@@ -287,13 +330,20 @@ def create_graph():
                 retrieved_docs=context_str,
                 chat_history=history_str,
                 student_context=student_context,
+                current_date=datetime.now().strftime("%B %d, %Y")
             )
 
+            # === STEP 4: Assemble Messages for Flask Streaming ===
             messages = [SystemMessage(content=final_system_prompt)]
 
             if image_data:
+                # 🚀 Inject the parallel-processed image description so the LLM is aware of it
+                augmented_text = user_text
+                if image_description:
+                    augmented_text += f"\n\n[System Note - Image Analysis Provided]: {image_description}"
+
                 content_block = [
-                    {"type": "text", "text": user_text}, 
+                    {"type": "text", "text": augmented_text}, 
                     {"type": "image_url",
                      "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
                 ]
@@ -301,29 +351,14 @@ def create_graph():
             else:
                 messages.append(HumanMessage(content=user_text))
 
-            response = chatModel.invoke(messages)
-
-            # --- FIX FOR GEMINI 3.1 CONTENT BLOCKS ---
-            # Extract the string regardless of whether it's a string (2.5) or a list of blocks (3.1)
-            answer_text = response.content
-            if isinstance(answer_text, list):
-                answer_text = "".join(
-                    block.get("text", "") for block in answer_text 
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
-
-            new_history = history + [
-                {"role": "user",      "content": user_text + (" [Image Uploaded]" if image_data else "")},
-                {"role": "assistant", "content": answer_text},
-            ]
-
-            return {"answer": answer_text, "chat_history": new_history}
+            # Pass compiled state back out to Flask to generate the SSE tokens
+            return {"messages_to_llm": messages, "chat_history": history}
 
         except Exception as e:
             import traceback
             print(f"[chain] Unhandled error: {traceback.format_exc()}")
             return {
-                "answer": "I'm sorry, I encountered an issue processing your request. Please try rephrasing your question.",
+                "messages_to_llm": [],
                 "chat_history": state.get("chat_history", []),
             }
 
