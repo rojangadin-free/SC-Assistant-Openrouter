@@ -54,31 +54,31 @@ def delete_file_from_s3(object_name):
     return True
 
 def get_s3_presigned_url(object_name, for_download=False, expiration=3600):
-    """
-    Generate a presigned URL to securely access an S3 object.
+    s3_client = boto3.client('s3') # Add your credentials/region as needed
     
-    :param object_name: S3 object name (filename)
-    :param for_download: If True, add headers to force download
-    :param expiration: Time in seconds for the URL to be valid
-    :return: Presigned URL as string, or None if error
-    """
-    try:
-        params = {
-            'Bucket': S3_BUCKET_NAME,
-            'Key': object_name
-        }
+    # 1. Guess the file type (e.g., 'application/pdf' for PDFs)
+    content_type, _ = mimetypes.guess_type(object_name)
+    if not content_type:
+        content_type = 'application/octet-stream' # Fallback
         
-        if for_download:
-            # This header tells the browser to download the file instead of viewing it
-            params['ResponseContentDisposition'] = f'attachment; filename="{object_name}"'
-            
-        url = s3_client.generate_presigned_url(
+    # 2. Set to 'inline' for viewing, 'attachment' for downloading
+    disposition = 'attachment' if for_download else 'inline'
+    
+    # 3. Pass these headers into the Params dictionary
+    params = {
+        'Bucket': S3_BUCKET_NAME,
+        'Key': object_name,
+        'ResponseContentDisposition': f'{disposition}; filename="{object_name}"',
+        'ResponseContentType': content_type
+    }
+    
+    try:
+        response = s3_client.generate_presigned_url(
             'get_object',
             Params=params,
             ExpiresIn=expiration
         )
-    except ClientError as e:
+        return response
+    except Exception as e:
         print(f"Error generating presigned URL: {e}")
         return None
-    
-    return url

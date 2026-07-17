@@ -16,15 +16,15 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = "rag-google-v1"
 
 # Express Mode API Key
-VERTEX_EXPRESS_API_KEY = os.getenv("VERTEX_EXPRESS_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Flask Configuration
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 
 # LLM Configuration
-CHAT_MODEL_NAME = "gemini-3-flash-preview" 
-FALLBACK_MODEL_NAME = "gemini-3.5-flash"
-SUMMARIZER_MODEL_NAME = "gemini-2.5-flash"
+CHAT_MODEL_NAME = "nvidia/nemotron-3-ultra-550b-a55b:free" 
+FALLBACK_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b:free"
+SUMMARIZER_MODEL_NAME = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 
 if not PINECONE_API_KEY:
     raise ValueError("PINECONE_API_KEY is not set. Please check your .env file.")

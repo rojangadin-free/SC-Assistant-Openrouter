@@ -8,12 +8,11 @@ $(document).ready(function() {
   // --- MARKDOWN CONFIGURATION ---
   if (typeof marked !== 'undefined') {
     marked.setOptions({
-      breaks: true, // Forces single line breaks to actually break the line
-      gfm: true     // Enables GitHub Flavored Markdown (better lists/tables)
+      breaks: true, 
+      gfm: true     
     });
   }
 
-  // Check if showNotification exists, if not, create a fallback
   if (typeof window.showNotification === 'undefined') {
     window.showNotification = function(message, type) {
       console.log(`Notification (${type}): ${message}`);
@@ -32,7 +31,6 @@ $(document).ready(function() {
   const conversationLoader = $('#conversationLoader');
   const conversationHistoryLoader = $('#conversationHistoryLoader');
 
-  // --- Image Upload Elements ---
   const imageInput = $('#imageInput');
   const uploadBtn = $('#uploadBtn');
   const previewContainer = $('#imagePreviewContainer');
@@ -42,8 +40,12 @@ $(document).ready(function() {
   let isNewConversation = true;
   let activeConversationId = null;
   let isHistoryLoading = false;
+  
+  // Globals for generation state
+  let currentController = null; 
+  let currentAssistantMessageId = null;
+  let currentFullAnswerText = "";
 
-  // --- Mobile Height & Keyboard Fixes ---
   function adjustViewportHeight() {
     const vh = window.innerHeight * 0.01;
     document.documentElement.style.setProperty('--vh', `${vh}px`);
@@ -80,10 +82,7 @@ $(document).ready(function() {
   );
 
   initMobileFixes();
-  // --- End Mobile Fixes ---
 
-
-  // --- Image Upload Handlers ---
   uploadBtn.on('click', function() {
     imageInput.click();
   });
@@ -104,15 +103,12 @@ $(document).ready(function() {
     previewContainer.hide();
   });
 
-  // --- FAQ Click Handler ---
   $('.faq-btn').on('click', function() {
     const question = $(this).text();
     $('#messageInput').val(question);
     $('#messageForm').submit();
   });
 
-
-  // --- Citation badge renderer ---
   function renderCitations(rawText) {
     const placeholders = [];
     const uniqueSources = []; 
@@ -168,27 +164,21 @@ $(document).ready(function() {
       return key;
     }
 
-    // --- FIX: Bulletproof Regex that catches ANY page formatting ---
     const withPlaceholders = rawText.replace(
       /\[SOURCE:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\s*\]/gi,
       function(match, filename, rawPageStr, offset, fullString) {
-        
         const precedingText = fullString.slice(0, offset);
 
-        // If the AI didn't provide a page section at all
         if (!rawPageStr || !rawPageStr.trim()) {
           return makeBadge(filename, '', precedingText);
         }
 
-        // Smart extractor: strips out words like "Pg" or "Page" and just grabs the numbers
         const pageMatches = rawPageStr.match(/\d+(\.\d+)?/g);
 
-        // If it still couldn't find a number, just link the doc without a page
         if (!pageMatches || pageMatches.length === 0) {
           return makeBadge(filename, '', precedingText);
         }
 
-        // Create a clickable badge for each page number found
         return pageMatches.map(p => makeBadge(filename, p, precedingText)).join('');
       }
     );
@@ -202,7 +192,6 @@ $(document).ready(function() {
     return html;
   }
 
-  // --- Citation click handler ---
   $(document).on('click', '.citation-badge', function() {
     const filename = $(this).data('source');
     if (!filename) return;
@@ -228,9 +217,8 @@ $(document).ready(function() {
       });
   });
 
-  // --- Chat rendering helpers ---
   function addMessage(content, isUser = false, autoScroll = true, hasImage = false) {
-    emptyChatState.hide(); // Hide empty state on message
+    emptyChatState.hide(); 
 
     let processedContent = '';
     
@@ -345,90 +333,101 @@ $(document).ready(function() {
     applyActiveHighlight();
   }
 
-  // --- Chat Send Logic ---
-  function sendMessage(message, imageFile) {
-    const requestIsNew = isNewConversation;
-    const requestConvId = activeConversationId;
-
+  async function sendMessage(message, imageFile) {
+    const assistantMessageId = 'msg-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+    currentAssistantMessageId = assistantMessageId;
+    currentFullAnswerText = "";
+    
+    // 🚀 CREATE THE BUBBLE IMMEDIATELY
+    const htmlPlaceholder = `
+      <div class="message assistant" id="${assistantMessageId}">
+        <div class="message-row">
+          <div class="avatar"><img src="${logoPath}" alt="AI Assistant"></div>
+          <div class="message-bubble"><div class="streaming-text"></div></div>
+        </div>
+        <div class="message-report-row">
+           <button class="report-btn" data-msg-id="${assistantMessageId}" title="Report this response">
+             <i class="fas fa-flag"></i>
+           </button>
+         </div>
+      </div>
+    `;
+    messagesContainer.append(htmlPlaceholder);
     typingIndicator.removeClass('fade-out').show();
 
     const formData = new FormData();
     formData.append("msg", message);
-    if (imageFile) {
-        formData.append("image", imageFile);
+    if (imageFile) formData.append("image", imageFile);
+
+    currentController = new AbortController();
+    const signal = currentController.signal;
+
+    try {
+        const response = await fetch('/chat/get', {
+            method: 'POST',
+            body: formData,
+            signal: signal 
+        });
+
+        if (!response.ok) throw new Error("Network response was not ok");
+
+        const assistantBubble = $(`#${assistantMessageId}`).find('.streaming-text');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let isFirstToken = true;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const lines = decoder.decode(value, { stream: true }).split('\n');
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = JSON.parse(line.substring(6));
+                    if (data.type === 'chunk') {
+                        if (isFirstToken) { typingIndicator.addClass('fade-out').hide(); isFirstToken = false; }
+                        currentFullAnswerText += data.text;
+                        assistantBubble.html(renderCitations(currentFullAnswerText));
+                        messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            // 🚀 TARGET THE EXISTING BUBBLE
+            const bubble = $(`#${assistantMessageId} .message-bubble`);
+            bubble.append(`
+                <div style="margin-top: 10px; color: #ef4444; font-size: 0.85rem; font-style: italic;">
+                    <i class="fas fa-stop-circle"></i> Generation stopped by user.
+                </div>
+            `);
+            messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
+        }
+    } finally {
+        currentController = null;
+        typingIndicator.addClass('fade-out');
+        setTimeout(() => typingIndicator.hide(), 300);
+        sendButton.html('<i class="fas fa-paper-plane"></i>').css({'background-color': '', 'color': ''});
+        messageInput.prop('disabled', false);
     }
-
-    $.ajax({
-      url: '/chat/get',
-      type: 'POST',
-      data: formData,
-      processData: false,
-      contentType: false,
-    })
-      .done(function(data) {
-        const responseConvId = data.new_conversation_created
-          ? data.conv_id
-          : requestConvId;
-
-        const isStillInNewChat =
-          requestIsNew && activeConversationId === null;
-        const isStillInSameChat =
-          activeConversationId === responseConvId;
-
-        if (isStillInNewChat || isStillInSameChat) {
-          if (data && data.answer) {
-            addMessage(data.answer, false);
-          }
-
-          if (data.new_conversation_created) {
-            activeConversationId = data.conv_id;
-            isNewConversation = false;
-            localStorage.setItem(
-              'activeConversationId',
-              activeConversationId
-            );
-            addConversationToSidebar(
-              data.conv_id,
-              data.new_conv_title
-            );
-          }
-        }
-      })
-      .fail(function() {
-        if (requestConvId === activeConversationId) {
-          addMessage('An error occurred.');
-        }
-      })
-      .always(function(dataOrXhr, textStatus) {
-        let convIdFromResponse = null;
-        if (
-          textStatus === 'success' &&
-          dataOrXhr.new_conversation_created
-        ) {
-          convIdFromResponse = dataOrXhr.conv_id;
-        }
-        const effectiveRequestConvId = requestIsNew
-          ? convIdFromResponse
-          : requestConvId;
-
-        if (activeConversationId === effectiveRequestConvId) {
-          typingIndicator.addClass('fade-out');
-          setTimeout(() => typingIndicator.hide(), 300);
-          sendButton.prop('disabled', false);
-          messageInput.prop('disabled', false);
-          
-          if (window.innerWidth > 768) {
-            messageInput.focus();
-          }
-        }
-      });
   }
+
+  // 🚀 INSTANT ABORT HANDLER - Bypass HTML5 Validation
+  sendButton.on('click', function(e) {
+      if (currentController) {
+          e.preventDefault(); // Stop the form submission cycle immediately
+          currentController.abort(); // Triggers the AbortError in the catch block instantly
+      }
+  });
 
   // --- Submit Handler ---
   messageForm.on('submit', function(e) {
     e.preventDefault();
+
+    if (currentController) return;
+
     const message = messageInput.val().trim();
-    
     const hasImage = imageInput[0].files.length > 0;
     const imageFile = hasImage ? imageInput[0].files[0] : null;
 
@@ -442,8 +441,13 @@ $(document).ready(function() {
         previewContainer.hide();
     }
     
-    sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
+
+    // Transform the send button into a Stop button
+    sendButton.html('<i class="fas fa-stop"></i>').css({
+        'background-color': '#ef4444', 
+        'color': 'white'
+    });
 
     sendMessage(message, imageFile);
   });
@@ -700,10 +704,10 @@ $(document).ready(function() {
       success: function() {
         $('#reportModal').fadeOut(150);
         reportTargetMsgId = null;
-        showNotification('Report submitted. Thank you!', 'success');
+        window.showNotification('Report submitted. Thank you!', 'success');
       },
       error: function() {
-        showNotification('Failed to submit report. Please try again.', 'error');
+        window.showNotification('Failed to submit report. Please try again.', 'error');
       },
       complete: function() {
         $('#reportSubmitBtn').prop('disabled', false).text('Submit Report');
