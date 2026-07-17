@@ -1,4 +1,6 @@
 # Custom
+
+sc-credentials.json
 #.github/workflows/cicd.yaml
 # Byte-compiled / optimized / DLL files
 __pycache__/
