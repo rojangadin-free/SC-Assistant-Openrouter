@@ -237,6 +237,505 @@
       </div>
     </div>
 
+    <div id="conflictsSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromConflicts">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Data Conflicts</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid var(--sc-yellow);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          These are facts your documents state <strong>two different ways</strong> (for example, two
+          different people listed as dean of the same college). When this happens the assistant has no
+          way to know which one is current, so its answer can change from one question to the next.
+          Pick the correct value once here and the assistant will always use it — the wrong value will
+          be ignored even if it is still written in the PDF.
+        </p>
+        <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">
+          <button id="rescanConflictsBtn"
+                  style="padding:.5rem 1rem;border-radius:8px;border:none;background:var(--sc-green);color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+            <i class="fas fa-sync-alt"></i> Scan documents
+          </button>
+          <span id="conflictScanMeta" style="color:var(--text-tertiary);font-size:.82rem;"></span>
+        </div>
+      </div>
+
+      <div id="conflictList" style="display:flex;flex-direction:column;gap:1.25rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Checking documents for conflicting data…
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════
+         CONTENT GAPS
+         The other half of the data-quality problem: Data Conflicts
+         fixes wrong answers, this one fixes MISSING answers.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="gapsSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromGaps">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Content Gaps</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #3b82f6;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          Every time the assistant has to say <em>"I don't have that information"</em>, the question is
+          recorded here and grouped with similar ones. This is a ranked list of what students want to
+          know that <strong>no uploaded document answers</strong> — so instead of guessing what to
+          upload next, you can start at the top. Mark a topic as covered once you've uploaded a
+          document for it; if students keep asking, it reopens itself automatically.
+        </p>
+        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+          <div>
+            <div id="gapStatTopics" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Open topics</div>
+          </div>
+          <div>
+            <div id="gapStatQuestions" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Times asked</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            <select id="gapStatusFilter"
+                    style="padding:.5rem .75rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+              <option value="open">Needs a document</option>
+              <option value="resolved">Marked as covered</option>
+              <option value="">All topics</option>
+            </select>
+            <button id="refreshGapsBtn"
+                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="gapList" style="display:flex;flex-direction:column;gap:1rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ══════════════════════════════════════════════════════════
+         ANSWER QUALITY — what the students themselves think.
+         Conflicts and gaps are found by inspecting documents; this is the only
+         screen driven by the readers of the answers.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="feedbackSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromFeedback">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Answer Quality</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #ef4444;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          Students rate answers with 👍 / 👎. Each vote is stored with the
+          <strong>documents and pages the answer came from</strong>, so a thumbs-down is not
+          just a complaint — it points at the file to fix. The list below ranks the
+          <strong>documents that attract the most downvotes</strong>. A file at the top is
+          being read and is misleading people.
+        </p>
+        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+          <div>
+            <div id="fbStatHelpful" style="font-size:1.6rem;font-weight:700;color:#16a34a;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Helpful</div>
+          </div>
+          <div>
+            <div id="fbStatUnhelpful" style="font-size:1.6rem;font-weight:700;color:#ef4444;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Not helpful</div>
+          </div>
+          <div>
+            <div id="fbStatRate" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Satisfaction</div>
+          </div>
+          <div style="margin-left:auto;">
+            <button id="refreshFeedbackBtn"
+                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#ef4444;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <h3 style="font-size:1rem;color:var(--text-primary);margin:0 0 .75rem;">
+        Documents ranked by downvotes
+      </h3>
+      <div id="fbSourceList" style="display:flex;flex-direction:column;gap:.65rem;margin-bottom:2rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…
+        </div>
+      </div>
+
+      <h3 style="font-size:1rem;color:var(--text-primary);margin:0 0 .75rem;">
+        Latest answers marked "not helpful"
+      </h3>
+      <div id="fbRecentList" style="display:flex;flex-direction:column;gap:.65rem;"></div>
+    </div>
+
+
+    <!-- ══════════════════════════════════════════════════════════
+         ASK A HUMAN — the queue of people the bot could not help.
+         Unlike every other screen here, these entries have someone waiting on
+         the other end, which is why pending count is the badge.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="escalationsSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromEscalations">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Ask a Human</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #8b5cf6;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          When the assistant cannot help, the student can forward the question to a real
+          office instead of leaving unanswered. <strong>Each row is a person waiting for a
+          reply.</strong> Contact them, then mark it answered.
+        </p>
+        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+          <div>
+            <div id="escStatPending" style="font-size:1.6rem;font-weight:700;color:#8b5cf6;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Waiting</div>
+          </div>
+          <div>
+            <div id="escStatAnswered" style="font-size:1.6rem;font-weight:700;color:#16a34a;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Answered</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            <select id="escStatusFilter"
+                    style="padding:.5rem .75rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+              <option value="pending">Waiting for reply</option>
+              <option value="answered">Answered</option>
+              <option value="">All requests</option>
+            </select>
+            <button id="refreshEscalationsBtn"
+                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="escList" style="display:flex;flex-direction:column;gap:1rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading requests…
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ══════════════════════════════════════════════════════════
+         ACADEMIC CALENDAR — the dates the assistant answers "when" with.
+         Deadlines rotate faster than any other fact in the corpus, so they are
+         edited here instead of by re-uploading a PDF. Two things make this
+         screen different from the rest of the dashboard: the countdown is
+         computed for the admin (so a wrong date is visible as a wrong number of
+         days), and Preview shows the literal text the model receives.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="calendarSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromCalendar">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Academic Calendar</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #22c55e;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          A date in a PDF is a fact; a deadline is a fact <em>plus</em> how far away it is.
+          Periods entered here let the assistant say <strong>"enrollment closes in 12 days"</strong>
+          instead of reciting <em>June 1&ndash;15</em> and leaving the student to work it out —
+          and stop it describing a date that has already passed as upcoming.
+        </p>
+        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+          <div>
+            <div id="calStatActive" style="font-size:1.6rem;font-weight:700;color:#22c55e;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Open now</div>
+          </div>
+          <div>
+            <div id="calStatUpcoming" style="font-size:1.6rem;font-weight:700;color:#3b82f6;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Upcoming</div>
+          </div>
+          <div>
+            <div id="calStatPast" style="font-size:1.6rem;font-weight:700;color:var(--text-tertiary);line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Finished</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            {# "As of" is the cheapest way to answer "will this still be right in
+               October?" — change the date, see what a student would be told. #}
+            <label style="font-size:.8rem;color:var(--text-tertiary);">As of</label>
+            <input type="date" id="calAsOf"
+                   style="padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+            <button id="refreshCalendarBtn"
+                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Add / correct one period. Re-using an existing name corrects that row
+           rather than adding a second one, which is the same rule the store
+           enforces — two rows for "Enrollment" would be a data conflict of our
+           own making. -->
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <h3 style="margin:0 0 .85rem;font-size:1rem;color:var(--text-primary);">
+          <i class="fas fa-plus-circle" style="color:#22c55e;"></i>&nbsp;Add or correct a period
+        </h3>
+        <div style="display:grid;grid-template-columns:1.4fr .9fr .9fr 1.4fr auto;gap:.6rem;align-items:end;">
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Event name</label>
+            <input type="text" id="calLabel" placeholder="Enrollment"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Starts</label>
+            <input type="date" id="calStart"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Ends <span style="opacity:.6;">(optional)</span></label>
+            <input type="date" id="calEnd"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Note the student should hear <span style="opacity:.6;">(optional)</span></label>
+            <input type="text" id="calNote" placeholder="Late fee applies after June 10"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <button id="calSaveBtn"
+                  style="padding:.6rem 1.1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;white-space:nowrap;">
+            <i class="fas fa-check"></i> Save
+          </button>
+        </div>
+        <div id="calSaveMsg" style="margin-top:.6rem;font-size:.82rem;display:none;"></div>
+      </div>
+
+      <div id="calList" style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1.5rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading calendar…
+        </div>
+      </div>
+
+      <!-- Read dates out of the calendar page instead of retyping them. A paste
+           box rather than a corpus sweep: a handbook is full of dates that are
+           not deadlines (founding year, accreditation, sample computations). -->
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
+          <i class="fas fa-file-import" style="color:#3b82f6;"></i>&nbsp;Read dates from the calendar page
+        </h3>
+        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+          Paste the academic-calendar section of the handbook. Every date found is proposed
+          below — nothing is saved until you click Use, because only you can tell which of
+          these dates is a deadline a student needs to act on.
+        </p>
+        <textarea id="calScanText" rows="4" placeholder="Enrollment Period: June 1-15, 2026&#10;Start of Classes: June 22, 2026"
+                  style="width:100%;padding:.6rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;font-family:inherit;resize:vertical;"></textarea>
+        <div style="display:flex;gap:.6rem;align-items:center;margin-top:.6rem;flex-wrap:wrap;">
+          <label style="font-size:.8rem;color:var(--text-tertiary);">Year, if the text omits it</label>
+          <input type="number" id="calScanYear" placeholder="2026" min="2000" max="2100"
+                 style="width:6.5rem;padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <button id="calScanBtn"
+                  style="padding:.5rem 1rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+            <i class="fas fa-search"></i> Find dates
+          </button>
+        </div>
+        <div id="calScanResults" style="margin-top:.85rem;display:none;"></div>
+      </div>
+
+      <!-- The only screen in this dashboard that shows the model's INPUT. A
+           wrong end date looks perfectly reasonable in a form; it only becomes
+           obviously wrong when you read "closes in 40 days". -->
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">
+        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
+          <i class="fas fa-eye" style="color:#8b5cf6;"></i>&nbsp;What will the assistant be told?
+        </h3>
+        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+          Ask a question the way a student would. This shows the exact timing text the
+          assistant receives — including nothing at all, if the question was not about dates.
+        </p>
+        <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="calPreviewQ" placeholder="can i still enroll?"
+                 style="flex:1;min-width:16rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          <input type="date" id="calPreviewDate"
+                 style="padding:.5rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <button id="calPreviewBtn"
+                  style="padding:.55rem 1.1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+            <i class="fas fa-play"></i> Preview
+          </button>
+        </div>
+        <div id="calPreviewOut" style="margin-top:.85rem;display:none;"></div>
+      </div>
+    </div>
+
+
+    <!-- ══ Announcements ══════════════════════════════════════════════════
+         The calendar above covers dates that were known in advance. This covers
+         the ones that were not: a suspension, an extension, an office closing
+         early. Nothing in any PDF can answer those, and by the time a handbook
+         is re-uploaded the answer no longer matters. -->
+    <div id="announcementsSection" class="dashboard-section">
+      <div class="section-header">
+        <button class="back-button" id="backToOverviewFromAnnouncements">
+          <i class="fas fa-arrow-left"></i>
+          Back to Overview
+        </button>
+        <h2>Announcements</h2>
+      </div>
+
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #f59e0b;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+          Anything posted here does two things at once: it is <strong>pinned at the top of the
+          chat</strong> for every student who opens it, and it is given to the assistant as
+          <strong>higher authority than the documents</strong>. So "classes are suspended
+          tomorrow" both shows up unprompted and changes the answer to
+          <em>"may klase ba bukas?"</em> — which the handbook would otherwise answer with the
+          regular schedule, confidently and wrongly.
+        </p>
+        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+          <div>
+            <div id="annStatActive" style="font-size:1.6rem;font-weight:700;color:#f59e0b;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Live now</div>
+          </div>
+          <div>
+            <div id="annStatUrgent" style="font-size:1.6rem;font-weight:700;color:#ef4444;line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Urgent</div>
+          </div>
+          <div>
+            <div id="annStatExpired" style="font-size:1.6rem;font-weight:700;color:var(--text-tertiary);line-height:1;">–</div>
+            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Expired</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:.8rem;color:var(--text-tertiary);">As of</label>
+            <input type="date" id="annAsOf"
+                   style="padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+            <button id="refreshAnnouncementsBtn"
+                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#f59e0b;color:#111827;cursor:pointer;font-weight:600;font-size:.875rem;">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Post / edit. "Until" is required in spirit though not in code: a
+           suspension with no end date is still telling students to stay home
+           next month. -->
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
+        <h3 style="margin:0 0 .85rem;font-size:1rem;color:var(--text-primary);">
+          <i class="fas fa-bullhorn" style="color:#f59e0b;"></i>&nbsp;<span id="annFormTitle">Post an announcement</span>
+        </h3>
+        <input type="hidden" id="annKey" value="">
+        <div style="display:grid;grid-template-columns:1fr;gap:.6rem;">
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Headline — say the thing itself, not "important notice"</label>
+            <input type="text" id="annTitle" maxlength="200" placeholder="Classes are suspended on August 22 due to Typhoon Ambo"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Details <span style="opacity:.6;">(optional — what should a student actually do?)</span></label>
+            <textarea id="annBody" rows="2" maxlength="2000" placeholder="All classes and offices are closed. Online submissions are still accepted."
+                      style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;font-family:inherit;resize:vertical;"></textarea>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:.6rem;align-items:end;margin-top:.6rem;">
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Urgency</label>
+            <select id="annPriority"
+                    style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+              <option value="urgent">Urgent — red, shown first</option>
+              <option value="important">Important</option>
+              <option value="info" selected>Info</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Who sees it</label>
+            <select id="annAudience"
+                    style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+              <option value="all" selected>Everyone</option>
+              <option value="students">Students only</option>
+              <option value="faculty">Faculty &amp; staff only</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Show from <span style="opacity:.6;">(optional)</span></label>
+            <input type="date" id="annStart"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <div>
+            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Until <span style="opacity:.6;">(auto-hides after)</span></label>
+            <input type="date" id="annEnd"
+                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+          </div>
+          <button id="annSaveBtn"
+                  style="padding:.6rem 1.1rem;border-radius:8px;border:none;background:#f59e0b;color:#111827;cursor:pointer;font-weight:600;font-size:.875rem;white-space:nowrap;">
+            <i class="fas fa-paper-plane"></i> Post
+          </button>
+        </div>
+        <div style="display:flex;gap:1rem;align-items:center;margin-top:.7rem;flex-wrap:wrap;">
+          <label style="font-size:.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:.4rem;cursor:pointer;">
+            <input type="checkbox" id="annPinned" checked>
+            Pin it to the top of the chat
+          </label>
+          <span style="font-size:.78rem;color:var(--text-tertiary);">
+            Unpinned still reaches the assistant — it just doesn't show a banner.
+          </span>
+          <button id="annCancelEditBtn"
+                  style="display:none;margin-left:auto;padding:.45rem .9rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-main);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.82rem;">
+            Cancel edit
+          </button>
+        </div>
+        <div id="annSaveMsg" style="margin-top:.6rem;font-size:.82rem;display:none;"></div>
+      </div>
+
+      <div id="annList" style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1.5rem;">
+        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading announcements…
+        </div>
+      </div>
+
+      <!-- Same reasoning as the calendar preview: an announcement can read
+           perfectly here and still never reach the model — wrong audience, start
+           date in the future, already expired. This is where that shows. -->
+      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">
+        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
+          <i class="fas fa-eye" style="color:#8b5cf6;"></i>&nbsp;What will the assistant be told?
+        </h3>
+        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+          The literal text added to every answer for this audience, on this date.
+        </p>
+        <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+          <select id="annPreviewAudience"
+                  style="padding:.5rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <option value="students" selected>As a student</option>
+            <option value="faculty">As faculty</option>
+          </select>
+          <input type="date" id="annPreviewDate"
+                 style="padding:.5rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <button id="annPreviewBtn"
+                  style="padding:.55rem 1.1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+            <i class="fas fa-play"></i> Preview
+          </button>
+        </div>
+        <div id="annPreviewOut" style="margin-top:.85rem;display:none;"></div>
+      </div>
+    </div>
+
+
+
+
     <div class="confirm-dialog" id="reportDetailModal">
       <div class="confirm-box" id="reportDetailBox" style="max-width: 700px; width: 95%; transition: all 0.2s ease;">
         <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
@@ -572,6 +1071,1399 @@
       if (items.length > 0) { $('#sidebarReportBadge').text(items.length).show(); }
     });
 
+    // ══════════════════════════════════════════════════════════════
+    //  DATA CONFLICTS
+    //
+    //  One card per contradiction. The admin picks the correct value
+    //  (or types one, because the document can be wrong in both
+    //  places) and every future answer uses it.
+    // ══════════════════════════════════════════════════════════════
+    let allConflicts = [];
+    let conflictsLoaded = false;
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    $('#conflictsMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#conflictsSection').addClass('active');
+      $('#conflictsMenuItem').addClass('active');
+      $('.header-left span').text('Data Conflicts');
+      if (!conflictsLoaded) loadConflicts(false);
+    });
+
+    $(document).on('click', '#backToOverviewFromConflicts', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#rescanConflictsBtn', function() { loadConflicts(true); });
+
+    function loadConflicts(force) {
+      const $btn = $('#rescanConflictsBtn');
+      $btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Scanning…');
+      $('#conflictList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Reading documents… this can take a moment.</div>');
+
+      $.ajax({
+        url: '/admin/conflicts/api/scan' + (force ? '?refresh=1' : ''),
+        method: force ? 'POST' : 'GET',
+        dataType: 'json'
+      }).done(function(res) {
+        conflictsLoaded = true;
+        if (!res.success) {
+          $('#conflictList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Scan failed.') + '</div>');
+          return;
+        }
+        allConflicts = res.conflicts || [];
+        const when = res.scanned_at ? new Date(res.scanned_at).toLocaleString('en-PH') : '—';
+        $('#conflictScanMeta').text(
+          (res.documents || []).length + ' document(s) scanned · ' +
+          (res.fact_count || 0) + ' facts checked · last scan ' + when
+        );
+        renderConflicts();
+      }).fail(function(xhr) {
+        $('#conflictList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Scan failed' +
+          (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+      }).always(function() {
+        $btn.prop('disabled', false).html('<i class="fas fa-sync-alt"></i> Scan documents');
+      });
+    }
+
+    function renderConflicts() {
+      const unresolved = allConflicts.filter(c => !c.resolution).length;
+      if (unresolved > 0) { $('#sidebarConflictBadge').text(unresolved).show(); }
+      else                { $('#sidebarConflictBadge').hide(); }
+
+      if (!allConflicts.length) {
+        $('#conflictList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          'No conflicting data found. Every role in your documents has exactly one value.</div>');
+        return;
+      }
+
+      const html = allConflicts.map(function(c) {
+        const res = c.resolution || null;
+        const resolved = !!res;
+        const accent = resolved ? '#22c55e' : '#f59e0b';
+        const badge = resolved
+          ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">RESOLVED</span>'
+          : '<span style="background:#fef3c7;color:#b45309;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">NEEDS REVIEW</span>';
+
+        const options = (c.candidates || []).map(function(cand) {
+          const value = cand.person_display || cand.person;
+          const isPicked = resolved && res.correct === value;
+          const isRejected = resolved && !isPicked;
+          const rowBg = isPicked ? 'background:rgba(34,197,94,.09);border-color:#22c55e;'
+                      : isRejected ? 'background:var(--bg-main);border-color:var(--border);opacity:.62;'
+                      : 'background:var(--bg-main);border-color:var(--border);';
+          const strike = isRejected ? 'text-decoration:line-through;' : '';
+          const places = (cand.occurrences || []).map(function(o) {
+            return esc(o.source) + (o.page ? ' · p.' + o.page : '');
+          }).join(' | ');
+          const snippet = (cand.occurrences && cand.occurrences[0] && cand.occurrences[0].evidence) || '';
+
+          return '' +
+            '<label style="display:flex;gap:.75rem;align-items:flex-start;border:1.5px solid;border-radius:10px;padding:.75rem .9rem;cursor:pointer;' + rowBg + '">' +
+              '<input type="radio" name="cf-' + esc(c.key) + '" class="cf-choice" value="' + esc(value) + '" ' +
+                     'data-key="' + esc(c.key) + '" ' + (isPicked ? 'checked' : '') + ' style="margin-top:3px;">' +
+              '<span style="flex:1;min-width:0;">' +
+                '<span style="display:block;font-weight:600;color:var(--text-primary);' + strike + '">' + esc(value) + '</span>' +
+                '<span style="display:block;font-size:.76rem;color:var(--text-secondary);margin-top:.2rem;">' +
+                  '<i class="fas fa-file-lines"></i> ' + places +
+                  ' · stated ' + (cand.count || 1) + '×' +
+                '</span>' +
+                (snippet ? '<span style="display:block;font-size:.76rem;color:var(--text-secondary);opacity:.85;font-style:italic;margin-top:.35rem;">“' + esc(snippet) + '”</span>' : '') +
+              '</span>' +
+            '</label>';
+        }).join('');
+
+        const resolvedNote = resolved
+          ? '<div style="margin-top:.9rem;font-size:.8rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.6rem .8rem;">' +
+              '<i class="fas fa-shield-halved"></i> The assistant answers <strong>' + esc(res.correct) + '</strong> for this' +
+              (res.resolved_by ? ' · set by ' + esc(res.resolved_by) : '') +
+              (res.note ? '<br><span style="color:var(--text-secondary);">Note: ' + esc(res.note) + '</span>' : '') +
+            '</div>'
+          : '';
+
+        const question = 'Who is the ' + (c.role || 'holder') + ' of ' + (c.subject_display || '') + '?';
+
+        return '' +
+        '<div class="conflict-card" data-key="' + esc(c.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">' +
+            '<div>' +
+              '<h3 style="margin:0;font-size:1.02rem;color:var(--text-primary);">' + esc(c.label) + '</h3>' +
+              '<p style="margin:.35rem 0 0;font-size:.84rem;color:var(--text-secondary);">' +
+                esc(question) + ' — your documents give ' + (c.candidates || []).length + ' different answers.' +
+              '</p>' +
+            '</div>' + badge +
+          '</div>' +
+
+          '<div style="display:flex;flex-direction:column;gap:.6rem;margin-top:1rem;">' + options + '</div>' +
+
+          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap;">' +
+            '<input type="text" class="cf-custom" placeholder="Neither is correct — type the correct value" ' +
+                   'style="flex:1;min-width:240px;padding:.5rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.85rem;">' +
+            '<input type="text" class="cf-note" placeholder="Note (optional)" ' +
+                   'style="flex:1;min-width:180px;padding:.5rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.85rem;">' +
+            '<button class="cf-save" style="padding:.5rem 1rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.85rem;cursor:pointer;">' +
+              '<i class="fas fa-check"></i> ' + (resolved ? 'Update' : 'Set as correct') + '</button>' +
+            (resolved ? '<button class="cf-clear" style="padding:.5rem 1rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.85rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Undo</button>' : '') +
+          '</div>' +
+          resolvedNote +
+        '</div>';
+      }).join('');
+
+      $('#conflictList').html(html);
+    }
+
+    // Typing a custom value clears the radio choice, and vice versa —
+    // otherwise "correct" would be ambiguous.
+    $(document).on('input', '.cf-custom', function() {
+      if ($(this).val().trim()) {
+        $(this).closest('.conflict-card').find('.cf-choice').prop('checked', false);
+      }
+    });
+    $(document).on('change', '.cf-choice', function() {
+      $(this).closest('.conflict-card').find('.cf-custom').val('');
+    });
+
+    $(document).on('click', '.cf-save', function() {
+      const $card = $(this).closest('.conflict-card');
+      const key = $card.data('key');
+      const conflict = allConflicts.find(c => c.key === key);
+      const custom = $card.find('.cf-custom').val().trim();
+      const picked = $card.find('.cf-choice:checked').val();
+      const correct = custom || picked;
+
+      if (!correct) {
+        window.showNotification('Choose a value or type the correct one first.', 'error');
+        return;
+      }
+
+      const rejected = (conflict && conflict.candidates || [])
+        .map(c => c.person_display || c.person).filter(v => v && v !== correct);
+
+      const $btn = $(this).prop('disabled', true);
+      $.ajax({
+        url: '/admin/conflicts/api/resolve',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          key: key,
+          correct: correct,
+          rejected: rejected,
+          role: conflict ? conflict.role : '',
+          subject: conflict ? conflict.subject : '',
+          note: $card.find('.cf-note').val().trim()
+        })
+      }).done(function(res) {
+        if (!res.success) { window.showNotification(res.message || 'Could not save.', 'error'); return; }
+        window.showNotification(res.message, 'success');
+        if (conflict) conflict.resolution = res.resolution;
+        renderConflicts();
+      }).fail(function() {
+        window.showNotification('Could not save the decision.', 'error');
+      }).always(function() { $btn.prop('disabled', false); });
+    });
+
+    $(document).on('click', '.cf-clear', function() {
+      const $card = $(this).closest('.conflict-card');
+      const key = $card.data('key');
+      $.ajax({
+        url: '/admin/conflicts/api/unresolve',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ key: key })
+      }).done(function(res) {
+        window.showNotification(res.message || 'Decision removed.', 'success');
+        const conflict = allConflicts.find(c => c.key === key);
+        if (conflict) conflict.resolution = null;
+        renderConflicts();
+      }).fail(function() {
+        window.showNotification('Could not remove the decision.', 'error');
+      });
+    });
+
+    // Badge on page load, without blocking the rest of the dashboard.
+    $.getJSON('/admin/conflicts/api/scan', function(res) {
+      if (res && res.success) {
+        allConflicts = res.conflicts || [];
+        conflictsLoaded = true;
+        const when = res.scanned_at ? new Date(res.scanned_at).toLocaleString('en-PH') : '—';
+        $('#conflictScanMeta').text(
+          (res.documents || []).length + ' document(s) scanned · ' +
+          (res.fact_count || 0) + ' facts checked · last scan ' + when
+        );
+        renderConflicts();
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════════
+    //  CONTENT GAPS
+    //
+    //  Data Conflicts fixes answers that are WRONG. This fixes the
+    //  ones that are MISSING: every "I don't have that information"
+    //  becomes a row here, ranked by how many students hit it.
+    // ══════════════════════════════════════════════════════════════
+    let allGaps = [];
+    let gapsLoaded = false;
+
+    $('#gapsMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#gapsSection').addClass('active');
+      $('#gapsMenuItem').addClass('active');
+      $('.header-left span').text('Content Gaps');
+      if (!gapsLoaded) loadGaps();
+    });
+
+    $(document).on('click', '#backToOverviewFromGaps', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#refreshGapsBtn', function() { loadGaps(); });
+    $(document).on('change', '#gapStatusFilter', function() { loadGaps(); });
+
+    function fmtWhen(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) +
+             ' ' + d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function loadGaps() {
+      const status = $('#gapStatusFilter').val();
+      const $btn = $('#refreshGapsBtn').prop('disabled', true);
+      $('#gapList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…</div>');
+
+      $.getJSON('/admin/gaps/api/list' + (status ? '?status=' + status : ''))
+        .done(function(res) {
+          gapsLoaded = true;
+          if (!res.success) {
+            $('#gapList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            return;
+          }
+          allGaps = res.gaps || [];
+          applyGapStats(res.stats);
+          renderGaps();
+        })
+        .fail(function(xhr) {
+          $('#gapList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load content gaps' +
+            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+        })
+        .always(function() {
+          $btn.prop('disabled', false);
+        });
+    }
+
+    function applyGapStats(stats) {
+      if (!stats) return;
+      $('#gapStatTopics').text(stats.open_topics);
+      $('#gapStatQuestions').text(stats.open_questions);
+      if (stats.open_topics > 0) { $('#sidebarGapBadge').text(stats.open_topics).show(); }
+      else                       { $('#sidebarGapBadge').hide(); }
+    }
+
+    function renderGaps() {
+      if (!allGaps.length) {
+        const status = $('#gapStatusFilter').val();
+        const msg = status === 'resolved'
+          ? 'Nothing marked as covered yet.'
+          : 'No unanswered questions recorded. Every question students asked was answered from your documents.';
+        $('#gapList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          esc(msg) + '</div>');
+        return;
+      }
+
+      const html = allGaps.map(function(g) {
+        const resolved = g.status === 'resolved';
+        const accent = resolved ? '#22c55e' : '#3b82f6';
+        const badge = resolved
+          ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">COVERED</span>'
+          : '<span style="background:#dbeafe;color:#1d4ed8;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">NEEDS A DOCUMENT</span>';
+
+        // The exact student wording matters: it is the difference between
+        // uploading the right page and uploading something adjacent to it.
+        const examples = (g.examples || []).map(function(e) {
+          return '<li style="margin-bottom:.35rem;color:var(--text-secondary);font-size:.82rem;">' +
+                   '“' + esc(e.question) + '”' +
+                   '<span style="color:var(--text-tertiary);"> · ' + esc(e.asked_by || 'unknown') +
+                   ' · ' + fmtWhen(e.at) + '</span>' +
+                 '</li>';
+        }).join('');
+
+        const noteRow = g.note
+          ? '<div style="margin-top:.75rem;font-size:.8rem;color:var(--text-secondary);background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.55rem .8rem;">' +
+              '<i class="fas fa-note-sticky"></i> ' + esc(g.note) + '</div>'
+          : '';
+
+        const resolvedRow = resolved
+          ? '<div style="margin-top:.75rem;font-size:.8rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.55rem .8rem;">' +
+              '<i class="fas fa-check-double"></i> Marked covered' +
+              (g.resolved_by ? ' by ' + esc(g.resolved_by) : '') +
+              ' · ' + fmtWhen(g.resolved_at) +
+            '</div>'
+          : '';
+
+        const actions = resolved
+          ? '<button class="gap-reopen" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Reopen</button>'
+          : '<input type="text" class="gap-note" placeholder="Note (optional): which document covers this now?" ' +
+                 'style="flex:1;min-width:220px;padding:.45rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.82rem;">' +
+            '<button class="gap-resolve" style="padding:.45rem .9rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-check"></i> Mark as covered</button>';
+
+        return '' +
+        '<div class="gap-card" data-key="' + esc(g.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.15rem 1.4rem;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">' +
+            '<div style="min-width:0;">' +
+              '<h3 style="margin:0;font-size:1rem;color:var(--text-primary);">' + esc(g.topic) + '</h3>' +
+              '<p style="margin:.3rem 0 0;font-size:.82rem;color:var(--text-secondary);">' +
+                'Asked <strong>' + (g.count || 1) + '×</strong> · first ' + fmtWhen(g.first_asked) +
+                ' · last ' + fmtWhen(g.last_asked) +
+              '</p>' +
+            '</div>' + badge +
+          '</div>' +
+
+          (examples
+            ? '<details style="margin-top:.8rem;">' +
+                '<summary style="cursor:pointer;font-size:.82rem;color:var(--text-secondary);font-weight:600;">' +
+                  'How students phrased it (' + (g.examples || []).length + ')</summary>' +
+                '<ul style="margin:.6rem 0 0;padding-left:1.1rem;">' + examples + '</ul>' +
+              '</details>'
+            : '') +
+
+          noteRow + resolvedRow +
+
+          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap;">' +
+            actions +
+            '<button class="gap-delete" title="Remove this row (spam or a test question)" ' +
+                    'style="padding:.45rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;margin-left:auto;">' +
+              '<i class="fas fa-trash"></i></button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+
+      $('#gapList').html(html);
+    }
+
+    function gapAction(url, key, extra, okMsg) {
+      $.ajax({
+        url: url,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(Object.assign({ key: key }, extra || {}))
+      }).done(function(res) {
+        if (!res.success) { window.showNotification(res.message || 'Action failed.', 'error'); return; }
+        window.showNotification(res.message || okMsg, 'success');
+        applyGapStats(res.stats);
+        loadGaps();
+      }).fail(function() {
+        window.showNotification('Action failed.', 'error');
+      });
+    }
+
+    $(document).on('click', '.gap-resolve', function() {
+      const $card = $(this).closest('.gap-card');
+      gapAction('/admin/gaps/api/resolve', $card.data('key'),
+                { note: $card.find('.gap-note').val() }, 'Marked as covered.');
+    });
+
+    $(document).on('click', '.gap-reopen', function() {
+      gapAction('/admin/gaps/api/reopen', $(this).closest('.gap-card').data('key'), {}, 'Reopened.');
+    });
+
+    $(document).on('click', '.gap-delete', function() {
+      if (!confirm('Remove this topic from the list? If a student asks it again it will come back.')) return;
+      gapAction('/admin/gaps/api/delete', $(this).closest('.gap-card').data('key'), {}, 'Removed.');
+    });
+
+    // Sidebar badge on page load.
+    $.getJSON('/admin/gaps/api/list?status=open', function(res) {
+      if (res && res.success) {
+        allGaps = res.gaps || [];
+        gapsLoaded = true;
+        applyGapStats(res.stats);
+        renderGaps();
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════════
+    //  ANSWER QUALITY
+    //
+    //  Conflicts and Gaps are found by inspecting the corpus. This screen is
+    //  the students' own verdict, and it is the only one that can catch an
+    //  answer that is confidently wrong — a document with no contradiction in
+    //  it and no missing page still reads badly if the wording misleads.
+    //
+    //  The headline list is by DOCUMENT rather than by question, because the
+    //  admin's next action is to open a file, not to read complaints.
+    // ══════════════════════════════════════════════════════════════
+    let fbTopics = [];
+    let feedbackLoaded = false;
+
+    $('#feedbackMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#feedbackSection').addClass('active');
+      $('#feedbackMenuItem').addClass('active');
+      $('.header-left span').text('Answer Quality');
+      if (!feedbackLoaded) loadFeedback();
+    });
+
+    $(document).on('click', '#backToOverviewFromFeedback', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#refreshFeedbackBtn', function() { loadFeedback(); });
+
+    function applyFeedbackStats(stats) {
+      if (!stats) return;
+      $('#fbStatHelpful').text(stats.up);
+      $('#fbStatUnhelpful').text(stats.down);
+      $('#fbStatRate').text(
+        stats.satisfaction === null || stats.satisfaction === undefined
+          ? '—'
+          : Math.round(stats.satisfaction * 100) + '%'
+      );
+      if (stats.down > 0) { $('#sidebarFeedbackBadge').text(stats.down).show(); }
+      else                { $('#sidebarFeedbackBadge').hide(); }
+    }
+
+    function loadFeedback() {
+      const $btn = $('#refreshFeedbackBtn').prop('disabled', true);
+      $('#fbSourceList').html('<div style="text-align:center;color:var(--text-secondary);padding:2rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…</div>');
+
+      $.getJSON('/admin/feedback/api/list?verdict=down')
+        .done(function(res) {
+          feedbackLoaded = true;
+          if (!res.success) {
+            $('#fbSourceList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            return;
+          }
+          fbTopics = res.topics || [];
+          applyFeedbackStats(res.stats);
+          renderFeedback();
+        })
+        .fail(function(xhr) {
+          $('#fbSourceList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load feedback' +
+            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    // Every topic already knows which sources sat under its downvotes; rolling
+    // those up across topics turns "these answers were bad" into "this file is
+    // the problem", which is the form an admin can act on.
+    function rollUpSuspectSources(topics) {
+      const tally = {};
+      topics.forEach(function(t) {
+        (t.suspect_sources || []).forEach(function(s) {
+          if (!tally[s.source]) tally[s.source] = { source: s.source, downvotes: 0, topics: [] };
+          tally[s.source].downvotes += s.downvotes;
+          if (tally[s.source].topics.indexOf(t.topic) === -1) tally[s.source].topics.push(t.topic);
+        });
+      });
+      return Object.keys(tally).map(k => tally[k]).sort((a, b) => b.downvotes - a.downvotes);
+    }
+
+    function renderFeedback() {
+      const sources = rollUpSuspectSources(fbTopics);
+
+      if (!sources.length) {
+        $('#fbSourceList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          'No document has been downvoted. Either the answers are landing, or no one has voted yet.</div>');
+      } else {
+        const max = sources[0].downvotes || 1;
+        $('#fbSourceList').html(sources.map(function(s) {
+          // The bar is relative to the worst offender, so the ranking is legible
+          // at a glance without the admin doing arithmetic on the counts.
+          const pct = Math.max(6, Math.round((s.downvotes / max) * 100));
+          return '' +
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:.8rem 1rem;">' +
+            '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:baseline;">' +
+              '<strong style="color:var(--text-primary);font-size:.9rem;word-break:break-word;">' + esc(s.source) + '</strong>' +
+              '<span style="color:#ef4444;font-weight:700;font-size:.85rem;white-space:nowrap;">' + s.downvotes + ' 👎</span>' +
+            '</div>' +
+            '<div style="height:6px;border-radius:999px;background:var(--bg-main);margin:.5rem 0 .45rem;overflow:hidden;">' +
+              '<div style="height:100%;width:' + pct + '%;background:#ef4444;"></div>' +
+            '</div>' +
+            '<div style="font-size:.78rem;color:var(--text-secondary);">' +
+              'Blamed for: ' + s.topics.slice(0, 3).map(t => '“' + esc(t) + '”').join(', ') +
+              (s.topics.length > 3 ? ' +' + (s.topics.length - 3) + ' more' : '') +
+            '</div>' +
+          '</div>';
+        }).join(''));
+      }
+
+      if (!fbTopics.length) {
+        $('#fbRecentList').html('<div style="color:var(--text-secondary);font-size:.85rem;padding:.5rem 0;">Nothing marked "not helpful" yet.</div>');
+        return;
+      }
+
+      $('#fbRecentList').html(fbTopics.map(function(t) {
+        const bad = (t.examples || []).filter(e => e.verdict === 'down');
+        const ex = bad[0] || (t.examples || [])[0] || {};
+        return '' +
+        '<div class="fb-card" data-key="' + esc(t.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid #ef4444;border-radius:10px;padding:.9rem 1.1rem;">' +
+          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+            '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(t.topic || '(no question recorded)') + '</strong>' +
+            '<span style="white-space:nowrap;font-size:.8rem;color:var(--text-secondary);">' +
+              '<span style="color:#16a34a;font-weight:700;">' + t.up + ' 👍</span> · ' +
+              '<span style="color:#ef4444;font-weight:700;">' + t.down + ' 👎</span></span>' +
+          '</div>' +
+          (ex.answer_snippet
+            ? '<div style="margin-top:.5rem;font-size:.8rem;color:var(--text-secondary);font-style:italic;">“' + esc(ex.answer_snippet) + '”</div>'
+            : '') +
+          ((ex.sources || []).length
+            ? '<div style="margin-top:.5rem;font-size:.76rem;color:var(--text-tertiary);"><i class="fas fa-file-lines"></i> ' +
+                (ex.sources || []).map(esc).join(' | ') + '</div>'
+            : '') +
+          '<div style="margin-top:.6rem;display:flex;gap:.5rem;">' +
+            '<button class="fb-delete" title="Remove (test traffic)" style="padding:.35rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;margin-left:auto;">' +
+              '<i class="fas fa-trash"></i></button>' +
+          '</div>' +
+        '</div>';
+      }).join(''));
+    }
+
+    $(document).on('click', '.fb-delete', function() {
+      const key = $(this).closest('.fb-card').data('key');
+      if (!confirm('Remove this topic and its votes?')) return;
+      $.ajax({
+        url: '/admin/feedback/api/delete',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ key: key })
+      }).done(function(res) {
+        if (!res.success) { window.showNotification(res.message || 'Could not remove.', 'error'); return; }
+        window.showNotification(res.message, 'success');
+        loadFeedback();
+      }).fail(function() { window.showNotification('Could not remove.', 'error'); });
+    });
+
+    // Badge on page load — an admin should see there are complaints without
+    // having to open the screen first.
+    $.getJSON('/admin/feedback/api/list?verdict=down', function(res) {
+      if (res && res.success) {
+        fbTopics = res.topics || [];
+        feedbackLoaded = true;
+        applyFeedbackStats(res.stats);
+        renderFeedback();
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════════
+    //  ASK A HUMAN
+    //
+    //  The only queue here with a person on the other end, so it is ordered
+    //  oldest-waiting-first by the API and the reply text is kept: that text is
+    //  the draft of the document that should have answered it.
+    // ══════════════════════════════════════════════════════════════
+    let escItems = [];
+    let escRoutes = {};
+    let escLoaded = false;
+
+    $('#escalationsMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#escalationsSection').addClass('active');
+      $('#escalationsMenuItem').addClass('active');
+      $('.header-left span').text('Ask a Human');
+      if (!escLoaded) loadEscalations();
+    });
+
+    $(document).on('click', '#backToOverviewFromEscalations', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#refreshEscalationsBtn', function() { loadEscalations(); });
+    $(document).on('change', '#escStatusFilter', function() { loadEscalations(); });
+
+    function applyEscStats(stats) {
+      if (!stats) return;
+      $('#escStatPending').text(stats.pending);
+      $('#escStatAnswered').text(stats.answered);
+      if (stats.pending > 0) { $('#sidebarEscalationBadge').text(stats.pending).show(); }
+      else                   { $('#sidebarEscalationBadge').hide(); }
+    }
+
+    function loadEscalations() {
+      const status = $('#escStatusFilter').val();
+      const $btn = $('#refreshEscalationsBtn').prop('disabled', true);
+      $('#escList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading requests…</div>');
+
+      $.getJSON('/admin/feedback/api/escalations' + (status ? '?status=' + status : ''))
+        .done(function(res) {
+          escLoaded = true;
+          if (!res.success) {
+            $('#escList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            return;
+          }
+          escItems = res.escalations || [];
+          escRoutes = res.routes || {};
+          applyEscStats(res.stats);
+          renderEscalations();
+        })
+        .fail(function(xhr) {
+          $('#escList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load requests' +
+            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    function renderEscalations() {
+      if (!escItems.length) {
+        const status = $('#escStatusFilter').val();
+        $('#escList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-inbox" style="font-size:2rem;color:#8b5cf6;display:block;margin-bottom:.75rem;"></i>' +
+          (status === 'pending'
+            ? 'No one is waiting. Every forwarded question has been handled.'
+            : 'Nothing to show for this filter.') + '</div>');
+        return;
+      }
+
+      $('#escList').html(escItems.map(function(it) {
+        const pending = it.status === 'pending';
+        const accent = pending ? '#8b5cf6' : (it.status === 'answered' ? '#22c55e' : 'var(--border)');
+        const badge = pending
+          ? '<span style="background:#ede9fe;color:#6d28d9;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">WAITING</span>'
+          : it.status === 'answered'
+            ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">ANSWERED</span>'
+            : '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">DISMISSED</span>';
+
+        return '' +
+        '<div class="esc-card" data-id="' + esc(it.id) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.1rem 1.4rem;">' +
+          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+            '<div style="min-width:0;">' +
+              '<h3 style="margin:0;font-size:.98rem;color:var(--text-primary);">' + esc(it.question) + '</h3>' +
+              '<p style="margin:.3rem 0 0;font-size:.8rem;color:var(--text-secondary);">' +
+                '<i class="fas fa-building"></i> ' + esc(escRoutes[it.route] || it.route) +
+                ' · asked ' + fmtWhen(it.created_at) +
+                ' · reply to <strong>' + esc(it.reply_to || 'unknown') + '</strong>' +
+              '</p>' +
+            '</div>' + badge +
+          '</div>' +
+
+          (it.note
+            ? '<div style="margin-top:.6rem;font-size:.8rem;color:var(--text-secondary);background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;">' +
+                '<i class="fas fa-note-sticky"></i> ' + esc(it.note) + '</div>'
+            : '') +
+
+          (it.bot_answer
+            ? '<details style="margin-top:.6rem;"><summary style="cursor:pointer;font-size:.8rem;color:var(--text-secondary);font-weight:600;">What the assistant had said</summary>' +
+                '<div style="margin-top:.4rem;font-size:.8rem;color:var(--text-secondary);font-style:italic;">“' + esc(it.bot_answer) + '”</div></details>'
+            : '') +
+
+
+          (it.reply
+            ? '<div style="margin-top:.7rem;font-size:.82rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.55rem .8rem;">' +
+                '<i class="fas fa-reply"></i> ' + esc(it.reply) +
+                (it.answered_by ? '<span style="color:var(--text-secondary);"> — ' + esc(it.answered_by) + '</span>' : '') +
+              '</div>'
+            : '') +
+
+          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.85rem;flex-wrap:wrap;">' +
+            (pending
+              ? '<input type="text" class="esc-reply" placeholder="The answer you gave them (kept as the basis for a document)" ' +
+                       'style="flex:1;min-width:240px;padding:.45rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.82rem;">' +
+                '<button class="esc-answer" style="padding:.45rem .9rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-check"></i> Mark answered</button>' +
+                '<button class="esc-dismiss" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-ban"></i> Dismiss</button>'
+              : '<button class="esc-reopen" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Reopen</button>') +
+            '<button class="esc-delete" title="Remove" style="padding:.45rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;margin-left:auto;">' +
+              '<i class="fas fa-trash"></i></button>' +
+          '</div>' +
+        '</div>';
+      }).join(''));
+    }
+
+    function escAction(url, body, okMsg) {
+      $.ajax({
+        url: url, method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(body)
+      }).done(function(res) {
+        if (!res.success) { window.showNotification(res.message || 'Action failed.', 'error'); return; }
+        window.showNotification(res.message || okMsg, 'success');
+        applyEscStats(res.stats);
+        loadEscalations();
+      }).fail(function(xhr) {
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Action failed.';
+        window.showNotification(m, 'error');
+      });
+    }
+
+    $(document).on('click', '.esc-answer', function() {
+      const $card = $(this).closest('.esc-card');
+      const reply = $card.find('.esc-reply').val().trim();
+      if (!reply) {
+        window.showNotification('Type the answer you gave them first.', 'error');
+        return;
+      }
+      escAction('/admin/feedback/api/escalations/answer',
+                { id: $card.data('id'), reply: reply }, 'Answered.');
+    });
+
+    $(document).on('click', '.esc-dismiss', function() {
+      escAction('/admin/feedback/api/escalations/status',
+                { id: $(this).closest('.esc-card').data('id'), status: 'dismissed' }, 'Dismissed.');
+    });
+
+    $(document).on('click', '.esc-reopen', function() {
+      escAction('/admin/feedback/api/escalations/status',
+                { id: $(this).closest('.esc-card').data('id'), status: 'pending' }, 'Reopened.');
+    });
+
+    $(document).on('click', '.esc-delete', function() {
+      if (!confirm('Remove this request permanently?')) return;
+      escAction('/admin/feedback/api/escalations/delete',
+                { id: $(this).closest('.esc-card').data('id') }, 'Removed.');
+    });
+
+    // Badge on page load.
+    $.getJSON('/admin/feedback/api/escalations?status=pending', function(res) {
+      if (res && res.success) {
+        escItems = res.escalations || [];
+        escRoutes = res.routes || {};
+        escLoaded = true;
+        applyEscStats(res.stats);
+        renderEscalations();
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════════
+    //  ACADEMIC CALENDAR
+    //
+    //  The countdown shown here is the server's, never the browser's. If the
+    //  admin's laptop clock is a day out — or is simply in another timezone —
+    //  a locally-computed "12 days left" would disagree with what students are
+    //  actually being told, and the screen would be lying about the only number
+    //  it exists to make visible.
+    // ══════════════════════════════════════════════════════════════
+    let calState = null;
+    let calLoaded = false;
+
+    $('#calendarMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#calendarSection').addClass('active');
+      $('#calendarMenuItem').addClass('active');
+      $('.header-left span').text('Academic Calendar');
+      if (!calLoaded) loadCalendar();
+    });
+
+    $(document).on('click', '#backToOverviewFromCalendar', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#refreshCalendarBtn', function() { loadCalendar(); });
+    $(document).on('change', '#calAsOf', function() { loadCalendar(); });
+
+    // "June 15, 2026" from an ISO date, without touching Date(): passing
+    // "2026-06-15" to the Date constructor parses it as UTC midnight, which in
+    // Manila renders as June 15 but in the Americas renders as June 14 — an
+    // off-by-one on exactly the dates this feature is about.
+    const CAL_MONTHS = ['January','February','March','April','May','June',
+                        'July','August','September','October','November','December'];
+    function calHuman(iso) {
+      if (!iso) return '—';
+      const p = String(iso).split('-');
+      if (p.length !== 3) return iso;
+      return CAL_MONTHS[parseInt(p[1], 10) - 1] + ' ' + parseInt(p[2], 10) + ', ' + p[0];
+    }
+
+    function calMsg($el, text, ok) {
+      $el.text(text)
+         .css('color', ok ? '#15803d' : '#ef4444')
+         .stop(true, true).show();
+      if (ok) setTimeout(function() { $el.fadeOut(400); }, 4000);
+    }
+
+    function loadCalendar() {
+      const asOf = $('#calAsOf').val();
+      const $btn = $('#refreshCalendarBtn').prop('disabled', true);
+      $('#calList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading calendar…</div>');
+
+      $.getJSON('/admin/calendar/api/list' + (asOf ? '?today=' + encodeURIComponent(asOf) : ''))
+        .done(function(res) {
+          calLoaded = true;
+          if (!res.success) {
+            $('#calList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            return;
+          }
+          calState = res.state;
+          applyCalStats(res.stats);
+          // Echo the date the server actually used, so the two inputs that
+          // default to "today" agree with the countdown next to them.
+          if (!asOf && res.state && res.state.today) {
+            $('#calAsOf').val(res.state.today);
+            if (!$('#calPreviewDate').val()) $('#calPreviewDate').val(res.state.today);
+          }
+          renderCalendar();
+        })
+        .fail(function(xhr) {
+          $('#calList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load the calendar' +
+            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    function applyCalStats(stats) {
+      if (!stats) return;
+      $('#calStatActive').text(stats.active);
+      $('#calStatUpcoming').text(stats.upcoming);
+      $('#calStatPast').text(stats.past);
+      // Green badge = periods open right now. Unlike the other badges in this
+      // sidebar it is not a problem count; it is what students are being told.
+      if (stats.active > 0) { $('#sidebarCalendarBadge').text(stats.active).show(); }
+      else                  { $('#sidebarCalendarBadge').hide(); }
+    }
+
+    function renderCalendar() {
+      if (!calState) return;
+      const groups = [
+        { key: 'active',   title: 'Open now',   accent: '#22c55e' },
+        { key: 'upcoming', title: 'Upcoming',   accent: '#3b82f6' },
+        { key: 'past',     title: 'Finished',   accent: 'var(--border)' }
+      ];
+
+      const total = calState.active.length + calState.upcoming.length + calState.past.length;
+      if (!total) {
+        $('#calList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-calendar-plus" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          'No periods entered yet. Until one is added, the assistant can only repeat the dates written in the documents — ' +
+          'it cannot say whether they have passed.</div>');
+        return;
+      }
+
+      let html = '<div style="font-size:.82rem;color:var(--text-tertiary);margin-bottom:.25rem;">' +
+                 'Timing computed as of <strong>' + esc(calHuman(calState.today)) + '</strong> (campus time)</div>';
+
+      groups.forEach(function(g) {
+        const items = calState[g.key] || [];
+        if (!items.length) return;
+        html += '<div style="font-size:.78rem;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .1rem;">' +
+                  esc(g.title) + ' (' + items.length + ')</div>';
+
+        html += items.map(function(p) {
+          // The same conclusive phrasing the model is given. An admin reading
+          // "closes in 12 days" can spot a wrong date; reading "June 1 – 15"
+          // they cannot.
+          let when, colour;
+          if (g.key === 'active') {
+            colour = '#15803d';
+            when = p.days_left === 0
+              ? 'Today is the last day'
+              : 'Open now · closes in ' + p.days_left + ' day(s), on ' + calHuman(p.end);
+          } else if (g.key === 'upcoming') {
+            colour = '#1d4ed8';
+            when = 'Starts in ' + p.days_until_start + ' day(s), on ' + calHuman(p.start);
+          } else {
+            colour = 'var(--text-tertiary)';
+            when = 'Ended ' + p.days_since_end + ' day(s) ago, on ' + calHuman(p.end);
+          }
+
+          const span = p.start === p.end
+            ? calHuman(p.start)
+            : calHuman(p.start) + ' – ' + calHuman(p.end);
+
+          return '' +
+          '<div class="cal-card" data-key="' + esc(p.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + g.accent + ';border-radius:10px;padding:.75rem 1rem;display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+            '<div style="min-width:0;">' +
+              '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(p.label) + '</strong>' +
+              '<div style="font-size:.8rem;color:' + colour + ';font-weight:600;margin-top:.2rem;">' + esc(when) + '</div>' +
+              '<div style="font-size:.78rem;color:var(--text-secondary);margin-top:.15rem;">' + esc(span) +
+                (p.note ? ' · <span style="font-style:italic;">' + esc(p.note) + '</span>' : '') +
+              '</div>' +
+              (p.set_by ? '<div style="font-size:.74rem;color:var(--text-tertiary);margin-top:.15rem;">set by ' + esc(p.set_by) + '</div>' : '') +
+            '</div>' +
+            '<div style="display:flex;gap:.4rem;">' +
+              '<button class="cal-edit" title="Load into the form above" style="padding:.35rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-pen"></i></button>' +
+              '<button class="cal-delete" title="Remove" style="padding:.35rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-trash"></i></button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      });
+
+      $('#calList').html(html);
+    }
+
+    $(document).on('click', '#calSaveBtn', function() {
+      const label = $('#calLabel').val().trim();
+      const start = $('#calStart').val();
+      if (!label || !start) {
+        calMsg($('#calSaveMsg'), 'An event name and a start date are required.', false);
+        return;
+      }
+      const $btn = $(this).prop('disabled', true);
+      $.ajax({
+        url: '/admin/calendar/api/save',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          label: label,
+          start: start,
+          end: $('#calEnd').val(),
+          note: $('#calNote').val()
+        })
+      }).done(function(res) {
+        calMsg($('#calSaveMsg'), res.message || 'Saved.', true);
+        $('#calLabel, #calNote').val('');
+        $('#calStart, #calEnd').val('');
+        loadCalendar();
+      }).fail(function(xhr) {
+        // The server's message names the actual problem ("end is before the
+        // start"), which is more use than a generic failure.
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Could not save.';
+        calMsg($('#calSaveMsg'), m, false);
+      }).always(function() { $btn.prop('disabled', false); });
+    });
+
+    // Editing is deliberately "load it back into the form": saving the same name
+    // corrects the row in place, so edit and add are the same action and there
+    // is no way to end up with two rows for one event.
+    $(document).on('click', '.cal-edit', function() {
+      const key = $(this).closest('.cal-card').data('key');
+      const all = [].concat(calState.active, calState.upcoming, calState.past);
+      const p = all.filter(function(x) { return x.key === key; })[0];
+      if (!p) return;
+      $('#calLabel').val(p.label);
+      $('#calStart').val(p.start);
+      $('#calEnd').val(p.end);
+      $('#calNote').val(p.note || '');
+      $('#calLabel')[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('#calLabel').focus();
+    });
+
+    $(document).on('click', '.cal-delete', function() {
+      const key = $(this).closest('.cal-card').data('key');
+      if (!confirm('Remove this period? The assistant will stop mentioning its timing.')) return;
+      $.ajax({
+        url: '/admin/calendar/api/delete',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ key: key })
+      }).done(function(res) {
+        window.showNotification(res.message || 'Removed.', 'success');
+        loadCalendar();
+      }).fail(function() { window.showNotification('Could not remove the period.', 'error'); });
+    });
+
+    $(document).on('click', '#calScanBtn', function() {
+      const text = $('#calScanText').val();
+      if (!text.trim()) {
+        window.showNotification('Paste the calendar text first.', 'error');
+        return;
+      }
+      const $btn = $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Reading…');
+      $.ajax({
+        url: '/admin/calendar/api/scan',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ text: text, year: $('#calScanYear').val() })
+      }).done(function(res) {
+        const found = res.found || [];
+        if (!found.length) {
+          $('#calScanResults').show().html(
+            '<div style="font-size:.85rem;color:var(--text-secondary);">No dates recognised. Dates need a month name, ' +
+            'for example <em>June 1-15, 2026</em>.</div>');
+          return;
+        }
+        $('#calScanResults').show().html(
+          '<div style="font-size:.82rem;color:var(--text-secondary);margin-bottom:.5rem;">' +
+            esc(res.message || '') + '</div>' +
+          found.map(function(f, i) {
+            const span = f.start === f.end ? calHuman(f.start) : calHuman(f.start) + ' – ' + calHuman(f.end);
+            return '' +
+            '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;margin-bottom:.4rem;' +
+                 (f.already_saved ? 'opacity:.55;' : '') + '">' +
+              '<div style="min-width:0;">' +
+                '<strong style="color:var(--text-primary);font-size:.85rem;">' + esc(f.label || '(no name found)') + '</strong>' +
+                '<div style="font-size:.78rem;color:var(--text-secondary);">' + esc(span) + '</div>' +
+              '</div>' +
+              (f.already_saved
+                ? '<span style="font-size:.76rem;color:#15803d;font-weight:600;white-space:nowrap;"><i class="fas fa-check"></i> already saved</span>'
+                : '<button class="cal-use" data-i="' + i + '" style="padding:.35rem .8rem;border:none;border-radius:8px;background:#3b82f6;color:#fff;font-size:.78rem;font-weight:600;cursor:pointer;white-space:nowrap;">Use</button>') +
+            '</div>';
+          }).join(''));
+        $('#calScanResults').data('found', found);
+      }).fail(function(xhr) {
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Could not read the text.';
+        window.showNotification(m, 'error');
+      }).always(function() {
+        $btn.prop('disabled', false).html('<i class="fas fa-search"></i> Find dates');
+      });
+    });
+
+    // "Use" fills the form rather than saving outright. A parsed label is
+    // whatever wording the PDF happened to use; the admin gets to shorten it
+    // before it becomes the name a student hears.
+    $(document).on('click', '.cal-use', function() {
+      const found = $('#calScanResults').data('found') || [];
+      const f = found[$(this).data('i')];
+      if (!f) return;
+      $('#calLabel').val(f.label);
+      $('#calStart').val(f.start);
+      $('#calEnd').val(f.end);
+      $('#calNote').val('');
+      $('#calLabel')[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('#calLabel').focus();
+    });
+
+    $(document).on('click', '#calPreviewBtn', function() {
+      const q = $('#calPreviewQ').val().trim();
+      if (!q) {
+        window.showNotification('Type a question to preview.', 'error');
+        return;
+      }
+      const $btn = $(this).prop('disabled', true);
+      $.ajax({
+        url: '/admin/calendar/api/preview',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ question: q, today: $('#calPreviewDate').val() })
+      }).done(function(res) {
+        const $out = $('#calPreviewOut').show();
+        if (!res.applies) {
+          // Not an error. The admin needs to be able to tell "this question is
+          // not about dates" apart from "the calendar is broken".
+          $out.html(
+            '<div style="border:1px dashed var(--border);border-radius:8px;padding:.8rem 1rem;font-size:.82rem;color:var(--text-secondary);">' +
+              '<i class="fas fa-circle-info"></i> ' + esc(res.message) + '</div>');
+          return;
+        }
+        $out.html(
+          '<div style="font-size:.78rem;color:var(--text-tertiary);margin-bottom:.35rem;">' +
+            'Sent to the assistant for “' + esc(res.question) + '”, as of ' + esc(calHuman(res.today)) + ':</div>' +
+          '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.85rem 1rem;font-size:.8rem;color:var(--text-primary);margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">' +
+            esc(res.block) + '</pre>');
+      }).fail(function(xhr) {
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Preview failed.';
+        window.showNotification(m, 'error');
+      }).always(function() { $btn.prop('disabled', false); });
+    });
+
+    // Badge on page load, so an admin sees at a glance that something is open.
+    $.getJSON('/admin/calendar/api/list', function(res) {
+      if (res && res.success) {
+        calState = res.state;
+        calLoaded = true;
+        applyCalStats(res.stats);
+        if (res.state && res.state.today) {
+          $('#calAsOf').val(res.state.today);
+          $('#calPreviewDate').val(res.state.today);
+        }
+        renderCalendar();
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════════
+    //  ANNOUNCEMENTS
+    //
+    //  The calendar handles dates that were known in advance. This handles the
+    //  ones that were not, and it is the only screen here whose output reaches
+    //  students who never asked a question — so "live now" is the number that
+    //  matters, and it is computed server-side in campus time for the same
+    //  reason the calendar's countdown is.
+    // ══════════════════════════════════════════════════════════════
+    let annItems = [];
+    let annLoaded = false;
+    // Labels come from the API so what the admin reads matches what the server
+    // filters on; these are only the fallback for a failed first load.
+    let res_audiences = { all: 'Everyone', students: 'Students', faculty: 'Faculty & Staff' };
+
+
+    $('#announcementsMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#announcementsSection').addClass('active');
+      $('#announcementsMenuItem').addClass('active');
+      $('.header-left span').text('Announcements');
+      if (!annLoaded) loadAnnouncements();
+    });
+
+    $(document).on('click', '#backToOverviewFromAnnouncements', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#overviewSection').addClass('active');
+      $('#overviewMenuItem').addClass('active');
+      $('.header-left span').text('Dashboard');
+    });
+
+    $(document).on('click', '#refreshAnnouncementsBtn', function() { loadAnnouncements(); });
+    $(document).on('change', '#annAsOf', function() { loadAnnouncements(); });
+
+    function applyAnnStats(stats) {
+      if (!stats) return;
+      $('#annStatActive').text(stats.active);
+      $('#annStatUrgent').text(stats.urgent);
+      $('#annStatExpired').text(stats.expired);
+      if (stats.active > 0) { $('#sidebarAnnouncementsBadge').text(stats.active).show(); }
+      else                  { $('#sidebarAnnouncementsBadge').hide(); }
+    }
+
+    function loadAnnouncements() {
+      const asOf = $('#annAsOf').val();
+      const $btn = $('#refreshAnnouncementsBtn').prop('disabled', true);
+      $('#annList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading announcements…</div>');
+
+      $.getJSON('/admin/announcements/api/list' + (asOf ? '?today=' + encodeURIComponent(asOf) : ''))
+        .done(function(res) {
+          annLoaded = true;
+          if (!res.success) {
+            $('#annList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            return;
+          }
+          annItems = res.announcements || [];
+          applyAnnStats(res.stats);
+          if (!asOf && res.today) {
+            $('#annAsOf').val(res.today);
+            if (!$('#annPreviewDate').val()) $('#annPreviewDate').val(res.today);
+          }
+          renderAnnouncements();
+        })
+        .fail(function(xhr) {
+          $('#annList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load announcements' +
+            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    const ANN_LOOK = {
+      urgent:    { colour: '#ef4444', label: 'URGENT' },
+      important: { colour: '#f59e0b', label: 'IMPORTANT' },
+      info:      { colour: '#3b82f6', label: 'NOTICE' }
+    };
+
+    function renderAnnouncements() {
+      if (!annItems.length) {
+        $('#annList').html(
+          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<i class="fas fa-bullhorn" style="font-size:2rem;color:#f59e0b;display:block;margin-bottom:.75rem;"></i>' +
+          'Nothing posted. The assistant is answering purely from the documents — which is correct ' +
+          'until something changes that the documents cannot know about.</div>');
+        return;
+      }
+
+      $('#annList').html(annItems.map(function(a) {
+        const look = ANN_LOOK[a.priority] || ANN_LOOK.info;
+        // Three distinct states, and conflating any two of them hides a real
+        // problem: expired (the date passed), taken down (an admin switched it
+        // off), and scheduled (its start date has not arrived).
+        const status = a.expired
+          ? '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">EXPIRED</span>'
+          : !a.active
+            ? '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">TAKEN DOWN</span>'
+            : a.live
+              ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">LIVE</span>'
+              : '<span style="background:#dbeafe;color:#1d4ed8;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">SCHEDULED</span>';
+
+        const window_ = [];
+        if (a.starts_on)  window_.push('from ' + calHuman(a.starts_on));
+        if (a.expires_on) window_.push('until ' + calHuman(a.expires_on));
+
+        return '' +
+        '<div class="ann-card" data-key="' + esc(a.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + look.colour + ';border-radius:10px;padding:.85rem 1.1rem;' +
+             (a.expired || !a.active ? 'opacity:.6;' : '') + '">' +
+          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+            '<div style="min-width:0;">' +
+              '<span style="font-size:.7rem;font-weight:800;color:' + look.colour + ';letter-spacing:.05em;">' + look.label + '</span>' +
+              '<strong style="display:block;color:var(--text-primary);font-size:.95rem;margin-top:.15rem;">' + esc(a.title) + '</strong>' +
+              (a.body ? '<div style="font-size:.82rem;color:var(--text-secondary);margin-top:.3rem;">' + esc(a.body) + '</div>' : '') +
+              '<div style="font-size:.76rem;color:var(--text-tertiary);margin-top:.35rem;">' +
+                '<i class="fas fa-users"></i> ' + esc((res_audiences[a.audience] || a.audience)) +
+                (window_.length ? ' · ' + esc(window_.join(' ')) : ' · no end date') +
+                (a.pinned ? ' · pinned' : ' · not pinned') +
+                (a.posted_by ? ' · by ' + esc(a.posted_by) : '') +
+              '</div>' +
+            '</div>' + status +
+          '</div>' +
+          '<div style="display:flex;gap:.5rem;align-items:center;margin-top:.7rem;flex-wrap:wrap;">' +
+            '<button class="ann-toggle" style="padding:.35rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;font-weight:600;cursor:pointer;">' +
+              (a.active ? '<i class="fas fa-eye-slash"></i> Take down' : '<i class="fas fa-eye"></i> Show again') + '</button>' +
+            '<button class="ann-edit" style="padding:.35rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-pen"></i> Edit</button>' +
+            '<button class="ann-delete" title="Remove permanently" style="padding:.35rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;margin-left:auto;"><i class="fas fa-trash"></i></button>' +
+          '</div>' +
+        '</div>';
+      }).join(''));
+    }
+
+
+
+    function annResetForm() {
+      $('#annKey').val('');
+      $('#annTitle, #annBody').val('');
+      $('#annStart, #annEnd').val('');
+      $('#annPriority').val('info');
+      $('#annAudience').val('all');
+      $('#annPinned').prop('checked', true);
+      $('#annFormTitle').text('Post an announcement');
+      $('#annSaveBtn').html('<i class="fas fa-paper-plane"></i> Post');
+      $('#annCancelEditBtn').hide();
+    }
+
+    $(document).on('click', '#annCancelEditBtn', annResetForm);
+
+    $(document).on('click', '#annSaveBtn', function() {
+      const title = $('#annTitle').val().trim();
+      if (!title) {
+        calMsg($('#annSaveMsg'), 'A headline is required — that is the line students will read.', false);
+        return;
+      }
+      const $btn = $(this).prop('disabled', true);
+      $.ajax({
+        url: '/admin/announcements/api/save',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          key: $('#annKey').val(),
+          title: title,
+          body: $('#annBody').val(),
+          priority: $('#annPriority').val(),
+          audience: $('#annAudience').val(),
+          starts_on: $('#annStart').val(),
+          expires_on: $('#annEnd').val(),
+          pinned: $('#annPinned').is(':checked')
+        })
+      }).done(function(res) {
+        calMsg($('#annSaveMsg'), res.message || 'Posted.', true);
+        annResetForm();
+        loadAnnouncements();
+      }).fail(function(xhr) {
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Could not post.';
+        calMsg($('#annSaveMsg'), m, false);
+      }).always(function() { $btn.prop('disabled', false); });
+    });
+
+    // Edit loads the row back into the same form. Saving with the key set
+    // corrects in place, so there is no way to end up with two live versions of
+    // one notice contradicting each other.
+    $(document).on('click', '.ann-edit', function() {
+      const key = $(this).closest('.ann-card').data('key');
+      const a = annItems.filter(function(x) { return x.key === key; })[0];
+      if (!a) return;
+      $('#annKey').val(a.key);
+      $('#annTitle').val(a.title);
+      $('#annBody').val(a.body || '');
+      $('#annPriority').val(a.priority || 'info');
+      $('#annAudience').val(a.audience || 'all');
+      $('#annStart').val(a.starts_on || '');
+      $('#annEnd').val(a.expires_on || '');
+      $('#annPinned').prop('checked', !!a.pinned);
+      $('#annFormTitle').text('Editing: ' + a.title);
+      $('#annSaveBtn').html('<i class="fas fa-check"></i> Save changes');
+      $('#annCancelEditBtn').show();
+      $('#annTitle')[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('#annTitle').focus();
+    });
+
+    $(document).on('click', '.ann-toggle', function() {
+      const key = $(this).closest('.ann-card').data('key');
+      const a = annItems.filter(function(x) { return x.key === key; })[0];
+      if (!a) return;
+      $.ajax({
+        url: '/admin/announcements/api/toggle',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ key: key, active: !a.active })
+      }).done(function(res) {
+        window.showNotification(res.message || 'Updated.', 'success');
+        loadAnnouncements();
+      }).fail(function() { window.showNotification('Could not update.', 'error'); });
+    });
+
+    $(document).on('click', '.ann-delete', function() {
+      const key = $(this).closest('.ann-card').data('key');
+      if (!confirm('Delete this announcement permanently? "Take down" hides it but keeps the record.')) return;
+      $.ajax({
+        url: '/admin/announcements/api/delete',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ key: key })
+      }).done(function(res) {
+        window.showNotification(res.message || 'Deleted.', 'success');
+        loadAnnouncements();
+      }).fail(function() { window.showNotification('Could not delete.', 'error'); });
+    });
+
+    $(document).on('click', '#annPreviewBtn', function() {
+      const $btn = $(this).prop('disabled', true);
+      $.ajax({
+        url: '/admin/announcements/api/preview',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          audience: $('#annPreviewAudience').val(),
+          today: $('#annPreviewDate').val()
+        })
+      }).done(function(res) {
+        const $out = $('#annPreviewOut').show();
+        if (!res.applies) {
+          $out.html(
+            '<div style="border:1px dashed var(--border);border-radius:8px;padding:.8rem 1rem;font-size:.82rem;color:var(--text-secondary);">' +
+              '<i class="fas fa-circle-info"></i> ' + esc(res.message) + '</div>');
+          return;
+        }
+        $out.html(
+          '<div style="font-size:.78rem;color:var(--text-tertiary);margin-bottom:.35rem;">' +
+            'Added to every answer, as of ' + esc(calHuman(res.today)) + ':</div>' +
+          '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.85rem 1rem;font-size:.8rem;color:var(--text-primary);margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">' +
+            esc(res.block) + '</pre>');
+      }).fail(function(xhr) {
+        const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Preview failed.';
+        window.showNotification(m, 'error');
+      }).always(function() { $btn.prop('disabled', false); });
+    });
+
+    // Badge on page load: during an emergency the count is the first thing an
+    // admin should see, without navigating anywhere.
+    $.getJSON('/admin/announcements/api/list', function(res) {
+      if (res && res.success) {
+        annItems = res.announcements || [];
+        annLoaded = true;
+        if (res.audiences) res_audiences = res.audiences;
+        applyAnnStats(res.stats);
+        if (res.today) {
+          $('#annAsOf').val(res.today);
+          $('#annPreviewDate').val(res.today);
+        }
+        renderAnnouncements();
+      }
+    });
+
   });
+
+
+
   </script>
 {% endblock %}
+
+

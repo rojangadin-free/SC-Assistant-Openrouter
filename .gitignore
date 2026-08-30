@@ -1,7 +1,29 @@
 # Custom
-
-sc-credentials.json
 #.github/workflows/cicd.yaml
+# Admin conflict decisions are environment-specific runtime state
+conflict_resolutions.json
+conflict_resolutions.json.tmp
+# Unanswered-question log (runtime chat traffic, per deployment)
+content_gaps.json
+content_gaps.json.tmp
+# Answer votes and the ask-a-human queue (runtime state, per deployment)
+answer_feedback.json
+answer_feedback.json.tmp
+escalations.json
+escalations.json.tmp
+# Admin-entered academic-calendar periods (real dates differ per deployment,
+# and a committed one would be silently wrong for the next school year)
+calendar_periods.json
+calendar_periods.json.tmp
+# Posted announcements. Committing these is worse than committing the other
+# stores: a "classes are suspended tomorrow" pinned in the repo would come back
+# to life on every fresh deployment, on a day when it is simply false.
+announcements.json
+announcements.json.tmp
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -210,3 +232,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 firebase_key.json
+# Temp stores written by the test suites. They point their storage at these via
+# env vars so the real ones are never touched — but the files are still left on
+# disk afterwards, and a committed one would seed a fresh checkout with a
+# test fixture. The .test_/.smoke_ prefixes are the convention the suites use.
+.test_announcements.json
+.test_*.json
+.smoke_*.json
+
+

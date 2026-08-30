@@ -85,6 +85,84 @@
         </span>
       </div>
 
+      <div class="menu-item" id="conflictsMenuItem">
+        <i class="fas fa-code-branch"></i>
+        <span>
+          Data Conflicts
+          <span id="sidebarConflictBadge"
+                style="display:none; background:#f59e0b; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+      <div class="menu-item" id="gapsMenuItem">
+        <i class="fas fa-lightbulb"></i>
+        <span>
+          Content Gaps
+          <span id="sidebarGapBadge"
+                style="display:none; background:#3b82f6; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+      {# Badge counts downvotes: the number that should make an admin click. #}
+      <div class="menu-item" id="feedbackMenuItem">
+        <i class="fas fa-thumbs-up"></i>
+        <span>
+          Answer Quality
+          <span id="sidebarFeedbackBadge"
+                style="display:none; background:#ef4444; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+      {# Badge counts PENDING escalations — every one is a person waiting. #}
+      <div class="menu-item" id="escalationsMenuItem">
+        <i class="fas fa-user-tie"></i>
+        <span>
+          Ask a Human
+          <span id="sidebarEscalationBadge"
+                style="display:none; background:#8b5cf6; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+      {# Badge counts periods that are OPEN RIGHT NOW. Green, because unlike
+         every other badge here this one is not a problem to fix — it is what
+         the assistant is currently telling students is happening. #}
+      <div class="menu-item" id="calendarMenuItem">
+        <i class="fas fa-calendar-day"></i>
+        <span>
+          Academic Calendar
+          <span id="sidebarCalendarBadge"
+                style="display:none; background:#22c55e; color:#fff;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+      {# Amber, not red and not green: an announcement is neither a defect to fix
+         nor business as usual. The count is what students are being shown right
+         now, which is the one number an admin needs at a glance during a
+         suspension. #}
+      <div class="menu-item" id="announcementsMenuItem">
+        <i class="fas fa-bullhorn"></i>
+        <span>
+          Announcements
+          <span id="sidebarAnnouncementsBadge"
+                style="display:none; background:#f59e0b; color:#111827;
+                       border-radius:999px; padding:0 6px; font-size:.72rem;
+                       font-weight:700; margin-left:4px;">0</span>
+        </span>
+      </div>
+
+
+
+
       <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">
         <i class="fas fa-comments"></i>
         <span>Chatbot</span>

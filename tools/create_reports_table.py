@@ -1,3 +1,8 @@
+# Make the repo root importable and force the CWD there: this script lives in
+# tools/ but every path and import below assumes the repo root. Must come
+# before the first repo import.
+import _bootstrap  # noqa: F401
+
 import boto3
 import os
 from botocore.exceptions import ClientError

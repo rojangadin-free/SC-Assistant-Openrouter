@@ -1,0 +1,114 @@
+{# ---------------------------------------------------------------------------
+   offline.html — what the service worker shows when a navigation fails.
+
+   Standalone <html>, NOT extending base.html: base.html includes the sidebar
+   and header partials, and both read `user` from the session. This page is
+   served from the CACHE, with no request context behind it, so those lookups
+   would raise and the fallback itself would fail — leaving the student with the
+   browser's dinosaur, which is the exact thing this page exists to prevent.
+
+   Everything is inline for the same reason. main.css is in the shell cache and
+   would probably resolve, but "probably" is not good enough for the page whose
+   only job is to work when nothing else does.
+   --------------------------------------------------------------------------- #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>You are offline — Samar College AI-Assistant</title>
+  <link rel="shortcut icon"
+        href="{{ url_for('static', filename='images/favicon.ico') }}"
+        type="image/x-icon">
+  <style>
+    :root { --sc-green: #0d4503; --sc-gold: #fbbc05; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f6f8f5;
+      color: #1f2933;
+      text-align: center;
+    }
+    .card {
+      max-width: 380px;
+      width: 100%;
+      background: #fff;
+      border: 1px solid #e3e8e1;
+      border-radius: 16px;
+      padding: 32px 24px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.07);
+    }
+    .logo { width: 68px; height: 68px; margin-bottom: 14px; }
+    h1 { margin: 0 0 8px; font-size: 1.2rem; color: var(--sc-green); }
+    p { margin: 0 0 18px; font-size: .9rem; line-height: 1.55; color: #52616b; }
+    .retry {
+      display: inline-block;
+      padding: 11px 26px;
+      border: none;
+      border-radius: 999px;
+      background: var(--sc-green);
+      color: #fff;
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    /* Kept muted and secondary: the phone numbers matter, but the first thing to
+       try is still "you probably just moved out of signal, tap retry". */
+    .fallback {
+      margin-top: 22px;
+      padding-top: 16px;
+      border-top: 1px dashed #e3e8e1;
+      font-size: .78rem;
+      color: #7b8794;
+      line-height: 1.6;
+    }
+    .fallback strong { color: #1f2933; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #14181c; color: #e4e7eb; }
+      .card { background: #1c2126; border-color: #2b3238; }
+      h1 { color: var(--sc-gold); }
+      p { color: #9aa5b1; }
+      .fallback { border-top-color: #2b3238; }
+      .fallback strong { color: #e4e7eb; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img class="logo"
+         src="{{ url_for('static', filename='images/logo.png') }}"
+         alt="Samar College">
+
+    <h1>You are offline</h1>
+
+    {# Says which part is missing and what still works. "Something went wrong"
+       would leave the student unsure whether to retry or give up. #}
+    <p>
+      The assistant needs a connection to look up answers in the school
+      documents. Your saved conversations will still be here once you are back
+      online.
+    </p>
+
+    <a class="retry" href="/chat">Try again</a>
+
+    <div class="fallback">
+      Urgent and cannot get online?<br>
+      Visit the <strong>Registrar's Office</strong> at Samar College,
+      Catbalogan City, during office hours.
+    </div>
+  </div>
+
+  <script>
+    // Reload the moment the connection returns, so the student is not left
+    // tapping a button to discover something the browser already knows.
+    window.addEventListener('online', () => location.replace('/chat'));
+  </script>
+</body>
+</html>

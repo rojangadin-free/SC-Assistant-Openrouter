@@ -12,6 +12,24 @@
         href="{{ url_for('static', filename='images/favicon.ico') }}"
         type="image/x-icon">
 
+  {# ── Installable app ────────────────────────────────────────────────────
+     In base.html rather than chat.html so the manifest is present on the LOGIN
+     page too: that is the first page most students land on from a shared link,
+     and Chrome only offers "Add to Home screen" while a manifest is in scope.
+     Advertising it only on /chat would mean the prompt appears after they have
+     already got what they came for. #}
+  <link rel="manifest" href="{{ url_for('pwa.manifest') }}">
+  {# Tints the Android address bar / status bar the school green. #}
+  <meta name="theme-color" content="#0d4503">
+  {# iOS ignores the manifest entirely and needs its own three tags. Safari is
+     how every iPhone user reaches this, so leaving them out would mean no
+     installable app on iOS at all. #}
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SC Assistant">
+  <link rel="apple-touch-icon"
+        href="{{ url_for('static', filename='images/icon-192.png') }}">
+
+
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
         rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
@@ -59,8 +77,30 @@
 </div>
 
 
+{# Service-worker registration. Inline and outside extra_body so a page that
+   overrides that block (chat.html does, with super()) cannot accidentally drop
+   it — an unregistered worker means no offline page and no cached shell, with
+   no visible symptom until the connection fails. #}
+<script>
+  if ('serviceWorker' in navigator) {
+    // After load, not during: registration competes with the CSS and JS the
+    // first paint needs, and on a 3G phone that trade is the wrong way round.
+    window.addEventListener('load', function () {
+      navigator.serviceWorker
+        .register('{{ url_for("pwa.service_worker") }}', { scope: '/' })
+
+        .catch(function (err) {
+          // Expected on plain HTTP (service workers require HTTPS or
+          // localhost). Not worth alarming anyone — the app works without it.
+          console.debug('Service worker not registered:', err);
+        });
+    });
+  }
+</script>
+
 {% block extra_body %}
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 {% endblock %}
+
 </body>
 </html>

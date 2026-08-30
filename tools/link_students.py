@@ -5,7 +5,7 @@ Creates a Cognito account for each dummy student and updates their
 StudentRecords entry so student_id matches the Cognito sub (uid).
 
 Run ONCE after seed_students.py:
-    python link_students.py
+    python tools/link_students.py
 
 What it does per student:
   1. Creates a Cognito user (email + temp password)

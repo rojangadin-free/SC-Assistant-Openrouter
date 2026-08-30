@@ -17,8 +17,22 @@
   </div>
 
   <div class="header-right">
+    {# Replies inbox. Only on the chat screen, because that is where the question
+       was asked and where the student will come back looking for the answer.
+       Hidden until there is something in it (see chat.js): an inbox that is
+       always empty trains people to ignore it, and then the one time it matters
+       they will not look. #}
+    {% if active_page == 'chat' %}
+    <button class="replies-toggle" id="repliesToggle"
+            title="Replies from the offices" style="display:none;">
+      <i class="fas fa-inbox"></i>
+      <span class="replies-badge" id="repliesBadge" style="display:none;">0</span>
+    </button>
+    {% endif %}
+
     <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
       <i class="fas fa-moon"></i>
     </button>
   </div>
 </div>
+

@@ -39,6 +39,25 @@
     }
     .upload-btn:hover { color: var(--primary); }
 
+    /* ── Mic button ─────────────────────────────────── */
+    /* Shares .upload-btn's box so the composer keeps three evenly spaced
+       controls instead of one that sits 2px off. Only the active state is new. */
+    .mic-btn.listening {
+      color: #ef4444;
+      animation: mic-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes mic-pulse {
+      0%, 100% { opacity: 1;   transform: scale(1); }
+      50%      { opacity: .55; transform: scale(1.18); }
+    }
+    /* The pulse is the only "we are recording" signal on a phone, where the
+       placeholder is often hidden behind the keyboard. Users who asked for no
+       motion still need it, so it degrades to a steady red rather than off. */
+    @media (prefers-reduced-motion: reduce) {
+      .mic-btn.listening { animation: none; }
+    }
+
+
     /* ── Message layout ─────────────────────────────── */
     .message { flex-direction: column !important; }
     .message-row {
@@ -50,7 +69,7 @@
     .message.assistant .message-row { justify-content: flex-start; }
     .message-row .message-bubble { max-width: 90%; }
 
-    /* ── Report row ─────────────────────────────────── */
+    /* ── Feedback row ───────────────────────────────── */
     .message-report-row {
       display: flex;
       justify-content: flex-start;
@@ -58,21 +77,251 @@
       margin-top: 3px;
       margin-bottom: 4px;
     }
-    .report-btn {
+
+    /* ── Answer feedback (👍/👎) ─────────────────────── */
+    /* The only control under an answer, now that the flag is gone. Kept quiet
+       until hovered: it sits under every answer, so anything louder would
+       compete with the answer itself. */
+    .feedback-group {
+      display: inline-flex;
+      gap: 10px;
+      margin-right: 12px;
+    }
+    .feedback-btn {
       background: none;
       border: none;
       padding: 0;
       color: #c8d0da;
       font-size: .72rem;
       cursor: pointer;
-      transition: color .2s;
+      transition: color .2s, transform .15s;
       line-height: 1;
     }
-    .report-btn:hover { color: #c0392b; }
+    .feedback-btn:hover { transform: scale(1.2); }
+    .feedback-up:hover, .feedback-up.voted   { color: var(--sc-green, #0d4503); }
+    .feedback-down:hover, .feedback-down.voted { color: #c0392b; }
+    /* The chosen thumb switches to the solid glyph so the state survives a theme
+       change and is not carried by colour alone. */
+    .feedback-btn.voted i { font-weight: 900; }
+
+    /* ── "Ask a human" offer ─────────────────────────── */
+    .escalate-offer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 4px 0 8px 52px;
+      padding: 8px 12px;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      background: var(--bg-surface);
+      font-size: .8rem;
+      color: var(--text-secondary);
+      max-width: 90%;
+    }
+    .escalate-offer i { color: #d4920a; }
+    .escalate-open-btn {
+      margin-left: auto;
+      padding: 5px 12px;
+      border: none;
+      border-radius: 999px;
+      background: var(--sc-green, #0d4503);
+      color: #fff;
+      font-size: .78rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity .2s;
+    }
+    .escalate-open-btn:hover { opacity: .85; }
+    /* Sits after the CTA, styled as plain text rather than a second button, so
+       "no thanks" never competes with "Ask a human" for the eye. */
+    .escalate-dismiss {
+      background: none;
+      border: none;
+      padding: 0 2px;
+      font-size: 1.1rem;
+      line-height: 1;
+      color: var(--text-secondary);
+      opacity: .6;
+      cursor: pointer;
+      transition: opacity .2s, color .2s;
+    }
+    .escalate-dismiss:hover { opacity: 1; color: #c0392b; }
+
+
+    /* ── Replies inbox ───────────────────────────────── */
+    /* The counterpart to "Ask a human": the question left the app, and this is
+       where the answer comes back. Lives in the header next to the theme toggle
+       because it is account-level, not tied to the conversation on screen — the
+       reply may arrive days later, in a different chat. */
+    .replies-toggle {
+      position: relative;
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      cursor: pointer;
+      padding: 0 10px;
+      transition: color .2s;
+    }
+    .replies-toggle:hover { color: var(--primary); }
+    /* Red, not the school green: an unread reply is a notification, and the one
+       thing it must not look like is decoration. */
+    .replies-badge {
+      position: absolute;
+      top: -4px;
+      right: 2px;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: #c0392b;
+      color: #fff;
+      font-size: .62rem;
+      font-weight: 700;
+      line-height: 16px;
+      text-align: center;
+    }
+
+    .replies-panel {
+      position: absolute;
+      top: 58px;
+      right: 16px;
+      width: min(380px, calc(100vw - 32px));
+      max-height: min(70vh, 520px);
+      overflow-y: auto;
+      z-index: 1200;
+      background: var(--bg-surface, #fff);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+    }
+    .replies-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 700;
+      font-size: .9rem;
+    }
+    .replies-panel-header button {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .replies-empty {
+      padding: 22px 16px;
+      text-align: center;
+      font-size: .82rem;
+      color: var(--text-secondary);
+    }
+    .reply-item {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: .82rem;
+    }
+    .reply-item:last-child { border-bottom: none; }
+    /* An unread row is tinted rather than badged individually: the count in the
+       header already says how many, so the row only needs to say which. */
+    .reply-item.unread { background: rgba(192, 57, 43, .06); }
+    .reply-q {
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+    .reply-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .7rem;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+    .reply-status {
+      padding: 1px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: .64rem;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+    }
+    /* "Waiting" is amber, not red: nothing is wrong, the office simply has not
+       replied yet, and alarming the student about a normal queue would be a lie. */
+    .reply-status.pending  { background: rgba(212, 146, 10, .16); color: #a06d05; }
+    .reply-status.answered { background: rgba(13, 69, 3, .12);   color: var(--sc-green, #0d4503); }
+    .reply-body {
+      white-space: pre-wrap;
+      line-height: 1.5;
+      color: var(--text-primary);
+      background: var(--light-bg);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .reply-waiting {
+      font-style: italic;
+      color: var(--text-secondary);
+    }
+
+    /* ── "Based on" source footer ────────────────────── */
+
+    /* Aligned with the bubble (52px) so it reads as part of the answer rather
+       than a separate widget. Small, muted, and wrapping — it is evidence, not
+       a call to action. */
+    .answer-sources {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 0 0 52px;
+      max-width: 90%;
+      font-size: .72rem;
+      color: var(--text-secondary);
+    }
+    .answer-sources-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      opacity: .8;
+      white-space: nowrap;
+    }
+    .answer-sources-list {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    /* A chip, not a bare link: the page reference is a discrete object the
+       student can click, and the border makes that affordance obvious without
+       resorting to underlined blue text inside an answer that already uses it
+       for inline citations. */
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 320px;
+      padding: 3px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      text-decoration: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: border-color .2s, color .2s;
+    }
+    .source-chip i { color: #c0392b; font-size: .7rem; flex-shrink: 0; }
+    .source-chip:hover {
+      border-color: var(--sc-green, #0d4503);
+      color: var(--text-primary);
+    }
+
 
     /* ══════════════════════════════════════════════════
        GUEST BANNER
        ══════════════════════════════════════════════════ */
+
     .guest-banner {
       display: flex;
       align-items: center;
@@ -100,7 +349,161 @@
     }
     [data-theme="dark"] .guest-banner i { color: #fdd663; }
 
-    /* ── Report Modal ───────────────────────────────── */
+    /* ── "What went wrong?" sheet ────────────────────── */
+    /* The old report form was a modal with a required <select> and a Submit, and
+       it collected almost nothing. This is what replaced it: it appears after a
+       👎, and one tap on a chip files the report — the cost of reporting is a tap
+       instead of a dialog.
+
+
+       Inline and aligned with the answer (52px) so it reads as a follow-up
+       question about *that* answer, which a centred dialog cannot do. */
+    .reason-sheet {
+      margin: 4px 0 8px 52px;
+      padding: 10px 12px;
+      max-width: 90%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg-surface);
+      font-size: .78rem;
+    }
+    .reason-sheet-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    /* "(optional)" is stated, not implied. The student has already been heard;
+       this label is what stops the sheet from feeling like a second demand. */
+    .reason-sheet-head em { font-style: normal; opacity: .7; }
+    .reason-dismiss {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .reason-dismiss:hover { color: #c0392b; }
+    .reason-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    /* One tap each, and the tap IS the submit — no confirm step, because there is
+       nothing left to confirm. */
+    .reason-chip {
+      padding: 4px 11px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-main);
+      color: var(--text-secondary);
+      font-size: .75rem;
+      cursor: pointer;
+      transition: border-color .2s, color .2s, background .2s;
+    }
+    .reason-chip:hover {
+      border-color: var(--sc-green, #0d4503);
+      color: var(--text-primary);
+    }
+    .reason-other-box { display: flex; gap: 6px; }
+    .reason-other-text {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-main);
+      color: var(--text-primary);
+      font-size: .78rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .reason-other-text:focus { border-color: var(--sc-green, #0d4503); }
+    .reason-other-send {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 8px;
+      background: var(--sc-green, #0d4503);
+      color: #fff;
+      font-size: .75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .reason-thanks {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--sc-green, #0d4503);
+      font-weight: 600;
+    }
+
+    /* ── Pinned announcements ────────────────────────── */
+    /* Above the scroll area, not inside it. An announcement that scrolls away is
+       an announcement the student can miss, which defeats the entire point of
+       posting it rather than waiting to be asked. */
+    .announcement-banner {
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px 18px 4px;
+    }
+    .ann-notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      background: var(--bg-surface);
+      font-size: .82rem;
+      color: var(--text-primary);
+      line-height: 1.45;
+    }
+    /* Colour carries urgency, but never alone — each level also states its own
+       word ("Urgent", "Reminder"), so it survives a colourblind reader and a
+       dark theme. */
+    .ann-notice.urgent    { border-left-color: #c0392b; background: rgba(192,57,43,.07); }
+    .ann-notice.important { border-left-color: #d4920a; background: rgba(212,146,10,.07); }
+    .ann-notice.info      { border-left-color: #3b82f6; background: rgba(59,130,246,.06); }
+    .ann-notice > i { margin-top: 2px; flex-shrink: 0; }
+    .ann-notice.urgent    > i { color: #c0392b; }
+    .ann-notice.important > i { color: #d4920a; }
+    .ann-notice.info      > i { color: #3b82f6; }
+    .ann-notice-text { flex: 1; min-width: 0; }
+    .ann-notice-kind {
+      font-size: .66rem;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      opacity: .85;
+    }
+    .ann-notice-title { font-weight: 700; display: block; }
+    .ann-notice-body { opacity: .9; }
+    .ann-notice-until {
+      display: block;
+      margin-top: 3px;
+      font-size: .7rem;
+      color: var(--text-secondary);
+    }
+    /* Dismiss hides it for this browser only, and only until the notice changes.
+       Server-side "read" state would be wrong here: a suspension is not a message
+       to one person, and someone else using the same account still needs to see it. */
+    .ann-notice-close {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0 2px;
+      opacity: .55;
+      cursor: pointer;
+      transition: opacity .2s, color .2s;
+    }
+    .ann-notice-close:hover { opacity: 1; color: #c0392b; }
+
+
+    /* ── Modal (Ask a human) ─────────────────────────── */
     .report-modal-overlay {
       position: fixed;
       inset: 0;
@@ -228,7 +631,15 @@
       <div class="loader-spinner"></div>
     </div>
 
+    {# Pinned notices. Deliberately ABOVE the message list rather than inside
+       it: a student who opens the chat during a suspension needs to see it
+       without asking, and a message bubble would scroll away the moment they
+       typed. Filled by chat.js from /api/announcements; stays empty (and
+       invisible) when there is nothing live. #}
+    <div id="announcementBanner" class="announcement-banner" style="display:none;"></div>
+
     <div class="messages-container" id="messagesContainer">
+
       <div class="empty-chat-state" id="emptyChatState" style="display: none;">
         <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="empty-logo">
         <h2>Welcome to Samar College</h2>
@@ -263,70 +674,101 @@
                   placeholder="Ask a question…"
                   rows="1"
                   required></textarea>
+        {# Between the textarea and Send, not next to the paperclip: it is a way
+           of composing a question, so it belongs where the question is. Removed
+           entirely by voice.js on browsers without SpeechRecognition — a mic
+           that cannot listen reads as a broken app. #}
+        <button type="button" class="upload-btn mic-btn" id="micBtn"
+                title="Ask by voice" aria-label="Ask by voice">
+          <i class="fas fa-microphone"></i>
+        </button>
         <button type="submit" id="sendButton" class="send-button">
+
           <i class="fas fa-paper-plane"></i>
         </button>
       </form>
     </div>
   </div>
 
-  <div id="reportModal" class="report-modal-overlay" style="display:none;">
+  <!-- The "Report Response" modal used to live here. It is gone: the question it
+       asked ("What went wrong?") is now asked inline under the answer, one tap
+       per reason, and that tap files the report. -->
+
+
+  <!-- Ask a human. Reuses the report modal's styling so there is one modal look
+       in the app, not two. Offered after a 👎 — see chat.js. -->
+  <div id="escalateModal" class="report-modal-overlay" style="display:none;">
     <div class="report-modal-box">
       <div class="report-modal-header">
-        <h3><i class="fas fa-flag"></i> Report Response</h3>
-        <button id="reportCancelBtn" class="report-modal-close">
+        <h3><i class="fas fa-user-tie"></i> Ask a Human</h3>
+        <button id="escalateCancelBtn" class="report-modal-close">
           <i class="fas fa-times"></i>
         </button>
       </div>
       <div class="report-modal-body">
         <p class="report-intro">
-          Help us improve SC Assistant by letting us know what's wrong.
+          We'll forward your question to the right office. They will reply to you
+          directly.
         </p>
-        <div id="reportMsgSnippet" class="report-snippet"></div>
+        <div id="escalateQuestionPreview" class="report-snippet"></div>
 
-        <label class="report-label">
-          Reason <span style="color:#ef4444">*</span>
-        </label>
-        <select id="reportReasonSelect" class="report-select">
-          <option value="">— Select a reason —</option>
-          <option value="Request to update information">Request to update information</option>
-          <option value="Others">Others</option>
+        <label class="report-label">Send to</label>
+        <select id="escalateRoute" class="report-select">
+          <option value="admin">College Administration</option>
         </select>
 
-        <div id="reportOtherBox" style="display:none; margin-top:.75rem;">
-          <label class="report-label">Please describe the issue</label>
-          <textarea id="reportOtherText"
-                    class="report-textarea"
-                    placeholder="Describe what's wrong or what should be updated…"
-                    rows="3"></textarea>
-        </div>
+
+        {# A signed-in student is reachable through their account email, so asking
+           again would be friction for no gain. A guest has no address on file and
+           the request is undeliverable without one. #}
+        {% if user.is_guest %}
+        <label class="report-label" style="margin-top:.75rem;">
+          Your email or mobile number <span style="color:#ef4444">*</span>
+        </label>
+        <input id="escalateContact" class="report-select" type="text"
+               placeholder="you@example.com or 0917 123 4567">
+        {% else %}
+        <input id="escalateContact" type="hidden" value="">
+        {% endif %}
+
+        <label class="report-label" style="margin-top:.75rem;">
+          Anything else they should know? <span style="opacity:.6">(optional)</span>
+        </label>
+        <textarea id="escalateNote" class="report-textarea" rows="3"
+                  placeholder="e.g. I am an incoming transferee for the 2nd semester…"></textarea>
       </div>
       <div class="report-modal-footer">
-        <button id="reportSubmitBtn" class="report-submit-btn">
-          <i class="fas fa-paper-plane"></i> Submit Report
+        <button id="escalateSubmitBtn" class="report-submit-btn">
+          <i class="fas fa-paper-plane"></i> Send to office
         </button>
-        <button id="reportCancelBtn2" class="report-cancel-btn">Cancel</button>
+        <button class="report-cancel-btn" onclick="$('#escalateModal').fadeOut(150)">Cancel</button>
       </div>
     </div>
   </div>
+
+  <!-- Replies inbox. Rendered empty and filled by chat.js; kept out of the
+       message stream on purpose — a reply that arrives three days later does not
+       belong inside a conversation the student had on Monday. -->
+  <div id="repliesPanel" class="replies-panel" style="display:none;">
+    <div class="replies-panel-header">
+      <span><i class="fas fa-inbox"></i> Replies from the offices</span>
+      <button id="repliesCloseBtn" title="Close"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="repliesList"></div>
+  </div>
 {% endblock %}
+
 
 {% block extra_body %}
   {{ super() }}
   <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+  {# After chat.js, because voice.js re-fires the 'input' event that chat.js
+     binds for auto-grow; loading it first would dispatch into nothing. #}
+  <script src="{{ url_for('static', filename='js/voice.js') }}"></script>
+
+
   <script>
-    // Second cancel button alias
-    $(document).on('click', '#reportCancelBtn2', function() {
-      $('#reportModal').fadeOut(150);
-    });
-
-    // ── Guest: disable report button with tooltip ─────────────
     {% if user.is_guest %}
-    $(document).on('click', '.report-btn', function(e) {
-      e.stopImmediatePropagation();
-      window.showNotification('Please sign in to report responses.', 'error');
-    });
-
     // Guest: wire "New chat" button in sidebar
     $(document).on('click', '#guestNewChatBtn', function() {
       $.post('/chat/clear', function() {

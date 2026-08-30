@@ -1,137 +1,258 @@
-# Build-a-Complete-Assistant-Chatbot-with-LLMs-LangChain-Pinecone-Flask-AWS
+# SC-Assistant
 
-# How to run?
-### STEPS:
+A retrieval-augmented chat assistant for **Samar College**. Students ask questions in
+plain language — "how do I apply for a scholarship?", "sino ang dean ng education?" —
+and the assistant answers from the school's own handbooks and bulletins rather than
+from the model's general knowledge.
 
-Clone the repository
+Built with Flask, Pinecone (hybrid dense + sparse retrieval), a cross-encoder
+reranker, and AWS (Cognito, DynamoDB, S3).
+
+---
+
+## Why this is more than a PDF chatbot
+
+A plain RAG loop over a stack of PDFs fails in ways that are hard to see and
+embarrassing to demo. The bulk of the code here exists to close those specific gaps,
+and each one has its own document under [`docs/`](docs/).
+
+| Problem, in practice | What was built | Doc |
+|---|---|---|
+| Two documents disagree — the handbook names one Dean of Education, a later page names another — and the model picks whichever chunk ranked higher, confidently | **Data Conflicts.** A CLI extracts facts and reports contradictions; an admin pins the correct value, which is injected into the prompt as authoritative | [DATA_CONFLICTS.md](docs/DATA_CONFLICTS.md) |
+| Old and new bulletins both retrieve; the model can't tell which is current | **Document Freshness.** Documents are dated, compared, and the newer source wins — checked *before* indexing | [DOCUMENT_FRESHNESS.md](docs/DOCUMENT_FRESHNESS.md) |
+| "I don't have that information" is a dead end for the student and invisible to staff | **Content Gaps.** Refusals are detected, grouped by topic, and listed on an admin dashboard as a to-do list | [CONTENT_GAPS.md](docs/CONTENT_GAPS.md) |
+| Students type Taglish and Waray; the corpus is English | **Language support.** Local terms are mapped to English search terms before retrieval | [LANGUAGE_SUPPORT.md](docs/LANGUAGE_SUPPORT.md) |
+| "when is enrollment" depends on today's date, which the model has no idea about | **Calendar awareness.** Admin-entered periods, real date arithmetic, deadlines | [ACADEMIC_CALENDAR.md](docs/ACADEMIC_CALENDAR.md) |
+| The same process differs for a student vs. a faculty member | **Role-aware answers.** Who is asking selects the right side of a process | [ROLE_AWARE_ANSWERS.md](docs/ROLE_AWARE_ANSWERS.md) |
+| An answer with no source is hard to trust and impossible to verify | **Citations.** A "Based on" footer naming document and page | [ANSWER_CITATIONS.md](docs/ANSWER_CITATIONS.md) |
+| A wrong answer has nowhere to go | **Feedback & Ask-a-Human.** Votes, plus an escalation queue staff can work through | [ANSWER_QUALITY.md](docs/ANSWER_QUALITY.md) |
+| Time-sensitive notices ("classes suspended") don't belong in a PDF | **Announcements.** Live windows, audience targeting, a public banner | [ANNOUNCEMENTS.md](docs/ANNOUNCEMENTS.md) |
+| Students are on phones, often on poor connections | **Voice input + installable PWA.** Dictation with a Philippine-English locale, offline shell | [VOICE_AND_PWA.md](docs/VOICE_AND_PWA.md) |
+| No idea what students actually ask | **Analytics.** Volume, top topics, refusal rate | [ANALYTICS.md](docs/ANALYTICS.md) |
+| Retrieval silently missed whole programs (e.g. SCTI) | **Indexing fixes.** Chunking that respects document structure, inspectable before you index | [INDEXING_FIXES.md](docs/INDEXING_FIXES.md) |
+| Admin decisions vanish for half the traffic once there are two containers | **Shared storage.** One seam behind every admin store, file or DynamoDB | [SHARED_STORAGE.md](docs/SHARED_STORAGE.md) |
+
+---
+
+## Project layout
+
+```
+run.py                  start the dev server
+store_index.py          (re)build the Pinecone index from data/
+run_tests.py            run every test suite in one command
+config.py               env vars, model names, index name
+
+sc_assistant/           the Flask app — blueprints, templates, static assets
+rag/                    retrieval, reranking, and the feature logic above
+src/                    PDF loading, chunking, prompt text
+aws/                    Cognito / DynamoDB / S3 wrappers
+data/                   the source PDFs
+
+tests/                  18 suites, 1,003 assertions    -> python run_tests.py
+tools/                  dev & ops scripts              -> python tools/<name>.py
+docs/                   one .md per feature
+```
+
+**Scripts in `tests/` and `tools/` run from the repo root**, not from inside those
+folders:
+
+```bash
+python run_tests.py                      # every suite
+python tests/test_pwa.py                 # one suite
+python tools/check_data_conflicts.py     # one tool
+```
+
+Each folder has a small `_bootstrap.py` that its files import first. It puts the repo
+root on `sys.path` and sets the working directory there, so `from rag.chain import ...`
+and relative paths like `data/Samar-College-update.pdf` resolve the same way they did
+when every file lived in the root. **If you add a file to either folder, start it with
+`import _bootstrap` before any project import.**
+
+---
+
+## Setup
+
+**Requires Python 3.10+** (production runs 3.10 per the `Dockerfile`; developed on 3.14).
 
 ```bash
 git clone https://github.com/rojangadin-free/SC-Assistant-Openrouter.git
-```
-### STEP 01- Create a conda environment after opening the repository
+cd SC-Assistant-Openrouter
 
-```bash
-conda create -n SC-assistant
-```
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS / Linux
 
-```bash
-conda activate SC-assistant
-```
-
-
-### STEP 02- install the requirements
-```bash
 pip install -r requirements.txt
 ```
 
-
-### Create a `.env` file in the root directory and add your Pinecone & openai credentials as follows:
+Create a `.env` file in the repo root:
 
 ```ini
-PINECONE_API_KEY=xxxxxxxxxxxxxxxxxxxxxxx
-OPENROUTER_API_KEY=xxxxxxxxxxxxxxxxxxxxxxx
-AWS_REGION=xxxxxxxx
-COGNITO_USER_POOL_ID=xxxxxxxxxxxxxxxx
-COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxx
-AWS_ACCESS_KEY_ID=xxxxxxxxxxxxxxxx
-AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxx
-FLASK_SECRET_KEY=xxxxxxxxxxxxxxxx
+# --- required ---
+PINECONE_API_KEY=xxxxxxxx
+OPENROUTER_API_KEY=xxxxxxxx
+FLASK_SECRET_KEY=xxxxxxxx
+
+# --- required for login (AWS Cognito) ---
+AWS_REGION=us-east-1
+COGNITO_USER_POOL_ID=xxxxxxxx
+COGNITO_CLIENT_ID=xxxxxxxx
+COGNITO_CLIENT_SECRET=xxxxxxxx
+AWS_ACCESS_KEY_ID=xxxxxxxx
+AWS_SECRET_ACCESS_KEY=xxxxxxxx
+
+# --- optional ---
+AGENTROUTER_API_KEY=xxxxxxxx   # second LLM gateway; see "Two providers" below
+STORE_BACKEND=file             # or `dynamodb` for multi-container deployments
 ```
 
+`config.py` raises immediately if `PINECONE_API_KEY` is missing, so a misconfigured
+`.env` fails at startup rather than on the first question.
+
+Then build the index and start the app:
 
 ```bash
-# run the following command to store embeddings to pinecone
-python store_index.py
+python store_index.py     # embeds data/*.pdf into Pinecone (run once, and after any PDF change)
+python run.py             # http://localhost:8080
 ```
+
+### Testing on a phone
+
+Voice input and "Add to Home screen" both require a **secure context**. Browsers grant
+that to `https://` and to `localhost`, but *not* to `http://192.168.x.x` — so over plain
+HTTP on a phone the mic button simply doesn't appear, with no error to explain why:
 
 ```bash
-# Finally run the following command
-python run.py
+python run.py --https     # https://<your-lan-ip>:8443, self-signed
 ```
 
-Now,
+---
+
+## Tests
+
 ```bash
-open up localhost:
+python run_tests.py
 ```
 
+18 suites, 1,003 assertions, **no AWS credentials and no network required** — each
+suite redirects its storage to a temp file, so the real `conflict_resolutions.json`
+and friends are never touched. Suites run in separate processes because those
+redirects have to be set before module import.
 
-### Techstack Used:
+Run one suite directly when you're working on a feature:
 
-- Python
-- LangChain
-- Flask
-- GPT
-- Pinecone
+```bash
+python tests/test_conflicts_api.py
+python tests/test_freshness.py
+```
 
-# AWS-CICD-Deployment-with-Github-Actions
+---
 
-## 1. Login to AWS console.
+## Tools
 
-## 2. Create IAM user for deployment
+Data-quality and retrieval-debugging scripts. All are run from the repo root.
 
-	#with specific access
+| Script | What it does |
+|---|---|
+| `check_data_conflicts.py` | Extracts facts from the corpus and reports contradictions. Exit code 1 when unresolved, so it can gate a re-index |
+| `verify_chunking.py` | Shows how a document *will* be chunked before you index it |
+| `probe_candidates.py` | Inspects the recall stage only — what the retriever found |
+| `probe_retrieval.py` | Runs the real retrieval + rerank pipeline without calling the chat LLM |
+| `eval_retrieval.py` | Regression test for retrieval stability |
+| `make_pwa_icons.py` | Regenerates the installed-app icons from the school logo |
+| `create_stores_table.py` | Creates the DynamoDB table behind `rag/store.py` and copies local JSON in |
+| `create_reports_table.py` | Creates the DynamoDB table for reports |
+| `seed_students.py`, `link_students.py`, `student_debug.py` | Dummy student records and Cognito accounts, for development |
 
-	1. EC2 access : It is virtual machine
+A useful pairing before shipping new PDFs:
 
-	2. ECR: Elastic Container registry to save your docker image in aws
+```bash
+python tools/check_data_conflicts.py && python store_index.py
+```
 
+---
 
-	#Description: About the deployment
+## Admin
 
-	1. Build docker image of the source code
+Admin work happens on one page, **`/dashboard`** (plus `/admin/reports/` for generated
+reports). Each feature is a panel there, backed by its own JSON API namespace:
 
-	2. Push your docker image to ECR
+| API namespace | Panel |
+|---|---|
+| `/admin/conflicts/…` | Pin the correct value when documents disagree |
+| `/admin/gaps/…` | Questions the assistant couldn't answer |
+| `/admin/feedback/…` | Answer votes and the Ask-a-Human queue |
+| `/admin/calendar/…` | Academic periods and deadlines |
+| `/admin/announcements/…` | Post and expire notices |
+| `/admin/freshness/…` | Document dates, and the pre-index upload scan |
+| `/admin/analytics/…` | Volume, top topics, refusal rate |
+| `/admin/reports/` | Generated reports (its own page) |
 
-	3. Launch Your EC2 
+`/api/announcements` is the one public endpoint of that set — the chat page reads it to
+draw the banner for students.
 
-	4. Pull Your image from ECR in EC2
+---
 
-	5. Lauch your docker image in EC2
+## Notes on two design choices
 
-	#Policy:
+**Two LLM providers, deliberately.** The fallback model is served by a *different*
+gateway than the primary. AgentRouter fronts requests with a content filter that
+rejects some entirely ordinary campus questions — asking about "latin honors" returned
+HTTP 400 `content-blocked`. Pointing the fallback at the same gateway means the retry
+is rejected by the same rule, and the student sees "Streaming interrupted." with no
+answer at all. See `FALLBACK_MODEL_NAME` in `config.py` and
+`tests/test_stream_fallback.py`.
 
-	1. AmazonEC2ContainerRegistryFullAccess
+**File storage by default, DynamoDB when it matters.** Admin decisions live in JSON
+files, which is the right call for one process: no setup, readable with `cat`. It
+breaks silently the moment the app runs as two containers — an admin pins a value on
+instance A, a student asks instance B, and B answers with the old name. Nothing errors
+and nothing is logged. `STORE_BACKEND=dynamodb` moves every store behind a shared
+table; the default stays `file` so tests and local development need no cloud account.
 
-	2. AmazonEC2FullAccess
+---
 
-	
-## 3. Create ECR repo to store/save docker image
-    - Save the URI: 315865595366.dkr.ecr.us-east-1.amazonaws.com/assistant
+## Tech stack
 
-	
-## 4. Create EC2 machine (Ubuntu) 
+Python · Flask · LangChain · Pinecone (hybrid dense + BM25) · cross-encoder reranker ·
+OpenRouter / AgentRouter · AWS Cognito, DynamoDB, S3 · Docker · GitHub Actions
 
-## 5. Open EC2 and Install docker in EC2 Machine:
-	
-	
-	#optinal
+---
 
-	sudo apt-get update -y
+## Deployment (AWS, via GitHub Actions)
 
-	sudo apt-get upgrade
-	
-	#required
+The pipeline builds a Docker image, pushes it to ECR, and runs it on an EC2 instance
+registered as a self-hosted runner.
 
-	curl -fsSL https://get.docker.com -o get-docker.sh
+**1. IAM user for deployment** with `AmazonEC2ContainerRegistryFullAccess` and
+`AmazonEC2FullAccess`. (Exact policies: [`docs/AWS IAM Policies.txt`](docs/AWS%20IAM%20Policies.txt))
 
-	sudo sh get-docker.sh
+**2. ECR repository** — save the URI, e.g.
+`315865595366.dkr.ecr.us-east-1.amazonaws.com/assistant`
 
-	sudo usermod -aG docker ubuntu
+**3. EC2 instance** (Ubuntu), then install Docker:
 
-	newgrp docker
-	
-# 6. Configure EC2 as self-hosted runner:
-    setting>actions>runner>new self hosted runner> choose os> then run command one by one
+```bash
+sudo apt-get update -y && sudo apt-get upgrade -y
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker ubuntu
+newgrp docker
+```
 
+**4. Register EC2 as a self-hosted runner** —
+Settings → Actions → Runners → New self-hosted runner, then run the given commands in
+order.
 
-# 7. Setup github secrets:
+**5. Add GitHub secrets:**
 
-   - AWS_ACCESS_KEY_ID
-   - AWS_SECRET_ACCESS_KEY
-   - AWS_DEFAULT_REGION
-   - ECR_REPO
-   - PINECONE_API_KEY
-   - OPENROUTER_API_KEY
-   - FLASK_SECRET_KEY
-   - COGNITO_USER_POOL_ID
-   - COGNITO_CLIENT_ID
+```
+AWS_ACCESS_KEY_ID        PINECONE_API_KEY
+AWS_SECRET_ACCESS_KEY    OPENROUTER_API_KEY
+AWS_DEFAULT_REGION       FLASK_SECRET_KEY
+ECR_REPO                 COGNITO_USER_POOL_ID
+                         COGNITO_CLIENT_ID
+```
+
+The deployment flow: build the image → push to ECR → pull on EC2 → run. `/health`
+returns `200 OK` for load-balancer checks.
