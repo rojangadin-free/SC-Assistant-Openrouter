@@ -90,4 +90,6 @@ jobs:
             -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
             -e AGENTROUTER_API_KEY="${{ secrets.AGENTROUTER_API_KEY }}" \
             -e COGNITO_CLIENT_SECRET="${{ secrets.COGNITO_CLIENT_SECRET }}" \
+            -e LOG_LEVEL="${{ secrets.LOG_LEVEL }}" \
+            -e DOC_LOG_LEVEL="${{ secrets.DOC_LOG_LEVEL }}" \
             $IMAGE_URI
