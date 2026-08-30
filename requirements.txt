@@ -1,22 +1,79 @@
+# Runtime dependencies.
+#
+# Two rules for this file, both learned from a broken deploy:
+#
+# 1. Every third-party module the code imports must be listed here. `pip install`
+#    succeeding locally proves nothing — a package can be present in your venv as
+#    somebody else's transitive dependency and vanish in a clean container.
+#    `langchain-openai` and `pinecone` were both imported by rag/chain.py while
+#    listed nowhere, so the image would have built and then crashed on startup.
+#
+# 2. Anything with C extensions is pinned to a version that publishes a manylinux
+#    wheel for cp310 (the Dockerfile's Python). Unpinned + a conflicting
+#    constraint elsewhere makes pip backtrack through older releases until it
+#    reaches one with no wheel, then try to compile it — which fails in the slim
+#    image with "Please make sure the libxml2 and libxslt development packages
+#    are installed". The traceback names lxml, but the cause is the pin, not lxml.
+#
+# Verify a change against the container's platform before pushing:
+#
+#   python -m pip install --dry-run --ignore-installed --target _t \
+#     --python-version 310 --implementation cp \
+#     --platform manylinux2014_x86_64 --only-binary=:all: \
+#     -r requirements.txt
+#
+# Exit 0 means every package resolves to a prebuilt wheel and the image will
+# build. Exit 1 names the package that would need a compiler.
+
+# --- web ---
 Flask==3.1.2
 python-dotenv==1.0.1
+gunicorn==23.0.0
+
+# --- LLM / RAG ---
 langchain>=0.3.7
 langchain-core>=0.3.15
 langchain-community>=0.3.5
-langchain-google-genai>=4.0.0
+langchain-classic>=0.0.2
+langchain-openai>=0.2.0          # ChatOpenAI: rag/chain.py, src/helper.py
 langchain-pinecone>=0.2.0
-pinecone-client>=5.0.1
-pinecone-text>=0.9.0
+langchain-huggingface>=0.1.0
 langgraph>=0.2.45
+
+# `pinecone`, not `pinecone-client`. rag/chain.py does `from pinecone import
+# Pinecone`; the pinecone-client distribution is deprecated and langchain-pinecone
+# depends on `pinecone` anyway, so listing the old one left the import satisfied
+# only by chance.
+pinecone>=6.0.0
+pinecone-text>=0.9.0
+
+# Required by pinecone-text's BM25 tokenizer. The Dockerfile has always run
+# `nltk.downloader`, which only worked because nltk arrived transitively.
+nltk>=3.9.1
+
+sentence-transformers==3.3.1     # cross-encoder reranker (rag/reranker.py)
+
+# --- documents ---
+# lxml is transitive (python-docx), never imported directly. Pinned anyway: it is
+# the C extension that broke the build, and the pin is what keeps pip on a wheel.
+lxml==5.3.0
 pymupdf==1.24.11
+pdfplumber==0.11.4
+python-docx==1.1.2
+Pillow==11.0.0
+
+# --- AWS / auth ---
 boto3==1.35.54
 python-jose==3.3.0
 cryptography==43.0.3
-gunicorn==23.0.0
-Pillow==11.0.0
-sentence-transformers==3.3.1
-langchain-huggingface>=0.1.0
-pdfplumber==0.11.4
-python-docx==1.1.2
-docling==2.15.1
-langchain-classic>=0.0.2
+
+# Deliberately absent:
+#   docling      — was pinned at 2.15.1 but imported nowhere in the repo. It
+#                  dragged in 27 dependencies (easyocr, deepsearch-glm,
+#                  docling-parse, pypdfium2...) and its constraint chain is what
+#                  forced the lxml downgrade that failed the build.
+#   langchain-google-genai — no ChatGoogleGenerativeAI anywhere; only a stale
+#                  comment in src/helper.py mentions it.
+#   reportlab    — used by tests/test_freshness_api.py only, behind a try/except
+#                  that SKIPs cleanly when it is absent. Not needed at runtime;
+#                  `pip install reportlab` to exercise that PDF path locally.
