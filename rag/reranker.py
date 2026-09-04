@@ -20,13 +20,16 @@ so the page that literally contains the 10 steps wins.
 
 Model
 -----
-`cross-encoder/ms-marco-MiniLM-L6-v2` — the current recommended lightweight
-reranker from the sentence-transformers project:
+`cross-encoder/ettin-reranker-32m-v1` (see DEFAULT_RERANKER_MODEL below) — a
+small CPU-friendly cross-encoder in the same size class as the MiniLM-L6
+embedding model this project already loads.
 
-  * 6 layers / ~22.7M params / ~90 MB  (same size class as the MiniLM-L6
-    embedding model already used by this project)
-  * CPU-friendly: ~15-40 ms for 30 pairs on a normal laptop core
-  * NDCG@10 74.30 on TREC DL19 vs 71.01 for the older TinyBERT-L2
+Whatever id is configured here MUST be the id `download_model.py` pre-downloads.
+When the two disagree, nothing errors: the app just cannot find the model in the
+local cache, tries to fetch it mid-request, and — on any machine without
+HuggingFace egress — falls back to raw retrieval order with no score on any
+document. tests/test_reranker_model.py now fails if they drift apart.
+
 
 Design constraints honoured here
 -------------------------------
@@ -53,9 +56,22 @@ logger = logging.getLogger(__name__)
 
 # The lightweight, current-generation cross-encoder. Override via env var if a
 # deployment wants the stronger (but slower) L12 variant.
-RERANKER_MODEL_NAME = os.getenv(
-    "cross-encoder/ettin-reranker-32m-v1", "cross-encoder/ettin-reranker-32m-v1"
-)
+#
+# `download_model.py` pre-downloads THIS id, and tests/test_reranker_model.py
+# fails if the two drift apart. That guard exists because they already had:
+# the downloader baked `ms-marco-MiniLM-L6-v2` into the image while this module
+# asked for `ettin-reranker-32m-v1`, so every fresh container had to reach
+# HuggingFace mid-request, and any deployment without egress silently lost
+# reranking — every document came back with no score.
+#
+# The call below also used to read `os.getenv(<model id>, <model id>)`: the
+# first argument to getenv is the VARIABLE NAME, so it looked up an env var
+# literally named "cross-encoder/ettin-reranker-32m-v1" and fell back to the
+# same string. It returned the right model by accident, but RERANKER_MODEL_NAME
+# was dead — setting it changed nothing.
+DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
+
 
 # Cap the cross-encoder work: scoring is O(candidates), and beyond ~40 the
 # hybrid retriever's own ordering is already noise.
@@ -89,13 +105,16 @@ MAX_TOTAL_WINDOWS = int(os.getenv("RERANKER_MAX_TOTAL_WINDOWS", "220"))
 
 
 _model = None                      # cached CrossEncoder instance
+_load_error = ""                   # why the last load attempt failed, for callers
+
 _load_failed = False               # set True after a failed attempt (don't retry)
 _load_lock = threading.Lock()      # guard concurrent first-use from threads
 
 
 def _load_model():
     """Load (once) and return the CrossEncoder, or None if unavailable."""
-    global _model, _load_failed
+    global _model, _load_failed, _load_error
+
 
     if _model is not None:
         return _model
@@ -123,6 +142,7 @@ def _load_model():
             return _model
         except Exception as e:  # ImportError, network/download failure, OOM...
             _load_failed = True
+            _load_error = f"{type(e).__name__}: {e}"
             logger.warning("Reranker unavailable, using retrieval order: %s", e)
             print(f"  Reranker unavailable (non-fatal), keeping retrieval order: {e}")
             return None
@@ -134,6 +154,33 @@ def warmup() -> bool:
     not pay the one-time load cost. Returns True when the model is ready.
     """
     return _load_model() is not None
+
+
+def available() -> bool:
+    """
+    True when a model is loaded and documents will carry `rerank_score`.
+
+    Deliberately does NOT trigger a load, so callers (startup banner, the
+    retrieval log) can report the current state without paying for it or
+    changing it.
+    """
+    return _model is not None
+
+
+def unavailable_reason() -> str:
+    """
+    Why the reranker is off, or "" when it is on / has not been tried yet.
+
+    This exists because the failure is silent by design: `rerank()` returns the
+    documents untouched, so the only visible symptom is that every document
+    lacks a score. Whoever reads that log needs the cause, not a guess.
+    """
+    if _model is not None:
+        return ""
+    if _load_failed:
+        return _load_error or "load failed"
+    return "not loaded yet"
+
 
 
 def _header_of(doc) -> str:

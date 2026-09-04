@@ -18,6 +18,7 @@ env vars that redirect storage must be set before their module imports.
     test_roles.py          who is asking -> which side of a process (unit)
     test_freshness.py      document dates + which source is newer (unit)
     test_doc_priority.py   which document supersedes which, by date (unit)
+    test_reranker_model.py the app and the downloader load one model (unit)
 
     test_latency.py        when the optimizer round-trip is skipped (unit)
     test_progress.py       what the waiting student is told, truthfully (unit)
@@ -91,11 +92,20 @@ SUITES = [
     ("Document precedence (newest wins)", "test_doc_priority.py"),
 
 
+    # Before the latency suite, because it decides whether the cross-encoder
+    # runs AT ALL. When the app and download_model.py name different models the
+    # reranker silently never loads: every document comes back without a score
+    # and ranking degrades to raw retrieval order, on every machine except the
+    # one whose HuggingFace cache happens to hold the right weights.
+    ("Reranker model wiring (one id)",   "test_reranker_model.py"),
+
     # Last of the query-path unit suites, and deliberately after them: it decides
     # WHEN the optimizer runs, while the three above decide WHAT is searched. If
     # the language/dictation suites are failing, a latency failure is downstream
     # noise.
     ("Answer latency (skip + budget)",   "test_latency.py"),
+
+
 
     # Paired with the latency suite: that one makes the wait shorter, this one
     # makes it legible. Both are about the same seconds, and both must not change

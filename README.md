@@ -51,7 +51,7 @@ src/                    PDF loading, chunking, prompt text
 aws/                    Cognito / DynamoDB / S3 wrappers
 data/                   the source PDFs
 
-tests/                  21 suites, 1,280 assertions    -> python run_tests.py
+tests/                  23 suites, 1,280+ assertions   -> python run_tests.py
 
 
 tools/                  dev & ops scripts              -> python tools/<name>.py
@@ -114,12 +114,22 @@ STORE_BACKEND=file             # or `dynamodb` for multi-container deployments
 `config.py` raises immediately if `PINECONE_API_KEY` is missing, so a misconfigured
 `.env` fails at startup rather than on the first question.
 
-Then build the index and start the app:
+Then fetch the models, build the index, and start the app:
 
 ```bash
+python download_model.py  # embedding + reranker weights into the local cache (run once per machine)
 python store_index.py     # embeds data/*.pdf into Pinecone (run once, and after any PDF change)
 python run.py             # http://localhost:8080
 ```
+
+`download_model.py` is not optional, and skipping it fails quietly rather than
+loudly. The cross-encoder that reorders search results is loaded on demand, and
+when it cannot be found locally the app catches the failure, keeps the raw
+hybrid-retrieval order, and answers anyway — the only symptoms are `score=n/a`
+against every document in the retrieval log and noticeably worse answers. Startup
+now says so explicitly (`[startup] WARNING: reranker OFF ...`), so check the boot
+output on a new machine before assuming the models are there.
+
 
 ### Testing on a phone
 
@@ -139,7 +149,8 @@ python run.py --https     # https://<your-lan-ip>:8443, self-signed
 python run_tests.py
 ```
 
-21 suites, 1,280 assertions, **no AWS credentials and no network required** — each
+23 suites, 1,280+ assertions, **no AWS credentials and no network required** — each
+
 
 
 suite redirects its storage to a temp file, so the real `conflict_resolutions.json`

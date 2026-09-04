@@ -108,12 +108,29 @@ def create_app():
 
     def _warm_reranker():
         try:
-            from rag.reranker import warmup
-            warmup()
+            from rag.reranker import RERANKER_MODEL_NAME, unavailable_reason, warmup
+
+            if warmup():
+                print(f"[startup] Reranker ready: {RERANKER_MODEL_NAME}")
+                return
+
+            # warmup()'s return value used to be discarded, which is how a
+            # deployment could run for weeks with the reranker off: the only
+            # trace was `score=n/a` on every document in the retrieval log,
+            # and answers silently kept raw hybrid-retrieval order. Say it once,
+            # loudly, at the only moment someone is reading the boot output.
+            print(
+                "[startup] WARNING: reranker OFF — answers will keep raw retrieval "
+                f"order and no document will carry a score.\n"
+                f"           model : {RERANKER_MODEL_NAME}\n"
+                f"           cause : {unavailable_reason()}\n"
+                "           fix   : python download_model.py"
+            )
         except Exception as e:
             # Deliberately swallowed. A cold reranker answers slower; a crashed
             # startup thread answers nothing.
             print(f"[startup] Reranker warmup skipped: {e}")
+
 
     threading.Thread(target=_warm_reranker, daemon=True).start()
 

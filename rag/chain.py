@@ -542,12 +542,26 @@ def retrieve_documents(
         )
 
     if verbose:
-        print(f"\n=== STEP 2: Reranked to top {len(final_docs)} ===")
+        # When the cross-encoder is off, EVERY document comes back without a
+        # score and this list is just the hybrid retriever's own order. Say which
+        # of the two you are looking at: an unexplained column of `score=n/a`
+        # reads like missing data, and the real cause (no model in the local
+        # cache — see download_model.py) is nowhere near this log.
+        from rag.reranker import available as _rr_available, unavailable_reason as _rr_reason
+
+        if _rr_available():
+            print(f"\n=== STEP 2: Reranked to top {len(final_docs)} ===")
+        else:
+            print(
+                f"\n=== STEP 2: NOT reranked — reranker off ({_rr_reason()}); "
+                f"keeping retrieval order, top {len(final_docs)} ==="
+            )
         for i, doc in enumerate(final_docs):
             src = doc.metadata.get("source", "Unknown")
             pg = doc.metadata.get("page", "?")
             score = doc.metadata.get("rerank_score")
             score_s = f"{score:.3f}" if isinstance(score, float) else "n/a"
+
             aspect = doc.metadata.get("rerank_aspect")
             aspect_s = f" | for: {aspect[:40]}" if aspect else ""
             snippet = doc.page_content.replace("\n", " ")[:70]

@@ -1,23 +1,53 @@
+"""
+Pre-download the models into the local HuggingFace cache.
+
+Run once on a new machine, and at image build time (see Dockerfile):
+
+    python download_model.py
+
+Why this file must agree with rag/reranker.py
+---------------------------------------------
+It didn't, and that is what "no score on all 12 documents" was. This script
+fetched `cross-encoder/ms-marco-MiniLM-L6-v2` while `rag/reranker.py` loaded
+`cross-encoder/ettin-reranker-32m-v1`, so the model baked into the image was
+never the model the app asked for. Nothing errored: `_load_model()` catches the
+failure, `rerank()` hands the documents back untouched, no document gets a
+`rerank_score`, and `retrieve_documents()` prints `score=n/a` for every one of
+them while answers quietly fall back to raw hybrid-retrieval order.
+
+The ids are duplicated as literals rather than imported, on purpose: the
+Dockerfile copies THIS FILE ALONE and runs it before copying the application,
+so the ~90 MB download is cached in its own layer and survives ordinary code
+edits. Importing `rag.reranker` here would either break that build stage or
+force the model layer to rebuild on every commit. tests/test_reranker_model.py
+compares the literals instead, so the two can no longer drift silently.
+"""
+
 import os
-from sentence_transformers import SentenceTransformer, CrossEncoder
+
+from sentence_transformers import CrossEncoder, SentenceTransformer
+
+# Must match EMBEDDING model used in src/helper.py
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Must match DEFAULT_RERANKER_MODEL in rag/reranker.py (guarded by a test).
+DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
+
 
 def download_models():
-    # Must match the model name used in src/helper.py
-    model_name = "sentence-transformers/all-MiniLM-L6-v2"
-
-    print(f"Downloading embedding model: {model_name}...")
-    # This initializes the model, which triggers the download to the local cache
-    SentenceTransformer(model_name)
+    print(f"Downloading embedding model: {EMBEDDING_MODEL}...")
+    # Instantiating the model triggers the download into the local cache.
+    SentenceTransformer(EMBEDDING_MODEL)
     print("Download complete.")
 
-    # Must match RERANKER_MODEL_NAME in rag/reranker.py.
-    # Cross-encoder used to reorder hybrid-search candidates (~90 MB).
-    reranker_name = os.getenv(
-        "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L6-v2"
-    )
+    # Same env var the app reads, so overriding the model in a deployment also
+    # pre-downloads the right one instead of leaving the app to fetch it during
+    # a student's request.
+    reranker_name = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
     print(f"Downloading reranker model: {reranker_name}...")
-    CrossEncoder(reranker_name, max_length=512, device="cpu")
+    CrossEncoder(reranker_name, device="cpu")
     print("Download complete.")
+
 
 if __name__ == "__main__":
     download_models()
