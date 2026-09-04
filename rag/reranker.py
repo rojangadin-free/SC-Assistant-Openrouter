@@ -20,15 +20,31 @@ so the page that literally contains the 10 steps wins.
 
 Model
 -----
-`cross-encoder/ettin-reranker-32m-v1` (see DEFAULT_RERANKER_MODEL below) — a
+`cross-encoder/ms-marco-MiniLM-L6-v2` (see DEFAULT_RERANKER_MODEL below) — a
 small CPU-friendly cross-encoder in the same size class as the MiniLM-L6
 embedding model this project already loads.
 
-Whatever id is configured here MUST be the id `download_model.py` pre-downloads.
-When the two disagree, nothing errors: the app just cannot find the model in the
-local cache, tries to fetch it mid-request, and — on any machine without
-HuggingFace egress — falls back to raw retrieval order with no score on any
-document. tests/test_reranker_model.py now fails if they drift apart.
+Whatever id is configured here MUST satisfy both of these, and neither failure
+mode announces itself:
+
+1. `download_model.py` must pre-download the SAME id. When the two disagree the
+   app cannot find the model locally, tries to fetch it mid-request, and — on any
+   machine without HuggingFace egress — falls back to raw retrieval order with no
+   score on any document.
+
+2. The pinned dependency stack must be able to LOAD it. `requirements.txt` pins
+   `sentence-transformers==3.3.1`, which holds `transformers` on the 4.x line.
+   `cross-encoder/ettin-reranker-32m-v1` was configured here for a while and is
+   not loadable there: its tokenizer_config names `TokenizersBackend`, a class
+   that only exists in the newer transformers line, so the Docker build died with
+   `ValueError: Tokenizer class TokenizersBackend does not exist`. It worked on
+   the developer's machine — newer transformers, model already cached — and
+   nowhere else, which is the same dev-only illusion as (1).
+
+Moving to an ettin reranker therefore means upgrading `sentence-transformers` and
+`transformers` first, verifying with the cp310 wheel dry-run documented at the top
+of requirements.txt, and changing all three places together.
+tests/test_reranker_model.py fails if any of them drift apart.
 
 
 Design constraints honoured here
@@ -54,23 +70,32 @@ from typing import List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-# The lightweight, current-generation cross-encoder. Override via env var if a
-# deployment wants the stronger (but slower) L12 variant.
+# The lightweight cross-encoder. Override via env var if a deployment wants the
+# stronger (but slower) L12 variant — and see the two constraints in the module
+# docstring before picking anything from a different model family.
 #
 # `download_model.py` pre-downloads THIS id, and tests/test_reranker_model.py
-# fails if the two drift apart. That guard exists because they already had:
-# the downloader baked `ms-marco-MiniLM-L6-v2` into the image while this module
-# asked for `ettin-reranker-32m-v1`, so every fresh container had to reach
-# HuggingFace mid-request, and any deployment without egress silently lost
-# reranking — every document came back with no score.
+# fails if the two drift apart. That guard exists because they already had: the
+# downloader baked `ms-marco-MiniLM-L6-v2` into the image while this module asked
+# for `ettin-reranker-32m-v1`, so every fresh container had to reach HuggingFace
+# mid-request, and any deployment without egress silently lost reranking — every
+# document came back with no score.
 #
 # The call below also used to read `os.getenv(<model id>, <model id>)`: the
 # first argument to getenv is the VARIABLE NAME, so it looked up an env var
-# literally named "cross-encoder/ettin-reranker-32m-v1" and fell back to the
-# same string. It returned the right model by accident, but RERANKER_MODEL_NAME
-# was dead — setting it changed nothing.
-DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
+# literally named after the model and fell back to the same string. It returned a
+# model by accident, but RERANKER_MODEL_NAME was dead — setting it changed
+# nothing.
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
+
+# ms-marco cross-encoders truncate at 512 tokens. That is not a limitation here
+# because passages are windowed to WINDOW_CHARS (~900 chars, ≈225 tokens) below,
+# so every scored input is well inside the limit. Kept configurable so a
+# long-context model can raise it without editing code — the previous value,
+# 8192, was chosen for a long-context reranker and silently means nothing to a
+# 512-token one.
+RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
 
 
 # Cap the cross-encoder work: scoring is O(candidates), and beyond ~40 the
@@ -135,9 +160,10 @@ def _load_model():
             print(f"  Loading reranker: {RERANKER_MODEL_NAME} ...")
             _model = CrossEncoder(
                 RERANKER_MODEL_NAME,
-                max_length=8192,
+                max_length=RERANKER_MAX_LENGTH,
                 device="cpu",
             )
+
             print("  Reranker ready.")  
             return _model
         except Exception as e:  # ImportError, network/download failure, OOM...

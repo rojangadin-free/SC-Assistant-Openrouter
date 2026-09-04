@@ -15,6 +15,18 @@ failure, `rerank()` hands the documents back untouched, no document gets a
 `rerank_score`, and `retrieve_documents()` prints `score=n/a` for every one of
 them while answers quietly fall back to raw hybrid-retrieval order.
 
+Both files now name the ms-marco model, and that choice is constrained, not
+arbitrary: `requirements.txt` pins `sentence-transformers==3.3.1`, which holds
+`transformers` on the 4.x line. Pointing this script at the ettin reranker failed
+the image build outright —
+
+    ValueError: Tokenizer class TokenizersBackend does not exist
+                or is not currently imported.
+
+— because that model's tokenizer_config names a class only the newer transformers
+line provides. Upgrading the pins is the prerequisite for changing the model, in
+that order.
+
 The ids are duplicated as literals rather than imported, on purpose: the
 Dockerfile copies THIS FILE ALONE and runs it before copying the application,
 so the ~90 MB download is cached in its own layer and survives ordinary code
@@ -31,7 +43,8 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Must match DEFAULT_RERANKER_MODEL in rag/reranker.py (guarded by a test).
-DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"
+
 
 
 def download_models():

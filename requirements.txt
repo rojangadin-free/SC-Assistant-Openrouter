@@ -51,7 +51,19 @@ pinecone-text>=0.9.0
 # `nltk.downloader`, which only worked because nltk arrived transitively.
 nltk>=3.9.1
 
+# This pin decides WHICH RERANKER MODELS CAN LOAD, which is not obvious from the
+# line itself. 3.3.1 holds `transformers` on the 4.x line, so a model whose
+# tokenizer_config names a newer class cannot be constructed at all:
+# `cross-encoder/ettin-reranker-32m-v1` failed the image build with
+# `ValueError: Tokenizer class TokenizersBackend does not exist`, having worked on
+# a dev machine that had newer transformers and the weights already cached.
+#
+# So this pin and DEFAULT_RERANKER_MODEL in rag/reranker.py move together —
+# upgrade here first, verify with the cp310 dry-run above, then change the model.
+# tests/test_reranker_model.py fails if a newer-generation model id is configured
+# while this stays on 3.x.
 sentence-transformers==3.3.1     # cross-encoder reranker (rag/reranker.py)
+
 
 # --- documents ---
 # lxml is transitive (python-docx), never imported directly. Pinned anyway: it is

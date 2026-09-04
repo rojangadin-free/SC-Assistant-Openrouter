@@ -16,12 +16,26 @@ developer's, because a local HuggingFace cache had the right model from an
 earlier interactive run — the worst possible failure shape: correct here, quietly
 degraded everywhere else.
 
+Agreeing on an id is necessary but not sufficient: the pinned stack must also be
+able to LOAD it. Pointing both files at `cross-encoder/ettin-reranker-32m-v1`
+turned the silent degradation into a red build —
+
+    ValueError: Tokenizer class TokenizersBackend does not exist
+                or is not currently imported.
+
+— because `requirements.txt` pins `sentence-transformers==3.3.1`, which holds
+`transformers` on the 4.x line, and that model's tokenizer_config names a class
+only the newer line ships. Same dev-only illusion as before: newer transformers
+plus a warm cache on one laptop, broken everywhere else. So the model id is
+checked against the pin too.
+
 These are source-text assertions on purpose. The ids must match without
 downloading ~90 MB of weights or importing sentence_transformers, so the suite
 stays runnable in CI and on a laptop with no network.
 """
 
 import os
+
 import pathlib
 import re
 import sys
@@ -91,7 +105,25 @@ check(
     'os.getenv("RERANKER_MODEL_NAME"' in download_src,
 )
 
+# The model must be loadable by the versions the container actually installs.
+requirements_src = read("requirements.txt")
+st_pin = re.search(r"^sentence-transformers==(\d+)\.", requirements_src, re.M)
+st_major = int(st_pin.group(1)) if st_pin else 0
+
+check("requirements.txt pins sentence-transformers", st_major > 0)
+check(
+    "the configured reranker's tokenizer exists in the pinned transformers line",
+    st_major >= 5 or "ettin" not in app_model.lower(),
+    f"sentence-transformers {st_major}.x cannot construct {app_model}",
+)
+check(
+    "max_length is a named constant, not a figure borrowed from another model",
+    "max_length=RERANKER_MAX_LENGTH" in reranker_src
+    and "max_length=8192" not in reranker_src,
+)
+
 # A silent degradation has to announce itself somewhere a human is looking.
+
 check(
     "startup acts on warmup()'s result instead of discarding it",
     "if warmup():" in startup_src,
