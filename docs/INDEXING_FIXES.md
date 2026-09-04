@@ -96,12 +96,14 @@ BM25 rewards p46 for repeating "admission requirements"; the dense vector reward
 
 | Item | Value |
 |------|-------|
-| model | `cross-encoder/ms-marco-MiniLM-L6-v2` (~90 MB, 6 layers, CPU-friendly) |
+| model | `cross-encoder/ettin-reranker-32m-v1` (32M params, ModernBERT, CPU-friendly) |
+| requires | `sentence-transformers` 5.x + `transformers` 5.x — the tokenizer (`TokenizersBackend`) and `model_type: modernbert` do not exist on the 4.x line, and pinning below that turns reranking off silently. `tests/test_reranker_model.py` enforces the pairing |
 | override | `RERANKER_MODEL_NAME`, `RERANKER_MAX_PAIRS` env vars |
-| scored input | `metadata['section']` + first 2000 chars of the chunk |
+| scored input | `metadata['section']` + overlapping 900-char windows of the chunk, best window wins |
 | output | reordered docs, score written to `metadata['rerank_score']` |
 | failure mode | **fully non-fatal** — import/download/scoring errors fall back to retrieval order |
 | loading | lazy + cached + thread-safe; `warmup()` available for eager load |
+
 
 `download_model.py` now pre-downloads this model too, so Docker images bake it in instead of
 fetching it on the first user question.

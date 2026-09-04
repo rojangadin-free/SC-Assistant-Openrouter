@@ -4,6 +4,8 @@ from flask import (
 )
 import json
 import datetime
+import threading
+import time
 import uuid
 import os
 from PIL import Image
@@ -168,16 +170,74 @@ def chat():
             # byte anyway.
             full_answer = ""
 
+            # 2 KB of SSE comment before anything meaningful.
+            #
+            # Comment lines (": ...") are ignored by every SSE consumer, so this
+            # cannot reach the UI. Its only job is to be BYTES. An intermediary
+            # that buffers a proxied response until its own buffer fills will
+            # otherwise sit on the first caption for the entire retrieval, and
+            # then release it together with the answer — which is exactly how the
+            # captions came to be invisible in the deployed app while working on
+            # localhost, where nothing sits between Flask and the browser.
+            yield ":" + " " * 2048 + "\n\n"
+
             # Flushed before the pipeline starts so the browser paints something
             # immediately rather than after the first phase completes.
             yield f"data: {json.dumps({'type': 'phase', 'phase': 'searching', 'label': 'Looking through Samar College documents'})}\n\n"
 
-            try:
-                result = app_graph.invoke(input_payload, config=config)
-            except Exception as graph_err:
-                print(f"Graph invocation failed: {graph_err}")
+            # The pipeline runs on a worker thread so this generator can keep
+            # yielding while it works.
+            #
+            # It used to be a plain `app_graph.invoke(...)` right here, with the
+            # captions drained AFTERWARDS. The phase boundaries were real, but
+            # nobody could see them: a synchronous call cannot be interleaved
+            # with, so every caption the pipeline published arrived in one burst
+            # milliseconds before the first token. "Reading 34 pages from 3
+            # documents" was on screen for about as long as it took to be
+            # replaced by the answer, and "Generating response" for less than
+            # that. The seconds a student actually waits had no caption at all.
+            box = {}
+            finished = threading.Event()
+
+            def run_pipeline():
+                try:
+                    box["result"] = app_graph.invoke(input_payload, config=config)
+                except Exception as e:
+                    box["error"] = e
+                finally:
+                    finished.set()
+
+            threading.Thread(
+                target=run_pipeline, name="answer-pipeline", daemon=True
+            ).start()
+
+            # Forward captions the moment they are published, and emit a comment
+            # every few seconds while the CPU-bound phases run. The heartbeat is
+            # a comment rather than an event so it can never reach the UI; it
+            # exists so that SOMETHING crosses every intermediary regularly,
+            # instead of a 15-second silence that a proxy is free to interpret as
+            # a stalled response.
+            POLL_SECONDS = 0.2
+            HEARTBEAT_SECONDS = 5.0
+            last_beat = time.monotonic()
+
+            while not finished.wait(POLL_SECONDS):
+                for event in progress.drain():
+                    yield f"data: {json.dumps(event)}\n\n"
+                if time.monotonic() - last_beat >= HEARTBEAT_SECONDS:
+                    last_beat = time.monotonic()
+                    yield ": keep-alive\n\n"
+
+            # Anything published between the last poll and the thread finishing.
+            for event in progress.drain():
+                yield f"data: {json.dumps(event)}\n\n"
+
+            if box.get("error") is not None:
+                print(f"Graph invocation failed: {box['error']}")
                 yield f"data: {json.dumps({'type': 'error', 'text': 'Sorry, something went wrong while preparing that answer. Please try again.'})}\n\n"
                 return
+
+            result = box.get("result") or {}
 
             messages_to_llm = result.get("messages_to_llm", [])
 
@@ -190,14 +250,9 @@ def chat():
                 yield f"data: {json.dumps({'type': 'error', 'text': 'Context compilation failed. Please try again.'})}\n\n"
                 return
 
-            # Every caption the pipeline published while it ran, in order. They
-            # are delivered as a group because `invoke()` is synchronous: the
-            # generator cannot interleave with it, so this replays the real
-            # sequence the moment control returns. Each still carries the phase
-            # it belongs to, so the UI shows the last true state rather than a
-            # guess.
-            for event in progress.drain():
-                yield f"data: {json.dumps(event)}\n\n"
+            # No drain here any more: the captions above were streamed while the
+            # pipeline was still running, which is the only way a student sees
+            # them.
 
             # The answer LLM is about to be called and the first token has not
             # arrived. This is the one caption the graph cannot publish itself,
@@ -311,7 +366,22 @@ def chat():
 
 
 
-        return Response(generate(), mimetype='text/event-stream')
+        return Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                # Never cache a stream, and — `no-transform` — never let an
+                # intermediary gzip it either: compressing a response means
+                # buffering it, which is the same invisible-captions failure as
+                # explicit buffering.
+                'Cache-Control': 'no-cache, no-store, no-transform',
+                # nginx-family proxies buffer proxied responses by default and
+                # honour this header to turn it off. Harmless everywhere else.
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+            },
+        )
+
 
     except Exception as e:
         print(f"Error in /get endpoint: {e}")

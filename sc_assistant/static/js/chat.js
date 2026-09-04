@@ -1094,15 +1094,43 @@ $(document).ready(function() {
         const decoder = new TextDecoder();
         let fullAnswerText = "";
         let isFirstToken = true;
+        // Whatever arrived without its terminating newline yet. See below.
+        let sseBuffer = "";
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const lines = decoder.decode(value, { stream: true }).split('\n');
+            // A read() returns whatever bytes happen to have arrived — NOT one
+            // SSE event. Several events can land in one read, and a single event
+            // can be cut in half across two.
+            //
+            // This used to split each read on '\n' and JSON.parse() anything
+            // beginning with 'data: ', so half a line ("data: {\"type\": \"ph")
+            // threw a SyntaxError out of this loop and took the rest of the
+            // stream with it. On localhost every yield arrives in its own read,
+            // so it never happened; through a proxy, where writes are coalesced
+            // and re-chunked, it is routine — which is why the deployed app lost
+            // its captions.
+            //
+            // So: accumulate, process only COMPLETE lines, and keep the partial
+            // remainder for the next read.
+            sseBuffer += decoder.decode(value, { stream: true });
+            const lines = sseBuffer.split('\n');
+            sseBuffer = lines.pop();
+
             for (const line of lines) {
+                // Comment lines (': keep-alive') are heartbeats, not events.
                 if (line.startsWith('data: ')) {
-                    const data = JSON.parse(line.substring(6));
+                    let data;
+                    try {
+                        data = JSON.parse(line.substring(6));
+                    } catch (parseErr) {
+                        // One malformed event must not end the answer.
+                        console.warn('Skipped an unreadable stream event:', parseErr);
+                        continue;
+                    }
+
 
                     // What the pipeline is doing right now. Published from the
                     // real phase boundaries (rag/progress.py), so the caption is

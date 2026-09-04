@@ -18,16 +18,25 @@ degraded everywhere else.
 
 Agreeing on an id is necessary but not sufficient: the pinned stack must also be
 able to LOAD it. Pointing both files at `cross-encoder/ettin-reranker-32m-v1`
-turned the silent degradation into a red build —
+while `requirements.txt` still pinned `sentence-transformers==3.3.1` turned the
+silent degradation into a red build —
 
     ValueError: Tokenizer class TokenizersBackend does not exist
                 or is not currently imported.
 
-— because `requirements.txt` pins `sentence-transformers==3.3.1`, which holds
-`transformers` on the 4.x line, and that model's tokenizer_config names a class
-only the newer line ships. Same dev-only illusion as before: newer transformers
-plus a warm cache on one laptop, broken everywhere else. So the model id is
-checked against the pin too.
+— because 3.3.1 holds `transformers` on the 4.x line, and that model's
+tokenizer_config names a class only the newer line ships (its config.json is also
+`model_type: modernbert`, another 5.x concept). Same dev-only illusion as before:
+newer transformers plus a warm cache on one laptop, broken everywhere else.
+
+The pins have since been raised to `sentence-transformers==5.7.0` /
+`transformers==5.16.1` and the ettin model is now the configured default, so the
+pairing check below is what stops a future "let's roll sentence-transformers back
+to something older" from silently disabling reranking again. It is also why
+`transformers` is pinned explicitly rather than left to pip: the reranker's
+loadability depends on that line, so it is a declared requirement, not a
+transitive accident.
+
 
 These are source-text assertions on purpose. The ids must match without
 downloading ~90 MB of weights or importing sentence_transformers, so the suite
@@ -110,12 +119,30 @@ requirements_src = read("requirements.txt")
 st_pin = re.search(r"^sentence-transformers==(\d+)\.", requirements_src, re.M)
 st_major = int(st_pin.group(1)) if st_pin else 0
 
+tf_pin = re.search(r"^transformers==(\d+)\.", requirements_src, re.M)
+tf_major = int(tf_pin.group(1)) if tf_pin else 0
+
 check("requirements.txt pins sentence-transformers", st_major > 0)
 check(
     "the configured reranker's tokenizer exists in the pinned transformers line",
     st_major >= 5 or "ettin" not in app_model.lower(),
     f"sentence-transformers {st_major}.x cannot construct {app_model}",
 )
+# transformers is what actually constructs the tokenizer, so it is pinned in its
+# own right instead of being inherited from whatever sentence-transformers happens
+# to allow. Left implicit, a rebuild could pick up a different major line and
+# reintroduce the TokenizersBackend failure with no diff to point at.
+check(
+    "requirements.txt pins transformers explicitly",
+    tf_major > 0,
+    "the reranker's loadability depends on this line; it must not be transitive",
+)
+check(
+    "the pinned transformers line can construct the configured reranker",
+    tf_major >= 5 or "ettin" not in app_model.lower(),
+    f"transformers {tf_major}.x cannot construct {app_model}",
+)
+
 check(
     "max_length is a named constant, not a figure borrowed from another model",
     "max_length=RERANKER_MAX_LENGTH" in reranker_src

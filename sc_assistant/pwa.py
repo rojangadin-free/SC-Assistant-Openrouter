@@ -55,7 +55,15 @@ bp_pwa = Blueprint("pwa", __name__)
 # that path was added to NEVER_CACHE. The new worker would never read it — the
 # prefix check short-circuits ahead of caches.match — but leaving a stale copy of
 # the document list sitting in storage on every admin's browser serves no purpose.
-CACHE_VERSION = "sc-assistant-v3"
+# v4 ships the rewritten SSE parser in chat.js. Stale-while-revalidate would
+# otherwise serve the OLD parser from cache on the first load after this deploy
+# and only pick up the new one on the load after that — which, for a bug whose
+# entire symptom is "the deployed app behaves differently", is the one failure
+# mode guaranteed to be mistaken for the fix not working. Bumping the version
+# deletes the previous cache on activate, so the stale copy cannot outlive the
+# deploy.
+CACHE_VERSION = "sc-assistant-v4"
+
 
 
 

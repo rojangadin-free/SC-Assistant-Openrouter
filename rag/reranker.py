@@ -20,9 +20,9 @@ so the page that literally contains the 10 steps wins.
 
 Model
 -----
-`cross-encoder/ms-marco-MiniLM-L6-v2` (see DEFAULT_RERANKER_MODEL below) — a
-small CPU-friendly cross-encoder in the same size class as the MiniLM-L6
-embedding model this project already loads.
+`cross-encoder/ettin-reranker-32m-v1` (see DEFAULT_RERANKER_MODEL below) — a
+32M-parameter ModernBERT cross-encoder, smaller than the ms-marco MiniLM-L6 model
+it replaces and trained on a much newer reranking mix.
 
 Whatever id is configured here MUST satisfy both of these, and neither failure
 mode announces itself:
@@ -32,19 +32,22 @@ mode announces itself:
    machine without HuggingFace egress — falls back to raw retrieval order with no
    score on any document.
 
-2. The pinned dependency stack must be able to LOAD it. `requirements.txt` pins
-   `sentence-transformers==3.3.1`, which holds `transformers` on the 4.x line.
-   `cross-encoder/ettin-reranker-32m-v1` was configured here for a while and is
-   not loadable there: its tokenizer_config names `TokenizersBackend`, a class
-   that only exists in the newer transformers line, so the Docker build died with
-   `ValueError: Tokenizer class TokenizersBackend does not exist`. It worked on
-   the developer's machine — newer transformers, model already cached — and
-   nowhere else, which is the same dev-only illusion as (1).
+2. The pinned dependency stack must be able to LOAD it. This is not theoretical:
+   this exact model was configured here once before, while `requirements.txt`
+   pinned `sentence-transformers==3.3.1`, and the Docker build died with
 
-Moving to an ettin reranker therefore means upgrading `sentence-transformers` and
-`transformers` first, verifying with the cp310 wheel dry-run documented at the top
-of requirements.txt, and changing all three places together.
-tests/test_reranker_model.py fails if any of them drift apart.
+       ValueError: Tokenizer class TokenizersBackend does not exist
+
+   because its tokenizer_config names `TokenizersBackend` and its config.json is
+   `model_type: modernbert` — both transformers 5.x concepts, and 3.3.1 holds
+   transformers on the 4.x line. It worked on the developer's machine, which had
+   newer transformers and the weights already cached, and nowhere else.
+
+   The pins were raised BEFORE this id came back: `sentence-transformers==5.7.0`
+   and `transformers==5.16.1`, verified with the cp310 wheels-only dry-run
+   documented at the top of requirements.txt. tests/test_reranker_model.py fails
+   if an ettin id is ever configured against a sub-5.x pin again.
+
 
 
 Design constraints honoured here
@@ -70,9 +73,11 @@ from typing import List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-# The lightweight cross-encoder. Override via env var if a deployment wants the
-# stronger (but slower) L12 variant — and see the two constraints in the module
-# docstring before picking anything from a different model family.
+# The cross-encoder. Sized deliberately: at 32M parameters this is SMALLER than
+# the ms-marco MiniLM-L6 model it replaces (~22M encoder + head, same order) and
+# a ModernBERT generation newer, so the swap is not paid for in latency on the
+# 2-worker CPU box in the Dockerfile. The larger siblings (68m, 150m, 400m, 1b)
+# use the same id shape if a deployment wants to trade CPU for accuracy.
 #
 # `download_model.py` pre-downloads THIS id, and tests/test_reranker_model.py
 # fails if the two drift apart. That guard exists because they already had: the
@@ -86,16 +91,24 @@ logger = logging.getLogger(__name__)
 # literally named after the model and fell back to the same string. It returned a
 # model by accident, but RERANKER_MODEL_NAME was dead — setting it changed
 # nothing.
-DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"
+DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
 
-# ms-marco cross-encoders truncate at 512 tokens. That is not a limitation here
-# because passages are windowed to WINDOW_CHARS (~900 chars, ≈225 tokens) below,
-# so every scored input is well inside the limit. Kept configurable so a
-# long-context model can raise it without editing code — the previous value,
-# 8192, was chosen for a long-context reranker and silently means nothing to a
-# 512-token one.
+# 512, even though this model's tokenizer advertises model_max_length 7999.
+#
+# The number that matters is not what the model CAN take, it is what it is fed:
+# passages are windowed to WINDOW_CHARS (~900 chars, ≈225 tokens) below, so every
+# scored input is already well inside 512 and raising this changes nothing about
+# the input — it only enlarges the attention window the model allocates for it.
+# The model card's own throughput benchmarks are measured at max_length=512 for
+# the same reason.
+#
+# Kept configurable so a deployment that raises WINDOW_CHARS can raise this with
+# it. The value 8192 was here once, borrowed from a long-context reranker, and was
+# meaningless against a 512-token ms-marco model — the mirror image of this
+# mistake.
 RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
+
 
 
 # Cap the cross-encoder work: scoring is O(candidates), and beyond ~40 the
@@ -105,10 +118,12 @@ MAX_PAIRS = int(os.getenv("RERANKER_MAX_PAIRS", "40"))
 # ---------------------------------------------------------------------------
 # Sliding-window scoring
 # ---------------------------------------------------------------------------
-# A cross-encoder is a PASSAGE scorer. ms-marco models truncate at 512 tokens
-# (~1800 chars), so feeding a 3000-char chunk means everything past the cutoff
-# is invisible — and worse, the visible prefix may be unrelated boilerplate,
-# which actively pushes the score DOWN.
+# A cross-encoder is a PASSAGE scorer. Windowing is NOT primarily about the token
+# limit — this model would accept ~8k tokens — it is about what a single score can
+# express. One score for a 3000-char chunk is an average over everything in it, so
+# a chunk whose opening is unrelated boilerplate scores badly even when the answer
+# sits in the middle of it.
+
 #
 # Measured on the live index for "list of academic programs and courses offered":
 #

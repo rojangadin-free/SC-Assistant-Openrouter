@@ -52,17 +52,29 @@ pinecone-text>=0.9.0
 nltk>=3.9.1
 
 # This pin decides WHICH RERANKER MODELS CAN LOAD, which is not obvious from the
-# line itself. 3.3.1 holds `transformers` on the 4.x line, so a model whose
-# tokenizer_config names a newer class cannot be constructed at all:
-# `cross-encoder/ettin-reranker-32m-v1` failed the image build with
-# `ValueError: Tokenizer class TokenizersBackend does not exist`, having worked on
-# a dev machine that had newer transformers and the weights already cached.
+# line itself. It used to be 3.3.1, which held `transformers` on the 4.x line, and
+# that is why `cross-encoder/ettin-reranker-32m-v1` failed the image build with
+# `ValueError: Tokenizer class TokenizersBackend does not exist` — the model's
+# tokenizer_config names a class only transformers 5.x ships, and its config.json
+# is `model_type: modernbert`, which 4.x also does not know.
 #
-# So this pin and DEFAULT_RERANKER_MODEL in rag/reranker.py move together —
-# upgrade here first, verify with the cp310 dry-run above, then change the model.
-# tests/test_reranker_model.py fails if a newer-generation model id is configured
-# while this stays on 3.x.
-sentence-transformers==3.3.1     # cross-encoder reranker (rag/reranker.py)
+# Now on the 5.x line, deliberately, so the ettin reranker configured in
+# rag/reranker.py can actually be constructed. Both pins are explicit rather than
+# `>=`: sentence-transformers 5.x accepts any transformers 5.x, and letting pip
+# choose means the image silently follows upstream releases between builds — the
+# next `transformers` minor could reintroduce exactly this class of breakage on a
+# rebuild nobody thought was risky.
+#
+# Verified against the container's platform with the cp310 dry-run at the top of
+# this file: both are pure-Python wheels, and the torch they pull (2.6.0) has a
+# cp310 manylinux wheel, so nothing needs a compiler.
+#
+# This pin and DEFAULT_RERANKER_MODEL in rag/reranker.py move together — upgrade
+# here first, dry-run, then change the model. tests/test_reranker_model.py fails
+# if an ettin id is configured while this sits below 5.x.
+sentence-transformers==5.7.0     # cross-encoder reranker (rag/reranker.py)
+transformers==5.16.1             # pinned because the reranker's tokenizer needs 5.x
+
 
 
 # --- documents ---

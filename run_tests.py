@@ -22,6 +22,7 @@ env vars that redirect storage must be set before their module imports.
 
     test_latency.py        when the optimizer round-trip is skipped (unit)
     test_progress.py       what the waiting student is told, truthfully (unit)
+    test_sse_delivery.py   that the telling survives a proxy and a browser (unit)
 
 
 
@@ -111,6 +112,14 @@ SUITES = [
     # makes it legible. Both are about the same seconds, and both must not change
     # what retrieval finds — so a failure in either is read against the other.
     ("Answer progress (what's showing)", "test_progress.py"),
+
+    # Immediately after it, because the two halves fail independently: the
+    # captions were correct AND invisible in the deployed app for three separate
+    # reasons — a blocking invoke() that left nothing to send, a stream nothing
+    # told the proxies to leave alone, and a client that parsed a TCP read as if
+    # it were one SSE event.
+    ("SSE caption delivery (deployed)",  "test_sse_delivery.py"),
+
 
 
     # A provider refusal must fall over to the other gateway, not surface as
