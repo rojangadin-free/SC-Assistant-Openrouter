@@ -35,8 +35,6 @@ $(document).ready(function() {
   const uploadsMenuItem = $('#uploadsMenuItem');
   const usersMenuItem = $('#usersMenuItem'); // New
 
-  const backToAnalytics = $('#backToAnalytics');
-  const backToAnalyticsFromUsers = $('#backToAnalyticsFromUsers'); // New
 
 
   // User list elements
@@ -94,14 +92,7 @@ $(document).ready(function() {
     showSection('users');
   });
   
-  // Back button click handler
-  backToAnalytics.on('click', function() {
-    showSection('analytics');
-  });
 
-  backToAnalyticsFromUsers.on('click', function() { // New
-    showSection('analytics');
-  });
 
 
   // ═══════════════════════════════════════════════════════════════

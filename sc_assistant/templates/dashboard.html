@@ -66,10 +66,6 @@
     <div id="uploadSection" class="dashboard-section">
 
       <div class="section-header">
-        <button class="back-button" id="backToAnalytics">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>File Management</h2>
       </div>
 
@@ -113,10 +109,6 @@
 
     <div id="usersSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromUsers">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>User Management</h2>
       </div>
 
@@ -348,10 +340,6 @@
     <div id="reportsSection" class="dashboard-section">
 
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromReports">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Student Reports</h2>
       </div>
 
@@ -396,21 +384,10 @@
 
     <div id="conflictsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromConflicts">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Data Conflicts</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-yellow">
-        <p class="sc-lead">
-          These are facts your documents state <strong>two different ways</strong> (for example, two
-          different people listed as dean of the same college). When this happens the assistant has no
-          way to know which one is current, so its answer can change from one question to the next.
-          Pick the correct value once here and the assistant will always use it — the wrong value will
-          be ignored even if it is still written in the PDF.
-        </p>
         <div class="sc-row sc-row--lg">
           <button id="rescanConflictsBtn"
                   class="sc-btn sc-btn--primary">
@@ -434,21 +411,10 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="gapsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromGaps">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Content Gaps</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-blue">
-        <p class="sc-lead">
-          Every time the assistant has to say <em>"I don't have that information"</em>, the question is
-          recorded here and grouped with similar ones. This is a ranked list of what students want to
-          know that <strong>no uploaded document answers</strong> — so instead of guessing what to
-          upload next, you can start at the top. Mark a topic as covered once you've uploaded a
-          document for it; if students keep asking, it reopens itself automatically.
-        </p>
         <div class="sc-statrow">
           <div>
             <div id="gapStatTopics" class="sc-stat-num">–</div>
@@ -488,21 +454,10 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="feedbackSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromFeedback">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Answer Quality</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-red">
-        <p class="sc-lead">
-          Students rate answers with 👍 / 👎. Each vote is stored with the
-          <strong>documents and pages the answer came from</strong>, so a thumbs-down is not
-          just a complaint — it points at the file to fix. The list below ranks the
-          <strong>documents that attract the most downvotes</strong>. A file at the top is
-          being read and is misleading people.
-        </p>
         <div class="sc-statrow">
           <div>
             <div id="fbStatHelpful" class="sc-stat-num sc-stat-num--ok">–</div>
@@ -548,19 +503,10 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="escalationsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromEscalations">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Ask a Human</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-violet">
-        <p class="sc-lead">
-          When the assistant cannot help, the student can forward the question to a real
-          office instead of leaving unanswered. <strong>Each row is a person waiting for a
-          reply.</strong> Contact them, then mark it answered.
-        </p>
         <div class="sc-statrow">
           <div>
             <div id="escStatPending" class="sc-stat-num sc-stat-num--violet">–</div>
@@ -603,20 +549,10 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="calendarSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromCalendar">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Academic Calendar</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-green">
-        <p class="sc-lead">
-          A date in a PDF is a fact; a deadline is a fact <em>plus</em> how far away it is.
-          Periods entered here let the assistant say <strong>"enrollment closes in 12 days"</strong>
-          instead of reciting <em>June 1&ndash;15</em> and leaving the student to work it out —
-          and stop it describing a date that has already passed as upcoming.
-        </p>
         <div class="sc-statrow">
           <div>
             <div id="calStatActive" class="sc-stat-num sc-stat-num--green">–</div>
@@ -746,22 +682,10 @@
          is re-uploaded the answer no longer matters. -->
     <div id="announcementsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToAnalyticsFromAnnouncements">
-          <i class="fas fa-arrow-left"></i>
-          Back to Overview
-        </button>
         <h2>Announcements</h2>
       </div>
 
       <div class="sc-card sc-mb sc-accent-amber">
-        <p class="sc-lead">
-          Anything posted here does two things at once: it is <strong>pinned at the top of the
-          chat</strong> for every student who opens it, and it is given to the assistant as
-          <strong>higher authority than the documents</strong>. So "classes are suspended
-          tomorrow" both shows up unprompted and changes the answer to
-          <em>"may klase ba bukas?"</em> — which the handbook would otherwise answer with the
-          regular schedule, confidently and wrongly.
-        </p>
         <div class="sc-statrow">
           <div>
             <div id="annStatActive" class="sc-stat-num sc-stat-num--amber">–</div>
@@ -1344,7 +1268,7 @@
       $('.header-left span').text('Overview');
       // Every "back" button lands here, and none of them clicks a menu item, so
       // the click recorder in dashboard.js cannot see them. Without this line,
-      // leaving Uploads via "Back to Overview" and then reloading would put you
+      // leaving Uploads via the sidebar and then reloading would put you
       // back on Uploads — the stored screen would be a place you had left.
       if (window.rememberSection) window.rememberSection('analyticsMenuItem');
       // Charts build on first reveal, not on page load. Chart.js measures the
