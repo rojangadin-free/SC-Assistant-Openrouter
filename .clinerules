@@ -1,0 +1,14 @@
+For every UI task:
+
+1. Build using the existing Flask + Jinja architecture.
+2. Do not introduce React, Next.js, or Vite.
+3. Use Tailwind CSS and reusable HTML/Jinja components.
+4. Use Context7 when library/API documentation is needed.
+5. Use Playwright to inspect the actual running application.
+6. Run the UI/UX design audit after implementation.
+7. Fix the highest-impact audit findings.
+8. Check responsive behavior at mobile, tablet, and desktop widths.
+9. Check accessibility, contrast, typography, spacing, hierarchy,
+   alignment, consistency, and interaction states.
+10. Re-run the audit and Playwright after fixes.
+11. Do not consider the task finished until the UI is polished.

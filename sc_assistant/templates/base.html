@@ -2,9 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  {# `maximum-scale=1.0, user-scalable=no` used to be here. Both are gone: they
+     disable pinch-zoom, which is the one tool a student with weak eyesight has
+     for text an app renders too small — and this app is mostly read on phones.
+
+     They were there to stop iOS zooming the page when an input is focused, but
+     that behaviour is triggered by an input font-size below 16px, not by zoom
+     being allowed. The composer already pins itself to 16px for exactly this
+     reason (see .message-input), so the guard is unnecessary and only costs
+     accessibility. #}
   <meta name="viewport"
-        content="width=device-width, initial-scale=1.0, maximum-scale=1.0,
-                 user-scalable=no, viewport-fit=cover">
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
 
   <title>{% block title %}Samar College AI-Assistant{% endblock %}</title>
 
@@ -30,19 +39,99 @@
         href="{{ url_for('static', filename='images/icon-192.png') }}">
 
 
+  {# ── Typography ─────────────────────────────────────────────────────────
+     Inter used to be pulled in by an @import at the top of main.css, auth.css and
+     dashboard.css. An @import is discovered only after the stylesheet holding it
+     has been downloaded and parsed, so the font could not start loading until a
+     round-trip had already been spent — the page painted in a fallback face and
+     then reflowed once the real one arrived.
+
+     As a <link> here it is discovered in the first parse of the HTML, and the two
+     preconnects open the TCP+TLS handshake to Google's two hosts (the CSS is
+     served from fonts.googleapis.com, the font files themselves from
+     fonts.gstatic.com) before the request that needs them exists. crossorigin is
+     required on the gstatic hint: fonts are fetched in CORS mode, and a hint
+     without it opens a connection the font request cannot reuse.
+
+     wght@300..800 is the variable font — one file covering the whole range,
+     instead of the four static cuts this used to request. That also fixes real
+     faux-bold: `font-weight: 800` is used by the announcement kind label and the
+     dashboard's activity feed, and 800 was never among the loaded weights, so the
+     browser was smearing 700 to fake it.
+
+     The range starts at 300, not 400, because the answer text is set in Light
+     (see --weight-light). This is load-bearing: browsers synthesise bolder
+     weights but never lighter ones, so a `font-weight: 300` against a font whose
+     range began at 400 would silently clamp back to 400 and the lighter text
+     would simply not happen. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap">
+
+
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
         rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+
 
   <link rel="stylesheet"
         type="text/css"
         href="{{ url_for('static', filename='css/main.css') }}"/>
 
   {% block extra_head %}{% endblock %}
+
+  {# ── Polish layer ───────────────────────────────────────────────────────
+     Last on purpose. extra_head is where each page pulls in chat.css /
+     auth.css / dashboard.css, and this sheet exists to correct values those
+     sheets set literally — 68 text pairs below the WCAG 4.5:1 minimum, ten
+     touch targets under 44px, and a type scale that was 64 unrelated sizes.
+     Equal-specificity rules only win by coming later, so it has to sit below
+     the block, not above it. See the header of polish.css. #}
+  <link rel="stylesheet"
+        type="text/css"
+        href="{{ url_for('static', filename='css/polish.css') }}"/>
+
+  {# ── Console layer ──────────────────────────────────────────────────────
+     The visual language: white app frame, one rounded content shell inset from
+     it, hairline-bordered cards inside, pill navigation. Below polish.css
+     because it re-shapes some of the same properties (radii on cards and
+     controls, the sidebar active state) and needs to win — again purely on
+     source order, since the selectors have equal specificity.
+
+     It adds no colours of its own: every accent resolves to --sc-green or
+     --sc-yellow. See the header of console.css. #}
+  <link rel="stylesheet"
+        type="text/css"
+        href="{{ url_for('static', filename='css/console.css') }}"/>
 </head>
+
 <body
   class="{% block body_class %}{% endblock %}"
   {% block body_attrs %}{% endblock %}>
+
+{# First tab stop on every page. Without it a keyboard user walks the whole
+   sidebar — every past conversation included — before reaching the composer,
+   on every single page load. Invisible until focused (see .skip-link).
+
+   The target is a block, not a fixed id, because chat.html replaces the whole
+   `layout` block and so has no .page-content to land on — it overrides this
+   with its own region's id. A skip link pointing at an anchor that is not on
+   the page is worse than no skip link: it reports success and moves nothing. #}
+{# One caveat worth writing down, because it looks like a bug and is not.
+
+   chat.js autofocuses the composer on load, so on /chat the FIRST Tab does not
+   land here — it moves forward from the composer, which sits near the end of the
+   document. I checked this in the browser: the link is index 0 of the focusable
+   order, so Tab reaches it from the top of the document (F5 then Tab, or
+   Shift+Tab from the composer), and once focused it slides to top:8px with the
+   ring on and its target takes focus.
+
+   The temptation is to "fix" it by removing the autofocus. Don't: on a chat app
+   the composer is the thing every user came to use, and a keyboard user still
+   has Shift+Tab. Making the skip link the literal first stop would cost every
+   student one extra keystroke per page load to save one for a few. #}
+<a class="skip-link" href="#{% block main_anchor %}main-content{% endblock %}">Skip to main content</a>
 
 {% block layout %}
   <div class="sidebar" id="sidebar">
@@ -51,7 +140,10 @@
 
   <div class="main-section">
     {% include "partials/header.html" %}
-    <div class="page-content">
+    {# tabindex="-1" so the skip link above can actually move focus here:
+       a plain <div> is not focusable and the browser would move the viewport
+       without moving the caret, leaving the next Tab back at the sidebar. #}
+    <div class="page-content" id="main-content" tabindex="-1">
       {% block content %}{% endblock %}
     </div>
   </div>

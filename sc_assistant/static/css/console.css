@@ -1,0 +1,978 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   console.css — the "console" visual language
+
+   A re-skin of the existing markup to the layout idiom in the reference design:
+   a white app frame, one large rounded content shell inset from the page, and
+   hairline-bordered cards inside it. No new components, no new framework — every
+   selector below already exists in main.css / dashboard.css / chat.css /
+   auth.css / admin-components.css.
+
+   COLOUR SCHEME IS UNCHANGED. The reference uses a blue accent; every accent
+   here is still Samar green (--sc-green) and school gold (--sc-yellow). What is
+   copied is the *structure*: surface layering, radii, hairlines, the pill nav,
+   grouped sidebar labels, tinted icon chips, outline chip buttons, and the thin
+   accent bar under a stat card.
+
+   Loads after polish.css, which is itself last. Same reason: these are
+   equal-specificity overrides of literal values in the older sheets, and
+   equal-specificity rules only win on source order.
+
+   ── The one thing to know before editing ──────────────────────────────────
+   In this app --bg-main and --bg-surface are BOTH #f9f9f9 in light mode. The
+   reference layers three surfaces (page → shell → card), so a straight port
+   would have produced one flat grey field with invisible card edges. Hence
+   --con-canvas / --con-surface below: the canvas is a shade cooler than the
+   surface, and card-on-shell is deliberately the same white separated by a
+   hairline — which is exactly what the reference does. Do not "fix" cards to a
+   different fill; the border is the boundary.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surfaces. Canvas sits behind the shell and shows as the gutter around it. */
+  --con-canvas:  #f2f3f5;
+  --con-surface: #ffffff;
+
+  /* Radii. One shell value, one card value, one control value — the reference
+     uses three and no more, which is what keeps it from looking busy. */
+  --con-r-shell: 20px;
+  --con-r-card:  16px;
+  --con-r-ctl:   10px;
+
+  /* Brand tint for nav pills, hover states and icon chips. Alpha over the
+     surface rather than a baked pastel, so it survives both themes and any
+     card fill it lands on. */
+  --con-tint:        rgba(13, 69, 3, 0.06);
+  --con-tint-strong: rgba(13, 69, 3, 0.10);
+  --con-nav-ink:     var(--sc-green);
+
+  /* Shadows are nearly invisible on purpose: in this idiom depth comes from the
+     hairline, not from a drop shadow. The lift variant is for hover only. */
+  --con-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --con-lift:   0 8px 20px -8px rgba(16, 24, 40, 0.14),
+                0 2px 6px -2px rgba(16, 24, 40, 0.06);
+
+  /* Per-card accent, overridden by the .sc-accent-* classes already in the
+     dashboard markup. Default is the school green. */
+  --con-accent: var(--sc-green);
+}
+
+[data-theme="dark"] {
+  --con-canvas:  #0c0e12;
+  --con-surface: #16181d;
+
+  /* Deep green has no contrast against a dark card, so the tint and the nav ink
+     both move to the light green already proven at 6.8:1 here (--ui-green-ink,
+     set in polish.css). */
+  --con-tint:        rgba(70, 198, 43, 0.10);
+  --con-tint-strong: rgba(70, 198, 43, 0.16);
+  --con-nav-ink:     var(--ui-green-ink);
+
+  --con-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --con-lift:   0 8px 20px -8px rgba(0, 0, 0, 0.6);
+}
+
+
+/* ── 1. App frame ─────────────────────────────────────────────────────────
+   Sidebar and header are the white frame; the canvas is only ever seen as the
+   gutter around the content shell. */
+
+/* Three elements can be the grey behind a page, and they must all be the SAME
+   grey or the app changes colour when you navigate.
+
+   `body` alone was not enough. On the dashboard the column wrapper
+   `.main-section` paints --bg-main (#f9f9f9) over the whole viewport, so body's
+   canvas never showed there — the admin gutter was #f9f9f9 while /chat, which
+   has no such wrapper, showed #f2f3f5. Two greys, one app, and the difference
+   is only visible when you move between the two pages, which is the worst place
+   for it. Measured, not guessed: elementsFromPoint on both routes named
+   .main-section as the painted layer on one and .messages-container on the
+   other. */
+body,
+.main-section { background: var(--con-canvas); }
+
+
+.sidebar {
+  background: var(--con-surface);
+  border-right: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.sidebar-header {
+  border-bottom: 1px solid var(--border);
+  min-height: 60px;
+}
+
+.header {
+  background: var(--con-surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: none;
+  min-height: 60px;
+}
+
+.header-left span {
+  font-size: 1rem;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+/* The reference's top-right cluster: bare circular icon buttons that only grow
+   a surface on hover. The 44px floor from polish.css still applies — this
+   changes the shape and the resting state, not the hit area. */
+.theme-toggle,
+.replies-toggle,
+.hamburger-menu,
+.collapse-btn {
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out),
+              color var(--dur-fast) var(--ease-in-out);
+}
+
+.theme-toggle:hover,
+.replies-toggle:hover,
+.hamburger-menu:hover,
+.collapse-btn:hover {
+  background: var(--con-tint);
+  border-color: var(--border);
+  color: var(--con-nav-ink);
+}
+
+
+/* ── 2. Content shell ────────────────────────────────────────────────────
+   One rounded panel holding the whole page, inset from the frame. This is the
+   single most recognisable thing about the reference layout.
+
+   No min-width is set here. .content-area is part of the flex chain that
+   carries `min-width: 0` (see the drawer section of docs/UI_POLISH.md) and
+   re-introducing an intrinsic floor would bring back 294px of sideways scroll
+   on a phone. */
+
+.page-content { padding: 18px 20px 24px; }
+
+.content-area {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--con-r-shell);
+  box-shadow: var(--con-shadow);
+  padding: 1.5rem 1.75rem 2rem;
+}
+
+.dashboard-header { margin-bottom: 1.75rem; }
+
+.dashboard-header h1 {
+  font-size: var(--step-3, 1.75rem);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.022em;
+  line-height: 1.15;
+}
+
+.dashboard-header p,
+.dashboard-header .sc-lead { color: var(--ui-muted); }
+
+
+/* ── 3. Sidebar navigation ───────────────────────────────────────────────
+   Grouped labels + pill rows. The markup already has .menu-group wrappers
+   (added when the ten dashboard sections were grouped by job); the reference
+   sets those as small uppercase eyebrow labels, which is what they become. */
+
+.menu-group {
+  padding: 1.1rem 0.75rem 0.35rem;
+  margin: 0;
+  border: 0;
+}
+
+.menu-group span {
+  font-size: 0.6875rem;              /* 11px — an eyebrow, not a heading */
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+}
+
+.menu-item {
+  border-radius: var(--con-r-ctl);
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  margin: 2px 0;
+  font-size: 0.875rem;
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  border-left: 0;                    /* the old active marker was a left bar */
+  transition: background var(--dur-fast) var(--ease-in-out),
+              color var(--dur-fast) var(--ease-in-out);
+}
+
+.menu-item i {
+  width: 20px;
+  text-align: center;
+  font-size: 0.95rem;
+  color: var(--text-tertiary);
+  transition: color var(--dur-fast) var(--ease-in-out);
+}
+
+.menu-item:hover { background: var(--con-tint); color: var(--text-primary); }
+.menu-item:hover i { color: var(--con-nav-ink); }
+
+/* The tinted pill is the whole "where am I" signal in this idiom — no bar, no
+   fill flip. Ink is --con-nav-ink, which is the green already measured at
+   10.67:1 light / 6.8:1 dark. */
+.menu-item.active {
+  background: var(--con-tint-strong);
+  color: var(--con-nav-ink);
+  font-weight: var(--weight-semibold);
+}
+.menu-item.active i { color: var(--con-nav-ink); }
+
+/* Counts sit hard right, as in the reference's notification badge. */
+.menu-item .sc-count { margin-left: auto; }
+
+.menu-divider { margin: 0.85rem 0.75rem; }
+
+/* "New chat" / "Back to…" is the one filled control in the sidebar. */
+.new-chat-btn {
+  border-radius: var(--con-r-ctl);
+  font-weight: var(--weight-semibold);
+  font-size: 0.875rem;
+  gap: 0.6rem;
+}
+
+.conversation-header {
+  font-size: 0.6875rem;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+  padding: 1.1rem 0.75rem 0.35rem;
+}
+
+.conversation-item {
+  border-radius: var(--con-r-ctl);
+  font-size: 0.85rem;
+}
+.conversation-item:hover { background: var(--con-tint); }
+.conversation-item.active {
+  background: var(--con-tint-strong);
+  color: var(--con-nav-ink);
+}
+
+.user-account-section { border-top: 1px solid var(--border); }
+
+.user-account-button {
+  border-radius: var(--con-r-ctl);
+  font-size: 0.875rem;
+  font-weight: var(--weight-medium);
+}
+.user-account-button:hover { background: var(--con-tint); }
+
+.user-dropdown {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--con-surface);
+  box-shadow: var(--con-lift);
+  overflow: hidden;
+}
+
+.dropdown-item { font-size: 0.85rem; }
+.dropdown-item:hover { background: var(--con-tint); }
+
+
+/* ── 4. Cards ────────────────────────────────────────────────────────────
+   Same fill as the shell, separated by a hairline. Shadow only on hover. */
+
+.sc-card,
+.sc-emptycard,
+.stat-card,
+.chart-card,
+.activity-section,
+.upload-section,
+.user-list-container,
+.top-queries-card {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--con-r-card);
+  box-shadow: none;
+}
+
+/* The old hover turned the border school-gold and lifted the card 2px. Gold on
+   a white card at 1px reads as a warning, and a 2px jump under the cursor
+   makes a grid of KPIs twitch. Shadow only. */
+.stat-card {
+  transition: box-shadow var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out);
+}
+.stat-card:hover {
+  transform: none;
+  border-color: var(--border);
+  box-shadow: var(--con-lift);
+}
+
+.sc-card + .sc-card { margin-top: 1.25rem; }
+
+.stats-container { gap: 1.25rem; }
+
+
+/* ── 5. Accent bar ───────────────────────────────────────────────────────
+   The reference marks a stat card with a thin rounded rule at the BOTTOM, inset
+   to the card's padding. The dashboard already tags its cards with
+   .sc-accent-{yellow,blue,red,violet,green,amber} — those were 4px solid top
+   borders, which is the loudest possible version of the same idea. Same
+   classes, same hues, quieter execution: the class now only sets --con-accent
+   and the bar is drawn by ::after. */
+
+.sc-accent-yellow { --con-accent: var(--sc-yellow); }
+.sc-accent-blue   { --con-accent: #3b82f6; }
+.sc-accent-red    { --con-accent: #ef4444; }
+.sc-accent-violet { --con-accent: #8b5cf6; }
+.sc-accent-green  { --con-accent: #22c55e; }
+.sc-accent-amber  { --con-accent: #f59e0b; }
+
+.sc-accent-yellow,
+.sc-accent-blue,
+.sc-accent-red,
+.sc-accent-violet,
+.sc-accent-green,
+.sc-accent-amber {
+  border-top: 1px solid var(--border);   /* was 4px solid <accent> */
+  position: relative;
+}
+
+/* Inset left/right so no overflow:hidden is needed — clipping the card would
+   also clip any dropdown or tooltip that escapes it. */
+.sc-accent-yellow::after,
+.sc-accent-blue::after,
+.sc-accent-red::after,
+.sc-accent-violet::after,
+.sc-accent-green::after,
+.sc-accent-amber::after {
+  content: "";
+  position: absolute;
+  left: 1.5rem;
+  right: 1.5rem;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--con-accent);
+}
+
+
+/* ── 6. Icon chips ───────────────────────────────────────────────────────
+   The reference's signature detail: a ~36px rounded square with a tinted fill
+   holding the icon. These four already exist as circles or large squares. */
+
+.stat-icon,
+.upload-icon,
+.file-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: var(--con-tint-strong);
+  color: var(--con-nav-ink);
+  font-size: 1rem;
+}
+
+/* Circle → rounded square, so the activity feed matches the cards above it. */
+.activity-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--con-tint);
+  color: var(--con-nav-ink);
+  font-size: 0.85rem;
+}
+
+/* A chip inside an accented card takes that card's hue, which is how the
+   reference colour-codes its four KPI tiles without adding any markup. */
+.sc-accent-yellow .stat-icon,
+.sc-accent-blue   .stat-icon,
+.sc-accent-red    .stat-icon,
+.sc-accent-violet .stat-icon,
+.sc-accent-green  .stat-icon,
+.sc-accent-amber  .stat-icon {
+  background: color-mix(in srgb, var(--con-accent) 14%, transparent);
+  color: var(--con-accent);
+}
+
+
+/* ── 7. Numbers and labels ───────────────────────────────────────────────
+   Big, tight, tabular. Label above in muted sentence case — the caps-and-
+   letterspacing treatment these had is a data-table idiom, not a KPI one. */
+
+.stat-number,
+.sc-stat-num {
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.022em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+
+.stat-number { font-size: clamp(1.6rem, 1.3rem + 1vw, 2rem); }
+.sc-stat-num { font-size: clamp(1.5rem, 1.25rem + 0.9vw, 1.9rem); }
+
+.sc-stat-cap,
+.stat-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8125rem;
+  font-weight: var(--weight-medium);
+  color: var(--ui-muted);
+}
+
+.sc-h3,
+.chart-card h3,
+.activity-section h3,
+.user-list-container h3,
+.upload-title {
+  font-size: 1rem;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.011em;
+  color: var(--text-primary);
+}
+
+.sc-lead,
+.sc-lead--sm { color: var(--ui-muted); }
+
+
+/* ── 8. Controls ─────────────────────────────────────────────────────────
+   The reference's button vocabulary is exactly two shapes: a solid primary and
+   an outline chip with an icon. Everything here collapses onto those. */
+
+.sc-btn,
+.upload-button,
+.back-button,
+.login-button {
+  border-radius: var(--con-r-ctl);
+  font-weight: var(--weight-semibold);
+  transition: background var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out),
+              box-shadow var(--dur-fast) var(--ease-in-out);
+}
+
+.sc-btn--primary:hover,
+.upload-button:hover {
+  background: var(--sc-green-light);
+  transform: none;                   /* was a 1px lift */
+  box-shadow: var(--con-shadow);
+}
+
+/* Outline chip. */
+.sc-btn--ghost,
+.back-button {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.sc-btn--ghost:hover,
+.back-button:hover {
+  background: var(--con-tint);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+/* The chat page's FAQ suggestions are the same outline chip. They were #f9f9f9,
+   which was fine on the old #f9f9f9 page but sits almost invisibly on the
+   canvas — a suggestion you have to hunt for is not a suggestion. White fill
+   and a hairline make them read as tappable objects on the grey. */
+.faq-btn {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out),
+              color var(--dur-fast) var(--ease-in-out);
+}
+.faq-btn:hover {
+  background: var(--con-tint);
+  border-color: var(--con-nav-ink);
+  color: var(--con-nav-ink);
+}
+
+
+.sc-pill {
+  border-width: 1px;
+  background: var(--con-surface);
+  padding: 0.4rem 0.9rem;
+}
+.sc-pill:hover { background: var(--con-tint); }
+.sc-pill.active {
+  background: var(--con-tint-strong);
+  border-color: var(--con-nav-ink);
+  color: var(--con-nav-ink);
+  font-weight: var(--weight-semibold);
+}
+
+.sc-input,
+.sc-textarea,
+.sc-select,
+.sc-input-inline,
+.form-input,
+.code-input {
+  border-radius: var(--con-r-ctl);
+  background: var(--con-surface);
+  transition: border-color var(--dur-fast) var(--ease-in-out),
+              box-shadow var(--dur-fast) var(--ease-in-out);
+}
+
+/* One focus treatment for every field: green hairline + a 3px tinted ring.
+   Distinct from the :focus-visible outline polish.css gives keyboard users, and
+   both can show at once without fighting. */
+.sc-input:focus,
+.sc-textarea:focus,
+.sc-select:focus,
+.sc-input-inline:focus,
+.form-input:focus,
+.code-input:focus {
+  outline: none;
+  border-color: var(--con-nav-ink);
+  box-shadow: 0 0 0 3px var(--con-tint-strong);
+}
+
+.upload-area {
+  border-radius: 14px;
+  border: 1px dashed var(--border);
+  background: var(--con-canvas);
+}
+.upload-area:hover,
+.upload-area.dragover {
+  border-color: var(--con-nav-ink);
+  background: var(--con-tint);
+}
+
+.file-item {
+  border-radius: 12px;
+  background: var(--con-surface);
+}
+.file-item:hover { border-color: var(--con-nav-ink); background: var(--con-tint); }
+
+.file-action { border-radius: 8px; }
+.file-action:hover { background: var(--con-tint); color: var(--con-nav-ink); }
+
+
+/* ── 9. Tables, tabs, empty states ───────────────────────────────────────── */
+
+.table-wrapper { border-radius: 14px; }
+.sc-scroll-x   { border-radius: 14px; }
+
+/* The <tr> is included, not just the cells, because an older rule fills the
+   header row itself with #f9f9f9 and both tables are border-collapse:collapse
+   (checked) — so the th cells cover the row edge to edge and nothing shows
+   today. This is housekeeping, not a visible fix: leaving the row on the old
+   grey under cells on the new one is a trap for whoever next makes a header
+   cell transparent. Note #reportsTable still wins the row with an ID selector;
+   harmless for the same reason.
+
+   border-collapse:collapse also means the row's border-bottom and the cell's
+   collapse into one hairline rather than stacking into a 2px rule. */
+.sc-th,
+.sc-table thead tr,
+.analytics-table thead tr {
+  background: var(--con-canvas);
+  border-bottom: 1px solid var(--border);
+}
+
+
+
+.sc-table tbody tr { transition: background var(--dur-fast) var(--ease-in-out); }
+.sc-table tbody tr:hover { background: var(--con-tint); }
+
+.sc-tabs { gap: 0.4rem; }
+
+/* Centred muted line, as in the reference's "No announcements at this time",
+   with a hairline above it so the empty area still reads as part of the card. */
+.sc-empty,
+.sc-emptycard {
+  color: var(--ui-muted);
+  font-size: 0.875rem;
+}
+
+.query-item { border-radius: 10px; }
+.query-item:hover { background: var(--con-tint); }
+.query-count-badge {
+  border-radius: 999px;
+  background: var(--con-tint-strong);
+  color: var(--con-nav-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* ── 10. Overlays ───────────────────────────────────────────────────────── */
+
+.confirm-box {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  box-shadow: var(--con-lift);
+}
+.confirm-button { border-radius: var(--con-r-ctl); font-weight: var(--weight-semibold); }
+
+/* The toast was the last thing in the app still on #f9f9f9. It floats above
+   whatever is behind it, so it needs to be a surface, not a near-canvas grey. */
+.notification {
+  border-radius: 14px;
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--con-lift);
+}
+
+
+
+/* ── 11. Chat ────────────────────────────────────────────────────────────
+   No shell here: a conversation wants the full column. What it takes from the
+   reference is the composer — a hairline-bordered rounded field that lights up
+   on focus — and the same radii on bubbles. */
+
+.chat-section { background: var(--con-canvas); }
+
+/* The composer's wrapper is a max-width:800px panel centred in a 1180px column,
+   and chat.css fills it with --bg-surface (#f9f9f9). That was invisible while
+   --bg-main and --bg-surface were the same grey; the moment this sheet moved the
+   page canvas to #f2f3f5 it became two near-identical greys meeting at a hard
+   vertical edge, reading as a grey box either side of the input.
+
+   Painted with the canvas rather than set to `transparent`: these wrappers sit
+   above a scrolling message list, and a transparent strip would let a long
+   answer show through underneath the composer. Same fill as the parent, so
+   there is no seam, and still opaque. */
+.chat-input-area,
+.messages-container {
+  background: var(--con-canvas);
+}
+
+/* A pill, and shorter: 70px tall with a 16px radius read as a form field, which
+   is not what a chat composer is. Halving the 8px padding took it to 62px
+   (measured — the floor is the 44px button row, which is the touch-target
+   minimum this project enforces, so 54px is as short as this can honestly go
+   and the remaining 8px is button margin inside chat.css).
+
+   31px is exactly half of 62, which is what makes the ends true semicircles.
+   Not 999px: this textarea grows to 150px for a long draft and 999px on a
+   150px box is a stadium, whereas a fixed half-height radius is a perfect pill
+   at rest and a well-rounded rectangle once it grows (verified at both). */
+.message-form {
+  border-radius: 31px;
+
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  background: var(--con-surface);
+  box-shadow: var(--con-shadow);
+  transition: border-color var(--dur-fast) var(--ease-in-out),
+              box-shadow var(--dur-fast) var(--ease-in-out);
+}
+
+/* The text sits on the pill's centre line, and getting there is arithmetic, not
+   `align-items`. The form is align-items:flex-end — correct, because when the
+   textarea grows for a long draft the buttons should stay at the bottom rather
+   than drift to the middle of a tall box. But flex-end also means a textarea
+   shorter than the 44px button row gets pushed to the bottom of it: my first
+   pass set min-height:40px and that is exactly the 4px of low-looking text.
+
+   Matching the field to the 44px row (10 + 24 line-height + 10) was necessary
+   but not sufficient — measured, the text was still 4px low, because the flex
+   line is 52px tall, not 44px, so a 44px field pinned to flex-end still hangs
+   below the middle. `align-self: center` overrides the form's alignment for
+   this one child: the field centres in the line while the buttons stay pinned
+   to the bottom, which is what you want the moment a long draft makes the field
+   the tallest thing in the row. */
+.message-input {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 20px;
+  align-self: center;
+}
+
+
+
+/* Attach and mic are bare icons at rest, like the reference — the filled send
+   button should be the only weight in the pill. Kept at 44x44: that is the
+   touch-target floor this project already enforces (docs/UI_POLISH.md), so the
+   circle shrinks visually via the icon size, not the hit area. */
+.message-form .upload-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  transition: background var(--dur-fast) var(--ease-in-out),
+              color var(--dur-fast) var(--ease-in-out);
+}
+.message-form .upload-btn:hover {
+  background: var(--con-tint);
+  color: var(--con-nav-ink);
+}
+
+.send-button { font-size: 0.9rem; }
+
+
+.message-form:focus-within {
+  border-color: var(--con-nav-ink);
+  box-shadow: 0 0 0 3px var(--con-tint-strong);
+}
+
+.message-bubble { border-radius: 14px; }
+
+.message.assistant .message-bubble {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+}
+
+
+/* ── 12. Auth ────────────────────────────────────────────────────────────
+   The login card is the shell for that page: same radius, same hairline, one
+   step softer shadow because it floats on the canvas rather than being inset
+   into a frame. */
+
+.login-container {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--con-r-shell);
+  box-shadow: var(--con-lift);
+  padding: 2rem;
+}
+
+.logo { border-radius: 18px; }
+
+.step-number { font-variant-numeric: tabular-nums; }
+
+.login-button:hover { background: var(--sc-green-light); transform: none; }
+
+
+/* ── 12b. Card-header icon chips, without touching the markup ────────────
+   Nine card headings across the dashboard already open with an inline icon:
+   `<h3 class="sc-h3"><i class="fas fa-eye" style="color:#8b5cf6;"></i>&nbsp;…`.
+   That is the reference's header shape already in the DOM — it just was not
+   drawn as a chip.
+
+   The fill is `color-mix(… currentColor 14% …)`, so the chip tint is derived
+   from whatever colour the heading's icon already has. That matters: those
+   colours are inline styles, which beat any stylesheet, so trying to set the
+   pair from here would have produced a tinted box around an icon of an
+   unrelated hue on every card. Deriving it means one rule covers all nine and
+   any future one, with no colour to keep in sync. */
+
+.sc-h3 > i:first-child,
+.sc-cardhead h3 > i:first-child,
+.upload-header .upload-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 0.8rem;
+  vertical-align: middle;
+}
+
+/* The heading text sits beside a 30px box, so it needs the line box to match
+   or the following paragraph rides up against it. */
+.sc-h3,
+.sc-cardhead h3 { line-height: 1.45; }
+
+
+/* ── 12c. Overview: KPI tiles, charts, tables ────────────────────────────
+   The Overview screen does not use .stat-card at all — it has its own
+   .analytics-* family, which is why the earlier chip and card rules did not
+   reach the tiles this page actually shows. These are the reference's "Usage at
+   a glance" cells: label, big number, supporting line, thin accent rule. */
+
+.analytics-toolbar {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.75rem 1rem;
+  gap: 0.75rem;
+}
+
+.analytics-muted { color: var(--ui-muted); }
+
+.analytics-kpis { gap: 1.25rem; }
+
+.analytics-kpi {
+  position: relative;
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--con-r-card);
+  padding: 1.1rem 1.25rem 1.35rem;
+  box-shadow: none;
+  transition: box-shadow var(--dur-base) var(--ease-out);
+}
+.analytics-kpi:hover { box-shadow: var(--con-lift); }
+
+.analytics-kpi-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: var(--weight-medium);
+  color: var(--ui-muted);
+}
+
+.analytics-kpi-value {
+  margin: 0;
+  font-size: clamp(1.7rem, 1.4rem + 1vw, 2.1rem);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.022em;
+  line-height: 1.05;
+  /* The KPIs poll every refresh and three of the four are percentages. Without
+     tabular figures a 9% → 10% tick shifts the whole line. */
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.analytics-kpi-delta {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+}
+
+/* Accent rule along the bottom, one hue per tile so the four are
+   distinguishable at a glance — the same trick as .sc-accent-* above, applied
+   positionally because these four tiles carry no accent class. The hues are the
+   ones already in this dashboard's chart palette; nothing new is introduced. */
+.analytics-kpi::after {
+  content: "";
+  position: absolute;
+  left: 1.25rem;
+  right: 1.25rem;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--con-accent);
+}
+.analytics-kpi:nth-child(1) { --con-accent: #3b82f6; }
+.analytics-kpi:nth-child(2) { --con-accent: #22c55e; }
+.analytics-kpi:nth-child(3) { --con-accent: var(--sc-yellow); }
+.analytics-kpi:nth-child(4) { --con-accent: #8b5cf6; }
+
+.analytics-card {
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--con-r-card);
+  box-shadow: none;
+}
+
+.analytics-card-head h3 {
+  font-size: 1rem;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.011em;
+  color: var(--text-primary);
+}
+
+.analytics-grid { gap: 1.25rem; }
+
+.analytics-select,
+.btn-secondary {
+  border-radius: var(--con-r-ctl);
+  border: 1px solid var(--border);
+  background: var(--con-surface);
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out);
+}
+.btn-secondary:hover { background: var(--con-tint); color: var(--text-primary); }
+.analytics-select:focus {
+  outline: none;
+  border-color: var(--con-nav-ink);
+  box-shadow: 0 0 0 3px var(--con-tint-strong);
+}
+
+.table-container { border-radius: 14px; }
+
+.analytics-table th {
+  background: var(--con-canvas);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ui-muted);
+}
+.analytics-table td { font-variant-numeric: tabular-nums; }
+.analytics-table tbody tr { transition: background var(--dur-fast) var(--ease-in-out); }
+.analytics-table tbody tr:hover { background: var(--con-tint); }
+
+.analytics-empty,
+.analytics-empty-row {
+  color: var(--ui-muted);
+  font-size: 0.875rem;
+}
+
+/* Every dashboard section except Overview opens with a back button and an <h2>.
+   Same weight and tracking as the Overview <h1> so moving between sections does
+   not feel like moving between two apps. */
+.section-header { margin-bottom: 1.5rem; }
+.section-header h2 {
+  font-size: clamp(1.35rem, 1.15rem + 0.7vw, 1.6rem);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.022em;
+  color: var(--text-primary);
+}
+
+
+/* ── 13. Responsive ──────────────────────────────────────────────────────
+
+   The shell loses its inset on a phone: a 20px gutter on a 390px screen costs
+   10% of the reading width to show a decoration. Radius drops with it, because
+   a 20px corner on a full-bleed panel reads as a mistake. */
+
+@media (max-width: 768px) {
+  .page-content { padding: 12px 12px 20px; }
+
+  .content-area {
+    border-radius: 14px;
+    padding: 1.1rem 1rem 1.5rem;
+  }
+
+  .dashboard-header { margin-bottom: 1.25rem; }
+
+  .stats-container { gap: 1rem; }
+
+  .sc-card { padding: 1.1rem 1rem; }
+
+  /* Accent bar follows the reduced card padding. */
+  .sc-accent-yellow::after,
+  .sc-accent-blue::after,
+  .sc-accent-red::after,
+  .sc-accent-violet::after,
+  .sc-accent-green::after,
+  .sc-accent-amber::after { left: 1rem; right: 1rem; }
+
+  .login-container { padding: 1.5rem 1.25rem; border-radius: 16px; }
+}
+
+/* Tablet: the shell stays, the gutter halves. At 820px the sidebar is back to
+   its permanent 260px and the content column is already tight. */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .page-content { padding: 14px 14px 20px; }
+  .content-area { padding: 1.25rem 1.25rem 1.75rem; }
+}
+
+
+/* ── 14. Reduced motion ──────────────────────────────────────────────────
+   Every transition added above is colour, border or shadow — none of them move
+   anything, so there is nothing to freeze mid-flight. Cut the durations anyway:
+   a user who asked for no motion did not ask for a 200ms colour crossfade. */
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-item,
+  .menu-item i,
+  .theme-toggle,
+  .replies-toggle,
+  .hamburger-menu,
+  .collapse-btn,
+  .stat-card,
+  .sc-btn,
+  .upload-button,
+  .back-button,
+  .login-button,
+  .sc-input,
+  .sc-textarea,
+  .sc-select,
+  .sc-input-inline,
+  .form-input,
+  .code-input,
+  .message-form,
+  .sc-table tbody tr {
+    transition-duration: 0.01ms;
+  }
+}

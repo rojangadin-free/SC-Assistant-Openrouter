@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* The Inter @import was removed: dashboard.html extends base.html, which now
+   links the font in <head> with preconnects. Re-importing it here started a
+   second, later request for the same family and delayed the one that mattered. */
+
 
 /* Dashboard Specific Styles (Inherits layout from main.css) */
 :root {
@@ -100,6 +103,24 @@
 .upload-progress { margin-top: 1.5rem; }
 .progress-bar-container { width: 100%; height: 6px; background-color: var(--border); border-radius: 3px; overflow: hidden; margin: 0.5rem 0; }
 .progress-bar { width: 0%; height: 100%; background-color: var(--sc-green); border-radius: 3px; transition: width 0.3s ease; }
+
+/* ---- Per-file indexing progress -------------------------------------------
+   Rendered during an upload job. Each row reports one file's phase and real
+   counter ("Reading document — page 7 of 40"), so a stalled or failed file is
+   identifiable instead of hidden behind a single averaged bar. */
+.file-progress-list { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.file-progress-row { padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-secondary, transparent); }
+.file-progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
+.file-progress-name { font-size: 0.85rem; font-weight: 600; word-break: break-all; }
+.file-progress-pct { font-size: 0.8rem; color: var(--text-secondary); flex-shrink: 0; }
+.file-progress-message { font-size: 0.78rem; color: var(--text-secondary); }
+/* Failure is coloured, not just worded: the error text is the one thing in this
+   panel an admin must not miss. */
+.file-progress-error { border-color: var(--error-color); }
+.file-progress-error .progress-bar { background-color: var(--error-color); }
+.file-progress-error .file-progress-message { color: var(--error-color); }
+.file-progress-done .progress-bar { background-color: var(--sc-green); }
+
 .progress-text { font-size: 0.85rem; color: var(--text-secondary); font-weight: 500; }
 
 .uploaded-files { margin-top: 2rem; }
@@ -114,7 +135,12 @@
 .file-actions { display: flex; gap: 6px; }
 .file-action { width: 32px; height: 32px; border-radius: 6px; background: transparent; border: 1px solid transparent; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; }
 .file-action:hover { background: var(--bg-surface); color: var(--sc-green); border-color: var(--border); }
-.file-action.delete:hover { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+/* Alpha tint rather than the flat #fee2e2 pastel: the ink is var(--ui-danger-ink),
+   which polish.css lightens to #fca5a5 in dark mode, and a light ink on a
+   never-changing light pink is the invisible-glyph bug fixed in the toasts. The
+   tint composites over the current row colour, so the hover reads as a red wash
+   in both themes. */
+.file-action.delete:hover { background: rgba(194, 38, 44, 0.12); color: var(--ui-danger-ink); border-color: rgba(194, 38, 44, 0.35); }
 
 /* Dashboard Sections Visibility */
 .dashboard-section { display: none; animation: fadeIn 0.3s ease; }
@@ -146,15 +172,18 @@
 #userListTable td { color: var(--text-secondary); }
 #userListTable td:first-child { color: var(--text-primary); font-weight: 500; }
 #userListTable .actions-header { text-align: right; }
-#userListTable .status-confirmed { background: #dcfce7; color: #16a34a; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-#userListTable .status-unconfirmed { background: rgba(251,188,5,0.15); color: #d97706; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+/* Was #dcfce7. Its sibling .status-unconfirmed one line below already used an
+   alpha tint for exactly this reason — the two badges sit side by side in the
+   same column and only one of them followed the theme. */
+#userListTable .status-confirmed { background: rgba(18, 120, 60, 0.14); color: var(--ui-success-ink); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+#userListTable .status-unconfirmed { background: rgba(251,188,5,0.15); color: var(--ui-warn-ink); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
 
 #userListTable td:last-child { display: flex; justify-content: flex-end; gap: 6px; }
 #userListTable .file-action { width: 28px; height: 28px; font-size: 0.85rem; border-color: transparent; }
 #userListTable .file-action.edit-user { color: var(--sc-green); }
 #userListTable .file-action.edit-user:hover { background: var(--upload-bg); border-color: var(--upload-border); }
 #userListTable .file-action.delete-user { color: var(--error-color); }
-#userListTable .file-action.delete-user:hover { background: #fee2e2; border-color: #fca5a5; }
+#userListTable .file-action.delete-user:hover { background: rgba(194, 38, 44, 0.12); border-color: rgba(194, 38, 44, 0.35); }
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
@@ -222,3 +251,231 @@
   font-weight: 700;
   white-space: nowrap;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ANALYTICS
+
+   Everything here is scoped under #analyticsSection on purpose. The rest of the
+   admin screens style themselves with inline attributes, so a loose `.card` or
+   `.btn-secondary` in this file would be a rule waiting to collide with markup
+   written months from now by someone who never read it.
+
+   All colours come from the theme variables rather than literals, because the
+   dashboard has a dark mode — a hardcoded #fff panel is invisible in it.
+   ═══════════════════════════════════════════════════════════════ */
+
+#analyticsSection .analytics-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+#analyticsSection .analytics-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+#analyticsSection .analytics-muted {
+  font-size: 0.82rem;
+  color: var(--text-tertiary);
+}
+
+#analyticsSection .analytics-select {
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+#analyticsSection .btn-secondary {
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+#analyticsSection .btn-secondary:hover:not(:disabled) {
+  background: var(--bg-main);
+  color: var(--text-primary);
+}
+/* Disabled means a request is in flight. Without this the button looks clickable
+   while a second click would fire a duplicate fetch. */
+#analyticsSection .btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#analyticsSection .analytics-error {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-left: 4px solid #ef4444;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--ui-danger-ink);
+  font-size: 0.85rem;
+}
+
+/* ── Headline figures ─────────────────────────────────────────── */
+#analyticsSection .analytics-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+#analyticsSection .analytics-kpi {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+  padding: 1rem 1.15rem;
+}
+
+#analyticsSection .analytics-kpi-label {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#analyticsSection .analytics-kpi-value {
+  margin: 0.35rem 0 0.2rem;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+#analyticsSection .analytics-kpi-delta {
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+/* ── Cards and charts ────────────────────────────────────────── */
+#analyticsSection .analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+#analyticsSection .analytics-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+  padding: 1.1rem 1.25rem;
+  min-width: 0;   /* lets a wide table shrink instead of stretching the grid */
+}
+
+/* The day-by-day chart and the tables need the full row: 14 stacked bars or five
+   columns squeezed into a third of the width are unreadable. */
+#analyticsSection .analytics-card-wide {
+  grid-column: 1 / -1;
+}
+
+#analyticsSection .analytics-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+#analyticsSection .analytics-card-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+/* Fixed height, positioned: Chart.js with maintainAspectRatio:false grows to
+   fill its parent, and a parent with auto height grows to fit the canvas — the
+   two together produce a canvas that expands on every resize event. */
+#analyticsSection .analytics-chart {
+  position: relative;
+  height: 260px;
+}
+
+#analyticsSection .analytics-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+  font-size: 0.84rem;
+  color: var(--text-tertiary);
+}
+
+/* ── Tables ──────────────────────────────────────────────────── */
+#analyticsSection .table-container {
+  width: 100%;
+  overflow-x: auto;
+}
+
+#analyticsSection .analytics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+#analyticsSection .analytics-table th {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-main);
+  white-space: nowrap;
+}
+
+#analyticsSection .analytics-table td {
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-primary);
+  vertical-align: top;
+}
+
+#analyticsSection .analytics-table tbody tr:hover td {
+  background: var(--bg-main);
+}
+
+#analyticsSection .analytics-good { color: var(--ui-success-ink); font-weight: 600; }
+#analyticsSection .analytics-bad  { color: var(--ui-danger-ink); font-weight: 600; }
+
+#analyticsSection .analytics-empty-row {
+  padding: 1.75rem 0.75rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.84rem;
+}
+
+/* On a phone the doughnut's side legend eats the chart, and 14 date labels do
+   not fit at any size — give both more vertical room instead. */
+@media (max-width: 640px) {
+  #analyticsSection .analytics-chart { height: 300px; }
+  #analyticsSection .analytics-kpi-value { font-size: 1.5rem; }
+}
+
+

@@ -50,7 +50,13 @@ bp_pwa = Blueprint("pwa", __name__)
 # cost an afternoon of "the fix is not working" when the fix was fine and the
 # browser was serving a copy from June. The fetch handler below now revalidates,
 # so this constant is no longer load-bearing for correctness.
-CACHE_VERSION = "sc-assistant-v2"
+#
+# v3 drops caches written by v2, which may hold a `/files` response from before
+# that path was added to NEVER_CACHE. The new worker would never read it — the
+# prefix check short-circuits ahead of caches.match — but leaving a stale copy of
+# the document list sitting in storage on every admin's browser serves no purpose.
+CACHE_VERSION = "sc-assistant-v3"
+
 
 
 
@@ -156,8 +162,23 @@ const SHELL = %(shell)s;
 
 /* Paths that must always hit the network. Listed as prefixes and checked before
    anything else, because a stale answer — especially a stale announcement —
-   is worse than a visible failure. */
-const NEVER_CACHE = ['/chat', '/api/', '/admin', '/auth', '/logout', '/health'];
+   is worse than a visible failure.
+
+   Note the admin routes that are NOT under /admin. The admin blueprint is
+   registered at the root, so '/files', '/upload' and '/dashboard' are real
+   top-level paths and the '/admin' prefix below does not cover them. Missing
+   them meant the file list was served stale-while-revalidate: after an upload
+   the browser painted the previous list from cache, and only the *next* load
+   showed the new document. The symptom is "I have to reload the page before my
+   file appears", and the reload was doing nothing except giving the background
+   revalidation a chance to land. '/upload' also covers '/upload/status/<id>',
+   which had the same problem and is worse — cached progress means a bar frozen
+   at whatever percentage happened to be cached. */
+const NEVER_CACHE = [
+  '/chat', '/api/', '/admin', '/auth', '/logout', '/health',
+  '/files', '/upload', '/dashboard', '/delete'
+];
+
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

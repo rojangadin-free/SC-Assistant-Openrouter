@@ -89,6 +89,35 @@ def create_app():
         from .pwa import bp_pwa
         app.register_blueprint(bp_pwa)
 
+    # ----------------------------------------------------------------------- #
+    # Warm the cross-encoder before the first question arrives
+    # ----------------------------------------------------------------------- #
+    # `rag/reranker.py` loads its model lazily on first use, which means the
+    # load — several seconds of reading weights off disk — happened *inside* the
+    # first student's request after every deploy and every worker restart. They
+    # paid for it and saw nothing but a blank screen; the second student got the
+    # cached model and a fast answer, which is exactly the pattern that makes
+    # "sometimes it's slow" impossible to reproduce.
+    #
+    # `warmup()` already existed for this and was called from nowhere. It is
+    # called on a background thread so a slow or failed load cannot delay the
+    # server accepting connections: on failure the reranker degrades to the
+    # hybrid retriever's own ordering, which is the same behaviour as before and
+    # not worth blocking a boot over. /health must answer immediately.
+    import threading
+
+    def _warm_reranker():
+        try:
+            from rag.reranker import warmup
+            warmup()
+        except Exception as e:
+            # Deliberately swallowed. A cold reranker answers slower; a crashed
+            # startup thread answers nothing.
+            print(f"[startup] Reranker warmup skipped: {e}")
+
+    threading.Thread(target=_warm_reranker, daemon=True).start()
+
+
 
 
 

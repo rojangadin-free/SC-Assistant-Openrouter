@@ -236,6 +236,30 @@ $(document).ready(function() {
         body.removeClass('sidebar-open');
       }
     });
+
+    // Choosing a destination closes the drawer.
+    //
+    // The dashboard swaps sections in place rather than navigating, so nothing
+    // ever removed .active — the admin tapped "Reports", the section changed
+    // behind the drawer, and the drawer stayed open over it. On a 390px screen
+    // it covers 280px, so the result looks like the app ignored the tap.
+    //
+    // Only on mobile: on desktop the sidebar is permanent navigation and
+    // closing it on every click would be wrong.
+    //
+    // Delegated from document because the dashboard's own handlers bind to
+    // these same elements, and a direct .on() here would depend on which script
+    // ran first. The 180ms delay lets the section switch paint before the
+    // drawer slides away, so the two movements read as one action instead of
+    // the screen changing twice.
+    $(document).on('click', '.menu-item, .sidebar .nav-link, .conversation-item', function() {
+      if (isMobile() && sidebar.hasClass('active')) {
+        setTimeout(function() {
+          sidebar.removeClass('active');
+          body.removeClass('sidebar-open');
+        }, 180);
+      }
+    });
   }
 
   // ===== Notification Helper Function =====

@@ -59,113 +59,153 @@
       </div>
 
     {% elif active_page == 'dashboard' %}
-      <div class="menu-item active" id="overviewMenuItem">
-        <i class="fas fa-table"></i>
+      {# ═══════════════════════════════════════════════════════════════════════
+         ORDER OF THIS MENU
+
+         These ten sections were added one at a time and the menu was left in the
+         order they were built — an order that means something to whoever built it
+         and nothing to anyone else. Finding a screen meant reading all ten
+         labels, and the most urgent item ("Ask a Human", where a student is
+         actually waiting for a reply) sat eighth.
+
+         It is now grouped by the job being done, and the groups run in order of
+         urgency:
+
+           Overview         — the landing screen: "how are we doing"
+           Needs attention  — a queue: someone is waiting on each of these
+           Knowledge base   — what the assistant knows and what it is saying
+           Administration   — accounts; real work, rarely done
+           Open Chatbot     — leaves the dashboard, so it is last and separated
+
+         Within "Needs attention" the order deliberately matches
+         `rag.activity.attention()`, which already ranks the same four concerns
+         and comments "First because a person is actually waiting." The sidebar
+         and the triage panel on Overview now agree about what matters most;
+         before this they disagreed, which is how an admin learns to trust
+         neither.
+
+         Nothing here is positional in code: every item is bound by id (see
+         `$('#...MenuItem').on('click', ...)` in dashboard.html and
+         dashboard.js), so this order is a reading decision and can be changed
+         again without touching any JavaScript.
+         ═══════════════════════════════════════════════════════════════════════ #}
+
+      {# The landing screen, so it starts active and sits above the groups on its
+         own. `active` here is only the first-visit default — dashboard.js
+         restores the section you were last on, and its handler moves this class.
+
+         There used to be a SECOND item beside this one, an "Overview" showing
+         satisfaction, ratings and unanswered count: the same three figures this
+         screen opens with. Two menu items for one set of facts meant an admin
+         could read a stale copy of a number with no way to tell which screen was
+         right. They are one screen now, and it took this one's label. #}
+      <div class="menu-item active" id="analyticsMenuItem" title="Overview — the queue, recent activity, and the headline figures">
+        <i class="fas fa-chart-line"></i>
         <span>Overview</span>
       </div>
 
-      <div class="menu-item" id="uploadsMenuItem">
+      {# ── A queue. Someone is waiting on every row in this group. ────────── #}
+      <div class="menu-group"><span>Needs attention</span></div>
+
+      {# First in the group because a person is waiting: the badge counts PENDING
+         escalations.
+
+         The badge is a SIBLING of the label span, not nested inside it. Collapsed,
+         `.sidebar.collapsed .menu-item span` hides labels, and a badge inside one
+         inherits that — nothing can bring back a child of a display:none parent.
+         Kept alongside, it survives as a dot, so a 72px sidebar still shows where
+         the work is. Every badge below follows the same shape. #}
+      <div class="menu-item" id="escalationsMenuItem" title="Ask a Human — students waiting for a reply">
+        <i class="fas fa-user-tie"></i>
+        <span>Ask a Human</span>
+        <span id="sidebarEscalationBadge" class="sc-count sc-count--purple"
+              style="display:none;">0</span>
+      </div>
+
+      {# Beside escalations because it is the same kind of debt: a student filed
+         this by hand and is expecting a human to do something about it. #}
+      <div class="menu-item" id="reportsMenuItem" title="Reports — problems students reported by hand">
+        <i class="fas fa-flag"></i>
+        <span>Reports</span>
+        <span id="sidebarReportBadge" class="sc-count sc-count--red"
+              style="display:none;">0</span>
+      </div>
+
+      {# Questions the documents could not answer — the upload roadmap. #}
+      <div class="menu-item" id="gapsMenuItem" title="Content Gaps — questions the documents cannot answer">
+        <i class="fas fa-lightbulb"></i>
+        <span>Content Gaps</span>
+        <span id="sidebarGapBadge" class="sc-count sc-count--blue"
+              style="display:none;">0</span>
+      </div>
+
+      {# Badge counts downvotes: the number that should make an admin click. #}
+      <div class="menu-item" id="feedbackMenuItem" title="Answer Quality — answers students marked unhelpful">
+        <i class="fas fa-thumbs-up"></i>
+        <span>Answer Quality</span>
+        <span id="sidebarFeedbackBadge" class="sc-count sc-count--red"
+              style="display:none;">0</span>
+      </div>
+
+      {# Last in the group: the only one of the four whose count needs a full
+         re-parse of every source PDF, which is exactly why `attention()` leaves
+         it out of the triage panel. A real problem, but not the one to chase
+         first. #}
+      <div class="menu-item" id="conflictsMenuItem" title="Data Conflicts — the documents disagree with each other">
+        <i class="fas fa-code-branch"></i>
+        <span>Data Conflicts</span>
+        <span id="sidebarConflictBadge" class="sc-count sc-count--amber"
+              style="display:none;">0</span>
+      </div>
+
+      {# ── What the assistant knows, and what it is telling students today. ─ #}
+      <div class="menu-group"><span>Knowledge base</span></div>
+
+      {# First in this group: everything the assistant can answer from arrives
+         through here, so it is the most-visited screen of the three. #}
+      <div class="menu-item" id="uploadsMenuItem" title="File Uploads — the documents the assistant answers from">
         <i class="fas fa-cloud-upload-alt"></i>
         <span>File Uploads</span>
       </div>
 
-      <div class="menu-item" id="usersMenuItem">
+      {# Badge counts periods that are OPEN RIGHT NOW. Green, because unlike the
+         "Needs attention" badges this is not a problem to fix — it is what the
+         assistant is currently telling students is happening. #}
+      <div class="menu-item" id="calendarMenuItem" title="Academic Calendar — periods the assistant treats as open">
+        <i class="fas fa-calendar-day"></i>
+        <span>Academic Calendar</span>
+        <span id="sidebarCalendarBadge" class="sc-count sc-count--green"
+              style="display:none;">0</span>
+      </div>
+
+      {# Amber, neither red nor green: an announcement is not a defect to fix and
+         not business as usual. The count is what students are being shown right
+         now, which is the one number an admin needs at a glance during a
+         suspension. #}
+      <div class="menu-item" id="announcementsMenuItem" title="Announcements — what students are being shown right now">
+        <i class="fas fa-bullhorn"></i>
+        <span>Announcements</span>
+        <span id="sidebarAnnouncementsBadge" class="sc-count sc-count--amber"
+              style="display:none;">0</span>
+      </div>
+
+      {# ── Accounts. Real work, done rarely, so it is out of the way. ─────── #}
+      <div class="menu-group"><span>Administration</span></div>
+
+      <div class="menu-item" id="usersMenuItem" title="User Management — accounts and roles">
         <i class="fas fa-users-cog"></i>
         <span>User Management</span>
       </div>
 
-      <div class="menu-item" id="reportsMenuItem">
-        <i class="fas fa-flag"></i>
-        <span>
-          Reports
-          <span id="sidebarReportBadge"
-                style="display:none; background:#ef4444; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
+      {# Below a divider because this is not a dashboard section — it opens the
+         student chat in a new tab. Flush in the list it read as an eleventh
+         screen, and losing the dashboard to a mis-click is a poor reward for
+         being one pixel out. #}
+      <div class="menu-divider"></div>
 
-      <div class="menu-item" id="conflictsMenuItem">
-        <i class="fas fa-code-branch"></i>
-        <span>
-          Data Conflicts
-          <span id="sidebarConflictBadge"
-                style="display:none; background:#f59e0b; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-      <div class="menu-item" id="gapsMenuItem">
-        <i class="fas fa-lightbulb"></i>
-        <span>
-          Content Gaps
-          <span id="sidebarGapBadge"
-                style="display:none; background:#3b82f6; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-      {# Badge counts downvotes: the number that should make an admin click. #}
-      <div class="menu-item" id="feedbackMenuItem">
-        <i class="fas fa-thumbs-up"></i>
-        <span>
-          Answer Quality
-          <span id="sidebarFeedbackBadge"
-                style="display:none; background:#ef4444; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-      {# Badge counts PENDING escalations — every one is a person waiting. #}
-      <div class="menu-item" id="escalationsMenuItem">
-        <i class="fas fa-user-tie"></i>
-        <span>
-          Ask a Human
-          <span id="sidebarEscalationBadge"
-                style="display:none; background:#8b5cf6; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-      {# Badge counts periods that are OPEN RIGHT NOW. Green, because unlike
-         every other badge here this one is not a problem to fix — it is what
-         the assistant is currently telling students is happening. #}
-      <div class="menu-item" id="calendarMenuItem">
-        <i class="fas fa-calendar-day"></i>
-        <span>
-          Academic Calendar
-          <span id="sidebarCalendarBadge"
-                style="display:none; background:#22c55e; color:#fff;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-      {# Amber, not red and not green: an announcement is neither a defect to fix
-         nor business as usual. The count is what students are being shown right
-         now, which is the one number an admin needs at a glance during a
-         suspension. #}
-      <div class="menu-item" id="announcementsMenuItem">
-        <i class="fas fa-bullhorn"></i>
-        <span>
-          Announcements
-          <span id="sidebarAnnouncementsBadge"
-                style="display:none; background:#f59e0b; color:#111827;
-                       border-radius:999px; padding:0 6px; font-size:.72rem;
-                       font-weight:700; margin-left:4px;">0</span>
-        </span>
-      </div>
-
-
-
-
-      <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">
+      <a href="{{ url_for('chat.chat_page') }}" class="menu-item" target="_blank" rel="noopener noreferrer" title="Open the student chat in a new tab" style="text-decoration: none;">
         <i class="fas fa-comments"></i>
-        <span>Chatbot</span>
+        <span>Open Chatbot</span>
       </a>
 
     {% endif %}
@@ -226,15 +266,9 @@
   {% endif %}
 </div>
 
-{% if active_page == 'dashboard' %}
-<script>
-(function loadReportBadge() {
-  $.getJSON('/admin/reports/api/list?status=pending', function(items) {
-    var count = items.length;
-    if (count > 0) {
-      $('#sidebarReportBadge').text(count).show();
-    }
-  });
-})();
-</script>
-{% endif %}
+{# The pending-reports badge used to be fetched here too, by an IIFE calling
+   /admin/reports/api/list?status=pending. dashboard.html already makes that exact
+   request for that exact element on ready, so every dashboard load asked twice
+   and the second answer overwrote the first with the same number. The copy in
+   dashboard.html is the one kept: it sits with the other badge updates and is
+   re-run when a report is resolved, which this one never was. #}

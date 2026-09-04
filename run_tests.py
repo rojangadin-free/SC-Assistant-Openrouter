@@ -17,6 +17,12 @@ env vars that redirect storage must be set before their module imports.
     test_dictation.py      spoken "b s i t" -> a searchable query (unit)
     test_roles.py          who is asking -> which side of a process (unit)
     test_freshness.py      document dates + which source is newer (unit)
+    test_doc_priority.py   which document supersedes which, by date (unit)
+
+    test_latency.py        when the optimizer round-trip is skipped (unit)
+    test_progress.py       what the waiting student is told, truthfully (unit)
+
+
 
 
     test_stream_fallback.py provider refusal -> fallback, not error (unit)
@@ -29,7 +35,9 @@ env vars that redirect storage must be set before their module imports.
     test_announcements_api.py  endpoints + the public banner     (integration)
     test_freshness_api.py  document dates + pre-index scan       (integration)
     test_pwa.py            manifest, worker scope, offline page  (integration)
+    test_activity.py       dashboard feed ordering + triage queue (integration)
     tools/check_data_conflicts.py  the real PDFs, as a report    (smoke)
+
 
 The suites live in `tests/`. They are launched by filename from here but RUN with
 the repo root as their working directory, because several of them read source files
@@ -75,7 +83,28 @@ SUITES = [
     # suites because the date comparison is what those endpoints expose.
     ("Document freshness (dates)",       "test_freshness.py"),
 
+    # Immediately after it, because it is the same question one layer up: that
+    # suite checks a date can be READ from a document, this one checks the date
+    # is what decides precedence — replacing a hardcoded filename in the prompt
+    # builder. A failure here with freshness passing means the wiring broke, not
+    # the parsing.
+    ("Document precedence (newest wins)", "test_doc_priority.py"),
+
+
+    # Last of the query-path unit suites, and deliberately after them: it decides
+    # WHEN the optimizer runs, while the three above decide WHAT is searched. If
+    # the language/dictation suites are failing, a latency failure is downstream
+    # noise.
+    ("Answer latency (skip + budget)",   "test_latency.py"),
+
+    # Paired with the latency suite: that one makes the wait shorter, this one
+    # makes it legible. Both are about the same seconds, and both must not change
+    # what retrieval finds — so a failure in either is read against the other.
+    ("Answer progress (what's showing)", "test_progress.py"),
+
+
     # A provider refusal must fall over to the other gateway, not surface as
+
     # "Streaming interrupted." on a question the handbook answers in full.
     ("LLM streaming fallback",          "test_stream_fallback.py"),
     ("Content Gaps admin API",          "test_gaps_api.py"),
@@ -93,11 +122,13 @@ SUITES = [
     ("Installable app (PWA + voice)",   "test_pwa.py"),
 
 
-    # Last, because it reads what all of the above write: if the stores are
+    # Last two, because they read what all of the above write: if the stores are
     # wrong, the dashboard built on top of them is wrong for a reason already
     # reported higher up this list.
     ("Analytics (metrics + endpoints)", "test_analytics.py"),
+    ("Dashboard activity + triage",     "test_activity.py"),
 ]
+
 
 
 

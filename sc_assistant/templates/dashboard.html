@@ -7,6 +7,8 @@
   <link rel="stylesheet"
         type="text/css"
         href="{{ url_for('static', filename='css/dashboard.css') }}"/>
+  <link rel="stylesheet"
+        href="{{ url_for('static', filename='css/admin-components.css') }}"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
@@ -61,58 +63,10 @@
 
 {% block content %}
   <div class="content-area">
-    <div id="overviewSection" class="dashboard-section active">
-      <div class="dashboard-header">
-        <h1>Dashboard Overview</h1>
-        <p>Welcome back! Here's what's happening with your AI Assistant today.</p>
-      </div>
-
-      <div class="stats-container">
-        <div class="stat-card">
-          <div class="stat-icon">
-            <i class="fas fa-users"></i>
-          </div>
-          <div class="stat-content">
-            <h3 class="stat-number">...</h3>
-            <p class="stat-label">Total Users</p>
-            <span class="stat-change positive">+0%</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon">
-            <i class="fas fa-comments"></i>
-          </div>
-          <div class="stat-content">
-            <h3 class="stat-number">...</h3>
-            <p class="stat-label">Total Conversations</p>
-            <span class="stat-change positive">+0%</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon">
-            <i class="fas fa-file-alt"></i>
-          </div>
-          <div class="stat-content">
-            <h3 class="stat-number">...</h3>
-            <p class="stat-label">Documents Uploaded</p>
-            <span class="stat-change positive">+0%</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="activity-section">
-        <h3>Recent Activities</h3>
-        <div class="activity-list">
-          </div>
-      </div>
-
-    </div>
-
     <div id="uploadSection" class="dashboard-section">
+
       <div class="section-header">
-        <button class="back-button" id="backToOverview">
+        <button class="back-button" id="backToAnalytics">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
@@ -141,7 +95,12 @@
             <div class="progress-bar" id="progressBar"></div>
           </div>
           <span class="progress-text" id="progressText">0%</span>
+          <!-- Per-file rows, filled in by dashboard.js while a job runs. One
+               aggregate bar cannot say which of four files is the slow one, or
+               which single file failed. -->
+          <div class="file-progress-list" id="fileProgressList"></div>
         </div>
+
 
         <div class="uploaded-files" id="uploadedFiles" style="display: none;">
           <h4 style="margin-bottom: 1rem; color: var(--text-primary);">
@@ -154,7 +113,7 @@
 
     <div id="usersSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromUsers">
+        <button class="back-button" id="backToAnalyticsFromUsers">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
@@ -185,50 +144,248 @@
       </div>
     </div>
 
+    <!-- ══════════════════════════════════════════════════════════
+         OVERVIEW — the landing screen.
+
+         This used to be two screens. The old "Overview" showed satisfaction,
+         ratings received and unanswered count; "Analytics" opened with the same
+         three numbers as KPIs, computed from the same stores. Two screens
+         quoting one set of facts is not twice the information — it is a second
+         chance to disagree with yourself, and the admin has no way to tell
+         which one is stale. So they are one screen, and the two panels that
+         were genuinely only on Overview (the triage queue and the activity
+         feed) live here.
+
+         It is CALLED "Overview" because that is what it is: the queue, the
+         feed, and the headline figures — what an admin wants on arrival.
+         "Analytics" described only the lower half. The ids stay `analytics*`
+         (~50 references across this file, dashboard.js and the tests); a label
+         is not worth that churn, and renaming wiring to match display text is
+         how wiring gets broken.
+
+
+         Everything on this screen is derived from what actually happened (votes,
+         gaps, escalations): there is no form and no save button, because the only
+         honest way to change a figure here is to change the corpus or work the
+         queue.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="analyticsSection" class="dashboard-section active">
+      <div class="dashboard-header">
+        <h1>Overview</h1>
+        <p>What students asked, what the assistant could not answer, and what is waiting for you.</p>
+      </div>
+
+      {# Triage first, and deliberately ABOVE the window selector: everything
+         below is "in the last N days", but a student waiting for a reply is not
+         a statistic with a date range — it is a person, and the count is now. #}
+      <div class="sc-card sc-accent-red sc-mb" id="attentionCard">
+        <div class="sc-cardhead">
+          <div>
+            {# The icon is the chip in the card header (see console.css §6). Its
+               inline colour is what tints the chip — the stylesheet mixes 14% of
+               currentColor for the fill, so hue lives here beside the heading it
+               belongs to and no second colour has to be kept in sync. Danger ink
+               because this card carries .sc-accent-red. #}
+            <h3 class="sc-h3--tight"><i class="fas fa-triangle-exclamation" style="color:var(--ui-danger-ink);"></i>&nbsp;Needs your attention</h3>
+
+            <p class="sc-lead--sm">Everything below is waiting on a person. Click a row to go to it.</p>
+          </div>
+          <div class="sc-toolbar-right">
+            <button class="sc-btn sc-btn--ghost sc-btn--xs" id="refreshTriageBtn">
+              <i class="fas fa-rotate"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div id="attentionList" class="sc-list--tight">
+          <p class="sc-lead--sm">Loading…</p>
+        </div>
+      </div>
+
+      <div class="analytics-toolbar">
+
+        <div class="analytics-toolbar-meta">
+          <span id="analyticsGeneratedAt" class="analytics-muted">Loading…</span>
+        </div>
+        <div class="analytics-toolbar-actions">
+          <label for="analyticsDays" class="analytics-muted">Window</label>
+          <select id="analyticsDays" class="analytics-select">
+            <option value="7">Last 7 days</option>
+            <option value="14" selected>Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <button class="btn-secondary" id="analyticsRefreshBtn">
+            <i class="fas fa-rotate"></i> Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Error state. A failed chart must read as failed: zeros would look like
+           a real, actionable answer. -->
+      <div class="analytics-error" id="analyticsError" style="display: none;">
+        <i class="fas fa-triangle-exclamation"></i>
+        <span id="analyticsErrorText">Could not load analytics.</span>
+      </div>
+
+      <div class="analytics-kpis">
+        <div class="analytics-kpi">
+          <p class="analytics-kpi-label">Questions with signal</p>
+          <h3 class="analytics-kpi-value" id="kpiQuestions">—</h3>
+          <span class="analytics-kpi-delta" id="kpiQuestionsDelta">vs. previous 7 days</span>
+        </div>
+        <div class="analytics-kpi">
+          <p class="analytics-kpi-label">Answered rate</p>
+          <h3 class="analytics-kpi-value" id="kpiAnsweredRate">—</h3>
+          <span class="analytics-kpi-delta" id="kpiAnsweredRateDelta">vs. previous 7 days</span>
+        </div>
+        <div class="analytics-kpi">
+          <p class="analytics-kpi-label">Satisfaction</p>
+          <h3 class="analytics-kpi-value" id="kpiSatisfaction">—</h3>
+          <span class="analytics-kpi-delta" id="kpiSatisfactionDelta">vs. previous 7 days</span>
+        </div>
+        <div class="analytics-kpi">
+          <p class="analytics-kpi-label">Pending escalations</p>
+          <h3 class="analytics-kpi-value" id="kpiPending">—</h3>
+          <span class="analytics-kpi-delta" id="kpiPendingDelta">oldest wait</span>
+        </div>
+      </div>
+
+      <div class="analytics-grid">
+        <div class="analytics-card analytics-card-wide">
+          <div class="analytics-card-head">
+            <h3>Answered vs. unanswered</h3>
+            <span class="analytics-muted" id="analyticsSeriesNote"></span>
+          </div>
+          <div class="analytics-chart">
+            <canvas id="analyticsVolumeChart"></canvas>
+          </div>
+        </div>
+
+        <div class="analytics-card">
+          <div class="analytics-card-head">
+            <h3>Busiest hours</h3>
+            <span class="analytics-muted" id="analyticsPeakHour"></span>
+          </div>
+          <div class="analytics-chart">
+            <canvas id="analyticsHourlyChart"></canvas>
+          </div>
+        </div>
+
+        <div class="analytics-card">
+          <div class="analytics-card-head">
+            <h3>Most asked topics</h3>
+          </div>
+          <div class="analytics-chart">
+            <canvas id="analyticsTopicsChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="analytics-grid">
+        <!-- The document roadmap: what students ask that the corpus cannot answer.
+             This is the list that decides what to upload next. -->
+        <div class="analytics-card analytics-card-wide">
+          <div class="analytics-card-head">
+            <h3>Unanswered topics</h3>
+            <span class="analytics-muted">What to document next</span>
+          </div>
+          <div class="table-container">
+            <table class="analytics-table">
+              <thead>
+                <tr>
+                  <th>Topic</th>
+                  <th>Asked</th>
+                  <th>Unanswered</th>
+                  <th>Last asked</th>
+                </tr>
+              </thead>
+              <tbody id="analyticsUnansweredBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- The actionable end of the feedback loop: a 👎 says an answer was bad,
+             the sources stored with it say which page to fix. -->
+        <div class="analytics-card analytics-card-wide">
+          <div class="analytics-card-head">
+            <h3>Documents to review</h3>
+            <span class="analytics-muted">Pages under downvoted answers</span>
+          </div>
+          <div class="table-container">
+            <table class="analytics-table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Cited</th>
+                  <th>👍</th>
+                  <th>👎</th>
+                  <th>Satisfaction</th>
+                </tr>
+              </thead>
+              <tbody id="analyticsDocumentsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {# Last, because it is the only panel here that is not aggregated. The
+         charts above say what has been happening; this says what just happened,
+         which is what you want when something looks wrong and you need to know
+         whether the last upload or announcement caused it. #}
+      <div class="sc-card sc-mt-lg">
+        <div class="sc-cardhead">
+          <div>
+            <h3 class="sc-h3--tight">Recent activity</h3>
+            <p class="sc-lead--sm" id="activityWindowNote">The newest events first.</p>
+          </div>
+        </div>
+        <div class="activity-list sc-mt6">
+          <p class="sc-lead--sm">Loading…</p>
+        </div>
+      </div>
+    </div>
+
     <div id="reportsSection" class="dashboard-section">
+
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromReports">
+        <button class="back-button" id="backToAnalyticsFromReports">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Student Reports</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);overflow:hidden;border-top:4px solid var(--sc-yellow);">
+      <div class="sc-card sc-card--flush sc-accent-yellow">
 
-        <div style="display:flex;gap:.5rem;padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;">
-          <button class="report-filter-btn active" data-filter="pending"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
-            Pending <span id="rbadge-pending" style="background:#ef4444;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+        <div class="sc-tabs">
+          <button class="report-filter-btn active sc-pill sc-pill-flex" data-filter="pending">
+            Pending <span id="rbadge-pending" class="sc-count sc-count--red">0</span>
           </button>
-          <button class="report-filter-btn" data-filter="done"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
-            Done <span id="rbadge-done" style="background:#22c55e;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+          <button class="report-filter-btn sc-pill sc-pill-flex" data-filter="done">
+            Done <span id="rbadge-done" class="sc-count sc-count--green">0</span>
           </button>
-          <button class="report-filter-btn" data-filter="ignored"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:.4rem;transition:all .15s;">
-            Ignored <span id="rbadge-ignored" style="background:#94a3b8;color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700;">0</span>
+          <button class="report-filter-btn sc-pill sc-pill-flex" data-filter="ignored">
+            Ignored <span id="rbadge-ignored" class="sc-count sc-count--grey">0</span>
           </button>
-          <button class="report-filter-btn" data-filter="all"
-            style="padding:.35rem .9rem;border-radius:999px;border:1.5px solid var(--border);background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;transition:all .15s;">
+          <button class="report-filter-btn sc-pill" data-filter="all">
             All
           </button>
         </div>
 
-        <div style="width:100%;overflow-x:auto;">
-          <table id="reportsTable" style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <div class="sc-scroll-x">
+          <table id="reportsTable" class="sc-table">
             <thead>
               <tr style="background:var(--bg-main);">
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Date</th>
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Student</th>
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Reason</th>
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Message Snippet</th>
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Status</th>
-                <th style="padding:.7rem 1rem;text-align:left;font-weight:600;color:var(--text-secondary);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;">Actions</th>
+                <th class="sc-th">Date</th>
+                <th class="sc-th">Student</th>
+                <th class="sc-th">Reason</th>
+                <th class="sc-th">Message Snippet</th>
+                <th class="sc-th">Status</th>
+                <th class="sc-th">Actions</th>
               </tr>
             </thead>
             <tbody id="reportsTbody">
-              <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+              <tr><td colspan="6" class="sc-empty">
                 <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading…
               </td></tr>
             </tbody>
@@ -239,32 +396,32 @@
 
     <div id="conflictsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromConflicts">
+        <button class="back-button" id="backToAnalyticsFromConflicts">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Data Conflicts</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid var(--sc-yellow);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-yellow">
+        <p class="sc-lead">
           These are facts your documents state <strong>two different ways</strong> (for example, two
           different people listed as dean of the same college). When this happens the assistant has no
           way to know which one is current, so its answer can change from one question to the next.
           Pick the correct value once here and the assistant will always use it — the wrong value will
           be ignored even if it is still written in the PDF.
         </p>
-        <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-row sc-row--lg">
           <button id="rescanConflictsBtn"
-                  style="padding:.5rem 1rem;border-radius:8px;border:none;background:var(--sc-green);color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                  class="sc-btn sc-btn--primary">
             <i class="fas fa-sync-alt"></i> Scan documents
           </button>
           <span id="conflictScanMeta" style="color:var(--text-tertiary);font-size:.82rem;"></span>
         </div>
       </div>
 
-      <div id="conflictList" style="display:flex;flex-direction:column;gap:1.25rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+      <div id="conflictList" class="sc-list sc-list--wide">
+        <div class="sc-empty">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Checking documents for conflicting data…
         </div>
       </div>
@@ -277,47 +434,47 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="gapsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromGaps">
+        <button class="back-button" id="backToAnalyticsFromGaps">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Content Gaps</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #3b82f6;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-blue">
+        <p class="sc-lead">
           Every time the assistant has to say <em>"I don't have that information"</em>, the question is
           recorded here and grouped with similar ones. This is a ranked list of what students want to
           know that <strong>no uploaded document answers</strong> — so instead of guessing what to
           upload next, you can start at the top. Mark a topic as covered once you've uploaded a
           document for it; if students keep asking, it reopens itself automatically.
         </p>
-        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-statrow">
           <div>
-            <div id="gapStatTopics" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Open topics</div>
+            <div id="gapStatTopics" class="sc-stat-num">–</div>
+            <div class="sc-stat-cap">Open topics</div>
           </div>
           <div>
-            <div id="gapStatQuestions" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Times asked</div>
+            <div id="gapStatQuestions" class="sc-stat-num">–</div>
+            <div class="sc-stat-cap">Times asked</div>
           </div>
-          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-            <select id="gapStatusFilter"
-                    style="padding:.5rem .75rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <div class="sc-toolbar-right">
+            <select aria-label="Filter content gaps by status" id="gapStatusFilter"
+                    class="sc-select">
               <option value="open">Needs a document</option>
               <option value="resolved">Marked as covered</option>
               <option value="">All topics</option>
             </select>
             <button id="refreshGapsBtn"
-                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                    class="sc-btn sc-btn--blue">
               <i class="fas fa-sync-alt"></i> Refresh
             </button>
           </div>
         </div>
       </div>
 
-      <div id="gapList" style="display:flex;flex-direction:column;gap:1rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+      <div id="gapList" class="sc-list">
+        <div class="sc-empty">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…
         </div>
       </div>
@@ -331,56 +488,56 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="feedbackSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromFeedback">
+        <button class="back-button" id="backToAnalyticsFromFeedback">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Answer Quality</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #ef4444;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-red">
+        <p class="sc-lead">
           Students rate answers with 👍 / 👎. Each vote is stored with the
           <strong>documents and pages the answer came from</strong>, so a thumbs-down is not
           just a complaint — it points at the file to fix. The list below ranks the
           <strong>documents that attract the most downvotes</strong>. A file at the top is
           being read and is misleading people.
         </p>
-        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-statrow">
           <div>
-            <div id="fbStatHelpful" style="font-size:1.6rem;font-weight:700;color:#16a34a;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Helpful</div>
+            <div id="fbStatHelpful" class="sc-stat-num sc-stat-num--ok">–</div>
+            <div class="sc-stat-cap">Helpful</div>
           </div>
           <div>
-            <div id="fbStatUnhelpful" style="font-size:1.6rem;font-weight:700;color:#ef4444;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Not helpful</div>
+            <div id="fbStatUnhelpful" class="sc-stat-num sc-stat-num--bad">–</div>
+            <div class="sc-stat-cap">Not helpful</div>
           </div>
           <div>
-            <div id="fbStatRate" style="font-size:1.6rem;font-weight:700;color:var(--text-primary);line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Satisfaction</div>
+            <div id="fbStatRate" class="sc-stat-num">–</div>
+            <div class="sc-stat-cap">Satisfaction</div>
           </div>
-          <div style="margin-left:auto;">
+          <div class="sc-push">
             <button id="refreshFeedbackBtn"
-                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#ef4444;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                    class="sc-btn sc-btn--red">
               <i class="fas fa-sync-alt"></i> Refresh
             </button>
           </div>
         </div>
       </div>
 
-      <h3 style="font-size:1rem;color:var(--text-primary);margin:0 0 .75rem;">
+      <h3 class="sc-h3 sc-h3--mid">
         Documents ranked by downvotes
       </h3>
-      <div id="fbSourceList" style="display:flex;flex-direction:column;gap:.65rem;margin-bottom:2rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2rem;">
+      <div id="fbSourceList" class="sc-list sc-list--xtight sc-mb-lg">
+        <div class="sc-empty sc-empty--sm">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…
         </div>
       </div>
 
-      <h3 style="font-size:1rem;color:var(--text-primary);margin:0 0 .75rem;">
+      <h3 class="sc-h3 sc-h3--mid">
         Latest answers marked "not helpful"
       </h3>
-      <div id="fbRecentList" style="display:flex;flex-direction:column;gap:.65rem;"></div>
+      <div id="fbRecentList" class="sc-list sc-list--xtight"></div>
     </div>
 
 
@@ -391,45 +548,45 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="escalationsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromEscalations">
+        <button class="back-button" id="backToAnalyticsFromEscalations">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Ask a Human</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #8b5cf6;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-violet">
+        <p class="sc-lead">
           When the assistant cannot help, the student can forward the question to a real
           office instead of leaving unanswered. <strong>Each row is a person waiting for a
           reply.</strong> Contact them, then mark it answered.
         </p>
-        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-statrow">
           <div>
-            <div id="escStatPending" style="font-size:1.6rem;font-weight:700;color:#8b5cf6;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Waiting</div>
+            <div id="escStatPending" class="sc-stat-num sc-stat-num--violet">–</div>
+            <div class="sc-stat-cap">Waiting</div>
           </div>
           <div>
-            <div id="escStatAnswered" style="font-size:1.6rem;font-weight:700;color:#16a34a;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Answered</div>
+            <div id="escStatAnswered" class="sc-stat-num sc-stat-num--ok">–</div>
+            <div class="sc-stat-cap">Answered</div>
           </div>
-          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-            <select id="escStatusFilter"
-                    style="padding:.5rem .75rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <div class="sc-toolbar-right">
+            <select aria-label="Filter escalations by status" id="escStatusFilter"
+                    class="sc-select">
               <option value="pending">Waiting for reply</option>
               <option value="answered">Answered</option>
               <option value="">All requests</option>
             </select>
             <button id="refreshEscalationsBtn"
-                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                    class="sc-btn sc-btn--violet">
               <i class="fas fa-sync-alt"></i> Refresh
             </button>
           </div>
         </div>
       </div>
 
-      <div id="escList" style="display:flex;flex-direction:column;gap:1rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+      <div id="escList" class="sc-list">
+        <div class="sc-empty">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading requests…
         </div>
       </div>
@@ -446,41 +603,41 @@
          ══════════════════════════════════════════════════════════ -->
     <div id="calendarSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromCalendar">
+        <button class="back-button" id="backToAnalyticsFromCalendar">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Academic Calendar</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #22c55e;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-green">
+        <p class="sc-lead">
           A date in a PDF is a fact; a deadline is a fact <em>plus</em> how far away it is.
           Periods entered here let the assistant say <strong>"enrollment closes in 12 days"</strong>
           instead of reciting <em>June 1&ndash;15</em> and leaving the student to work it out —
           and stop it describing a date that has already passed as upcoming.
         </p>
-        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-statrow">
           <div>
-            <div id="calStatActive" style="font-size:1.6rem;font-weight:700;color:#22c55e;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Open now</div>
+            <div id="calStatActive" class="sc-stat-num sc-stat-num--green">–</div>
+            <div class="sc-stat-cap">Open now</div>
           </div>
           <div>
-            <div id="calStatUpcoming" style="font-size:1.6rem;font-weight:700;color:#3b82f6;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Upcoming</div>
+            <div id="calStatUpcoming" class="sc-stat-num sc-stat-num--blue">–</div>
+            <div class="sc-stat-cap">Upcoming</div>
           </div>
           <div>
-            <div id="calStatPast" style="font-size:1.6rem;font-weight:700;color:var(--text-tertiary);line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Finished</div>
+            <div id="calStatPast" class="sc-stat-num sc-stat-num--muted">–</div>
+            <div class="sc-stat-cap">Finished</div>
           </div>
-          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+          <div class="sc-toolbar-right">
             {# "As of" is the cheapest way to answer "will this still be right in
                October?" — change the date, see what a student would be told. #}
-            <label style="font-size:.8rem;color:var(--text-tertiary);">As of</label>
-            <input type="date" id="calAsOf"
-                   style="padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+            <label class="sc-label--inline">As of</label>
+            <input aria-label="Show calendar entries active on this date" type="date" id="calAsOf"
+                   class="sc-select sc-select--sm">
             <button id="refreshCalendarBtn"
-                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                    class="sc-btn sc-btn--green">
               <i class="fas fa-sync-alt"></i> Refresh
             </button>
           </div>
@@ -491,41 +648,41 @@
            rather than adding a second one, which is the same rule the store
            enforces — two rows for "Enrollment" would be a data conflict of our
            own making. -->
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <h3 style="margin:0 0 .85rem;font-size:1rem;color:var(--text-primary);">
-          <i class="fas fa-plus-circle" style="color:#22c55e;"></i>&nbsp;Add or correct a period
+      <div class="sc-card sc-mb">
+        <h3 class="sc-h3">
+          <i class="fas fa-plus-circle" style="color:var(--ui-success-ink);"></i>&nbsp;Add or correct a period
         </h3>
         <div style="display:grid;grid-template-columns:1.4fr .9fr .9fr 1.4fr auto;gap:.6rem;align-items:end;">
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Event name</label>
-            <input type="text" id="calLabel" placeholder="Enrollment"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Event name</label>
+            <input aria-label="Calendar entry label" type="text" id="calLabel" placeholder="Enrollment"
+                   class="sc-input">
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Starts</label>
-            <input type="date" id="calStart"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Starts</label>
+            <input aria-label="Calendar entry start date" type="date" id="calStart"
+                   class="sc-input">
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Ends <span style="opacity:.6;">(optional)</span></label>
-            <input type="date" id="calEnd"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Ends <span style="opacity:.6;">(optional)</span></label>
+            <input aria-label="Calendar entry end date" type="date" id="calEnd"
+                   class="sc-input">
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Note the student should hear <span style="opacity:.6;">(optional)</span></label>
-            <input type="text" id="calNote" placeholder="Late fee applies after June 10"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Note the student should hear <span style="opacity:.6;">(optional)</span></label>
+            <input aria-label="Calendar entry note" type="text" id="calNote" placeholder="Late fee applies after June 10"
+                   class="sc-input">
           </div>
           <button id="calSaveBtn"
-                  style="padding:.6rem 1.1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;white-space:nowrap;">
+                  class="sc-btn sc-btn--green sc-btn--lg sc-nowrap">
             <i class="fas fa-check"></i> Save
           </button>
         </div>
-        <div id="calSaveMsg" style="margin-top:.6rem;font-size:.82rem;display:none;"></div>
+        <div id="calSaveMsg" class="sc-savemsg"></div>
       </div>
 
-      <div id="calList" style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1.5rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+      <div id="calList" class="sc-list sc-list--tight sc-mb">
+        <div class="sc-empty">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading calendar…
         </div>
       </div>
@@ -533,23 +690,23 @@
       <!-- Read dates out of the calendar page instead of retyping them. A paste
            box rather than a corpus sweep: a handbook is full of dates that are
            not deadlines (founding year, accreditation, sample computations). -->
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
-          <i class="fas fa-file-import" style="color:#3b82f6;"></i>&nbsp;Read dates from the calendar page
+      <div class="sc-card sc-mb">
+        <h3 class="sc-h3 sc-h3--tight">
+          <i class="fas fa-file-import" style="color:var(--ui-info-ink);"></i>&nbsp;Read dates from the calendar page
         </h3>
-        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+        <p class="sc-lead sc-lead--sm">
           Paste the academic-calendar section of the handbook. Every date found is proposed
           below — nothing is saved until you click Use, because only you can tell which of
           these dates is a deadline a student needs to act on.
         </p>
-        <textarea id="calScanText" rows="4" placeholder="Enrollment Period: June 1-15, 2026&#10;Start of Classes: June 22, 2026"
-                  style="width:100%;padding:.6rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;font-family:inherit;resize:vertical;"></textarea>
-        <div style="display:flex;gap:.6rem;align-items:center;margin-top:.6rem;flex-wrap:wrap;">
-          <label style="font-size:.8rem;color:var(--text-tertiary);">Year, if the text omits it</label>
-          <input type="number" id="calScanYear" placeholder="2026" min="2000" max="2100"
+        <textarea aria-label="Paste calendar text to scan" id="calScanText" rows="4" placeholder="Enrollment Period: June 1-15, 2026&#10;Start of Classes: June 22, 2026"
+                  class="sc-textarea sc-textarea--sm"></textarea>
+        <div class="sc-row sc-mt6">
+          <label class="sc-label--inline">Year, if the text omits it</label>
+          <input aria-label="Academic year for the scan" type="number" id="calScanYear" placeholder="2026" min="2000" max="2100"
                  style="width:6.5rem;padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
           <button id="calScanBtn"
-                  style="padding:.5rem 1rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                  class="sc-btn sc-btn--blue">
             <i class="fas fa-search"></i> Find dates
           </button>
         </div>
@@ -559,21 +716,21 @@
       <!-- The only screen in this dashboard that shows the model's INPUT. A
            wrong end date looks perfectly reasonable in a form; it only becomes
            obviously wrong when you read "closes in 40 days". -->
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">
-        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
+      <div class="sc-card">
+        <h3 class="sc-h3 sc-h3--tight">
           <i class="fas fa-eye" style="color:#8b5cf6;"></i>&nbsp;What will the assistant be told?
         </h3>
-        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+        <p class="sc-lead sc-lead--sm">
           Ask a question the way a student would. This shows the exact timing text the
           assistant receives — including nothing at all, if the question was not about dates.
         </p>
-        <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
-          <input type="text" id="calPreviewQ" placeholder="can i still enroll?"
+        <div class="sc-row">
+          <input aria-label="Test question for calendar preview" type="text" id="calPreviewQ" placeholder="can i still enroll?"
                  style="flex:1;min-width:16rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
-          <input type="date" id="calPreviewDate"
-                 style="padding:.5rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <input aria-label="Date to preview the answer for" type="date" id="calPreviewDate"
+                 class="sc-select sc-select--mid-pad">
           <button id="calPreviewBtn"
-                  style="padding:.55rem 1.1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                  class="sc-btn sc-btn--violet">
             <i class="fas fa-play"></i> Preview
           </button>
         </div>
@@ -589,15 +746,15 @@
          is re-uploaded the answer no longer matters. -->
     <div id="announcementsSection" class="dashboard-section">
       <div class="section-header">
-        <button class="back-button" id="backToOverviewFromAnnouncements">
+        <button class="back-button" id="backToAnalyticsFromAnnouncements">
           <i class="fas fa-arrow-left"></i>
           Back to Overview
         </button>
         <h2>Announcements</h2>
       </div>
 
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);border-top:4px solid #f59e0b;padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <p style="color:var(--text-secondary);font-size:.9rem;margin:0 0 1rem;line-height:1.55;">
+      <div class="sc-card sc-mb sc-accent-amber">
+        <p class="sc-lead">
           Anything posted here does two things at once: it is <strong>pinned at the top of the
           chat</strong> for every student who opens it, and it is given to the assistant as
           <strong>higher authority than the documents</strong>. So "classes are suspended
@@ -605,25 +762,25 @@
           <em>"may klase ba bukas?"</em> — which the handbook would otherwise answer with the
           regular schedule, confidently and wrongly.
         </p>
-        <div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;">
+        <div class="sc-statrow">
           <div>
-            <div id="annStatActive" style="font-size:1.6rem;font-weight:700;color:#f59e0b;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Live now</div>
+            <div id="annStatActive" class="sc-stat-num sc-stat-num--amber">–</div>
+            <div class="sc-stat-cap">Live now</div>
           </div>
           <div>
-            <div id="annStatUrgent" style="font-size:1.6rem;font-weight:700;color:#ef4444;line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Urgent</div>
+            <div id="annStatUrgent" class="sc-stat-num sc-stat-num--bad">–</div>
+            <div class="sc-stat-cap">Urgent</div>
           </div>
           <div>
-            <div id="annStatExpired" style="font-size:1.6rem;font-weight:700;color:var(--text-tertiary);line-height:1;">–</div>
-            <div style="font-size:.78rem;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;">Expired</div>
+            <div id="annStatExpired" class="sc-stat-num sc-stat-num--muted">–</div>
+            <div class="sc-stat-cap">Expired</div>
           </div>
-          <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-            <label style="font-size:.8rem;color:var(--text-tertiary);">As of</label>
-            <input type="date" id="annAsOf"
-                   style="padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <div class="sc-toolbar-right">
+            <label class="sc-label--inline">As of</label>
+            <input aria-label="Show announcements active on this date" type="date" id="annAsOf"
+                   class="sc-select sc-select--sm">
             <button id="refreshAnnouncementsBtn"
-                    style="padding:.5rem 1rem;border-radius:8px;border:none;background:#f59e0b;color:#111827;cursor:pointer;font-weight:600;font-size:.875rem;">
+                    class="sc-btn sc-btn--amber">
               <i class="fas fa-sync-alt"></i> Refresh
             </button>
           </div>
@@ -633,75 +790,75 @@
       <!-- Post / edit. "Until" is required in spirit though not in code: a
            suspension with no end date is still telling students to stay home
            next month. -->
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;margin-bottom:1.5rem;">
-        <h3 style="margin:0 0 .85rem;font-size:1rem;color:var(--text-primary);">
-          <i class="fas fa-bullhorn" style="color:#f59e0b;"></i>&nbsp;<span id="annFormTitle">Post an announcement</span>
+      <div class="sc-card sc-mb">
+        <h3 class="sc-h3">
+          <i class="fas fa-bullhorn" style="color:var(--ui-warn-ink);"></i>&nbsp;<span id="annFormTitle">Post an announcement</span>
         </h3>
         <input type="hidden" id="annKey" value="">
         <div style="display:grid;grid-template-columns:1fr;gap:.6rem;">
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Headline — say the thing itself, not "important notice"</label>
-            <input type="text" id="annTitle" maxlength="200" placeholder="Classes are suspended on August 22 due to Typhoon Ambo"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Headline — say the thing itself, not "important notice"</label>
+            <input aria-label="Announcement title" type="text" id="annTitle" maxlength="200" placeholder="Classes are suspended on August 22 due to Typhoon Ambo"
+                   class="sc-input">
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Details <span style="opacity:.6;">(optional — what should a student actually do?)</span></label>
-            <textarea id="annBody" rows="2" maxlength="2000" placeholder="All classes and offices are closed. Online submissions are still accepted."
-                      style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;font-family:inherit;resize:vertical;"></textarea>
+            <label class="sc-label">Details <span style="opacity:.6;">(optional — what should a student actually do?)</span></label>
+            <textarea aria-label="Announcement body" id="annBody" rows="2" maxlength="2000" placeholder="All classes and offices are closed. Online submissions are still accepted."
+                      class="sc-textarea"></textarea>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:.6rem;align-items:end;margin-top:.6rem;">
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Urgency</label>
-            <select id="annPriority"
-                    style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Urgency</label>
+            <select aria-label="Announcement priority" id="annPriority"
+                    class="sc-input">
               <option value="urgent">Urgent — red, shown first</option>
               <option value="important">Important</option>
               <option value="info" selected>Info</option>
             </select>
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Who sees it</label>
-            <select id="annAudience"
-                    style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Who sees it</label>
+            <select aria-label="Who this announcement is for" id="annAudience"
+                    class="sc-input">
               <option value="all" selected>Everyone</option>
               <option value="students">Students only</option>
               <option value="faculty">Faculty &amp; staff only</option>
             </select>
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Show from <span style="opacity:.6;">(optional)</span></label>
-            <input type="date" id="annStart"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Show from <span style="opacity:.6;">(optional)</span></label>
+            <input aria-label="Announcement start date" type="date" id="annStart"
+                   class="sc-input">
           </div>
           <div>
-            <label style="display:block;font-size:.78rem;color:var(--text-tertiary);margin-bottom:.25rem;">Until <span style="opacity:.6;">(auto-hides after)</span></label>
-            <input type="date" id="annEnd"
-                   style="width:100%;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+            <label class="sc-label">Until <span style="opacity:.6;">(auto-hides after)</span></label>
+            <input aria-label="Announcement end date" type="date" id="annEnd"
+                   class="sc-input">
           </div>
           <button id="annSaveBtn"
-                  style="padding:.6rem 1.1rem;border-radius:8px;border:none;background:#f59e0b;color:#111827;cursor:pointer;font-weight:600;font-size:.875rem;white-space:nowrap;">
+                  class="sc-btn sc-btn--amber sc-btn--lg sc-nowrap">
             <i class="fas fa-paper-plane"></i> Post
           </button>
         </div>
         <div style="display:flex;gap:1rem;align-items:center;margin-top:.7rem;flex-wrap:wrap;">
           <label style="font-size:.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:.4rem;cursor:pointer;">
-            <input type="checkbox" id="annPinned" checked>
+            <input aria-label="Pin this announcement to the top" type="checkbox" id="annPinned" checked>
             Pin it to the top of the chat
           </label>
           <span style="font-size:.78rem;color:var(--text-tertiary);">
             Unpinned still reaches the assistant — it just doesn't show a banner.
           </span>
           <button id="annCancelEditBtn"
-                  style="display:none;margin-left:auto;padding:.45rem .9rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-main);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.82rem;">
+                  class="sc-btn sc-btn--ghost sc-btn--sm sc-push sc-hidden">
             Cancel edit
           </button>
         </div>
-        <div id="annSaveMsg" style="margin-top:.6rem;font-size:.82rem;display:none;"></div>
+        <div id="annSaveMsg" class="sc-savemsg"></div>
       </div>
 
-      <div id="annList" style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1.5rem;">
-        <div style="text-align:center;color:var(--text-secondary);padding:2.5rem;">
+      <div id="annList" class="sc-list sc-list--tight sc-mb">
+        <div class="sc-empty">
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading announcements…
         </div>
       </div>
@@ -709,23 +866,23 @@
       <!-- Same reasoning as the calendar preview: an announcement can read
            perfectly here and still never reach the model — wrong audience, start
            date in the future, already expired. This is where that shows. -->
-      <div style="background:var(--bg-surface);border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">
-        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--text-primary);">
+      <div class="sc-card">
+        <h3 class="sc-h3 sc-h3--tight">
           <i class="fas fa-eye" style="color:#8b5cf6;"></i>&nbsp;What will the assistant be told?
         </h3>
-        <p style="color:var(--text-secondary);font-size:.85rem;margin:0 0 .75rem;line-height:1.5;">
+        <p class="sc-lead sc-lead--sm">
           The literal text added to every answer for this audience, on this date.
         </p>
-        <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
-          <select id="annPreviewAudience"
-                  style="padding:.5rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+        <div class="sc-row">
+          <select aria-label="Preview as this audience" id="annPreviewAudience"
+                  class="sc-select sc-select--mid">
             <option value="students" selected>As a student</option>
             <option value="faculty">As faculty</option>
           </select>
-          <input type="date" id="annPreviewDate"
-                 style="padding:.5rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+          <input aria-label="Preview announcements for this date" type="date" id="annPreviewDate"
+                 class="sc-select sc-select--mid-pad">
           <button id="annPreviewBtn"
-                  style="padding:.55rem 1.1rem;border-radius:8px;border:none;background:#8b5cf6;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;">
+                  class="sc-btn sc-btn--violet">
             <i class="fas fa-play"></i> Preview
           </button>
         </div>
@@ -741,10 +898,16 @@
         <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
           <span>Report Detail</span>
           <div style="display:flex; align-items:center;">
-            <button id="toggleFullScreenBtn" style="background:none;border:none;font-size:1.1rem;color:var(--text-secondary);cursor:pointer;margin-right:12px;" title="Toggle Full Screen">
+            {# .sc-icon-btn is what gives this a 44px hit area (polish.css). It
+               measured 15×24 without it — an icon-sized button with no box, so
+               the target was the glyph itself. aria-label because the accessible
+               name was coming from title alone, which not every screen reader
+               announces. #}
+            <button id="toggleFullScreenBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.1rem;color:var(--text-secondary);cursor:pointer;margin-right:12px;" title="Toggle Full Screen" aria-label="Toggle full screen">
               <i class="fas fa-expand"></i>
             </button>
-            <button id="closeReportDetailBtn" style="background:none;border:none;font-size:1.4rem;color:var(--text-secondary);cursor:pointer;">&times;</button>
+            {# Was 14×30, and its accessible name was the character "×". #}
+            <button id="closeReportDetailBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.4rem;color:var(--text-secondary);cursor:pointer;" aria-label="Close report">&times;</button>
           </div>
         </h3>
         
@@ -768,8 +931,8 @@
 
         <div class="confirm-buttons" id="rdActions" style="flex-shrink:0;">
           <button class="confirm-button cancel-button" id="cancelReportDetailBtn">Cancel</button>
-          <button id="rdIgnoreBtn" style="padding:.5rem 1rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-main);color:var(--text-secondary);cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-ban"></i> Ignore</button>
-          <button id="rdDoneBtn" style="padding:.5rem 1rem;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer;font-weight:600;font-size:.875rem;"><i class="fas fa-check"></i> Mark Done</button>
+          <button id="rdIgnoreBtn" class="sc-btn sc-btn--ghost"><i class="fas fa-ban"></i> Ignore</button>
+          <button id="rdDoneBtn" class="sc-btn sc-btn--green"><i class="fas fa-check"></i> Mark Done</button>
         </div>
       </div>
     </div>
@@ -833,12 +996,10 @@
 
     $('#reportsMenuItem').on('click', showReportsSection);
 
-    $(document).on('click', '#backToOverviewFromReports', function() {
+    $(document).on('click', '#backToAnalyticsFromReports', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     // ── Filter tabs ──────────────────────────────────────────────
@@ -853,7 +1014,7 @@
     });
 
     function loadReports() {
-      $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading…</td></tr>');
+      $('#reportsTbody').html('<tr><td colspan="6" class="sc-empty sc-empty--sm"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading…</td></tr>');
       $.getJSON('/admin/reports/api/list', function(data) {
         allReports = data;
         const p = data.filter(r => r.status === 'pending').length;
@@ -868,7 +1029,7 @@
         else        { $('#sidebarReportBadge').hide(); }
         renderReports();
       }).fail(function() {
-        $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:2rem;">Failed to load reports.</td></tr>');
+        $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--ui-danger-ink);padding:2rem;">Failed to load reports.</td></tr>');
       });
     }
 
@@ -885,7 +1046,7 @@
         : allReports.filter(r => r.status === currentRFilter);
 
       if (!filtered.length) {
-        $('#reportsTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2.5rem;">No reports found.</td></tr>');
+        $('#reportsTbody').html('<tr><td colspan="6" class="sc-empty">No reports found.</td></tr>');
         return;
       }
 
@@ -1001,7 +1162,7 @@
               
               const isReportedMessage = (!isUser && index === relevantMessages.length - 1);
               const borderStyle = isReportedMessage ? 'border:1.5px solid #ef4444;' : (isUser ? 'border:1px solid rgba(99, 102, 241, 0.15);' : 'border:1px solid var(--border);');
-              const reportedTag = isReportedMessage ? '<span style="color:#ef4444; font-weight:700; font-size:0.7rem; margin-left: 10px;"><i class="fas fa-flag"></i> REPORTED</span>' : '';
+              const reportedTag = isReportedMessage ? '<span style="color:var(--ui-danger-ink); font-weight:700; font-size:0.7rem; margin-left: 10px;"><i class="fas fa-flag"></i> REPORTED</span>' : '';
               
               const contentHtml = isUser 
                 ? `<div style="white-space: pre-wrap;">${m.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`
@@ -1035,7 +1196,7 @@
           }
         }).fail(function() {
           $('#rd-full-conversation').html(`
-            <div style="color:#ef4444;font-size:0.8rem;margin-bottom:0.5rem;"><i class="fas fa-exclamation-triangle"></i> Failed to retrieve entire context. Displaying reported text snippet:</div>
+            <div style="color:var(--ui-danger-ink);font-size:0.8rem;margin-bottom:0.5rem;"><i class="fas fa-exclamation-triangle"></i> Failed to retrieve entire context. Displaying reported text snippet:</div>
             <div style="padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; font-style: italic; color: var(--text-secondary);">${r.msg_snippet || '—'}</div>
           `);
         });
@@ -1071,6 +1232,333 @@
       if (items.length > 0) { $('#sidebarReportBadge').text(items.length).show(); }
     });
 
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  ANALYTICS
+    //
+    //  Read-only. Every other admin screen fixes one thing at a time — this one
+    //  answers "is any of it working?", which is a question no single conflict
+    //  or gap can answer.
+    //
+    //  Two rules hold this screen honest:
+    //
+    //  1. One request. Totals, series and tables are quoted against each other
+    //     ("78% of 214"), so they must come from one snapshot. Separate fetches
+    //     can interleave with a student's vote and render a page whose headline
+    //     and chart disagree by one — the kind of off-by-one that makes an admin
+    //     stop trusting every other number here.
+    //  2. Missing data renders as "not enough data", never as 0. A confident 0%
+    //     is an answer someone will act on; a blank is a question they will ask.
+    // ══════════════════════════════════════════════════════════════
+    let analyticsLoaded = false;
+    let analyticsCharts = {};   // id -> Chart, so a reload replaces rather than stacks
+
+    // Read the theme's own colours instead of hardcoding hex: the dashboard has
+    // a dark mode, and a chart with a baked-in palette is unreadable in it.
+    function cssVar(name, fallback) {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+      return (v && v.trim()) || fallback;
+    }
+
+    function pct(v) {
+      return (v === null || v === undefined) ? '—' : Math.round(v * 100) + '%';
+    }
+
+    // Deltas are the only numbers here allowed to be coloured, and "more
+    // questions" is grey rather than green: volume is traffic, not quality.
+    function renderDelta($el, value, kind) {
+      if (value === null || value === undefined) {
+        $el.text('Not enough data yet').css('color', 'var(--text-tertiary)');
+        return;
+      }
+      const isPctMetric = kind === 'rate';
+      const shown = isPctMetric
+        ? (value >= 0 ? '+' : '') + Math.round(value * 100) + ' pts'
+        : (value >= 0 ? '+' : '') + value;
+      const colour = kind === 'neutral' ? 'var(--text-tertiary)'
+                   : value > 0 ? '#16a34a'
+                   : value < 0 ? '#ef4444'
+                   : 'var(--text-tertiary)';
+      $el.text(shown + ' vs. previous 7 days').css('color', colour);
+    }
+
+    function destroyChart(id) {
+      if (analyticsCharts[id]) {
+        analyticsCharts[id].destroy();
+        delete analyticsCharts[id];
+      }
+    }
+
+    // An empty canvas is indistinguishable from a broken one, so say which.
+    function chartPlaceholder(id, message) {
+      destroyChart(id);
+      const el = document.getElementById(id);
+      if (!el) return;
+      const ctx = el.getContext('2d');
+      ctx.clearRect(0, 0, el.width, el.height);
+      $(el).parent().find('.analytics-empty').remove();
+      $(el).parent().append(
+        '<div class="analytics-empty">' + esc(message) + '</div>');
+    }
+
+    // Chart.js is a CDN script. If it does not arrive — offline, blocked, or the
+    // service worker answering badly — `new Chart` throws, and it throws PART WAY
+    // through renderAnalytics(), so the tables further down never render either.
+    // One missing external file would blank the screen. The charts are a nice
+    // reading of the numbers; the numbers are the point, so a chart failure is
+    // contained here and reported in the chart's own box.
+    function drawChart(id, config) {
+      const el = document.getElementById(id);
+      if (!el) return null;
+      if (typeof Chart === 'undefined') {
+        chartPlaceholder(id, 'Charts could not load (offline?). The figures above are still correct.');
+        return null;
+      }
+      try {
+        return new Chart(el.getContext('2d'), config);
+      } catch (e) {
+        chartPlaceholder(id, 'This chart could not be drawn.');
+        return null;
+      }
+    }
+
+    function clearPlaceholder(id) {
+      const el = document.getElementById(id);
+      if (el) $(el).parent().find('.analytics-empty').remove();
+
+    }
+
+    // The landing screen, so every "back" button in this dashboard returns here.
+    // Defined on `window` because the per-feature back handlers below (and
+    // dashboard.js, which loads first) all need it.
+    window.showAnalytics = function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#analyticsSection').addClass('active');
+      $('#analyticsMenuItem').addClass('active');
+      $('.header-left span').text('Overview');
+      // Every "back" button lands here, and none of them clicks a menu item, so
+      // the click recorder in dashboard.js cannot see them. Without this line,
+      // leaving Uploads via "Back to Overview" and then reloading would put you
+      // back on Uploads — the stored screen would be a place you had left.
+      if (window.rememberSection) window.rememberSection('analyticsMenuItem');
+      // Charts build on first reveal, not on page load. Chart.js measures the
+      // canvas at construction time and a hidden canvas measures 0×0, which it
+      // then keeps — so a chart built while the section was hidden stays
+      // invisibly small forever. This screen is now visible on load, but the
+      // guard stays: it is also the target of every back button.
+      if (!analyticsLoaded) loadAnalytics();
+      // Triage is a live count, so it is re-read on every arrival rather than
+      // cached — the point of the panel is that it is true right now.
+      if (window.loadTriage) window.loadTriage();
+    };
+
+    $('#analyticsMenuItem').on('click', window.showAnalytics);
+    const showAnalytics = window.showAnalytics;
+
+
+    $(document).on('click', '#analyticsRefreshBtn', function() { loadAnalytics(); });
+    $(document).on('change', '#analyticsDays', function() { loadAnalytics(); });
+
+    function loadAnalytics() {
+      const days = $('#analyticsDays').val() || 14;
+      const $btn = $('#analyticsRefreshBtn').prop('disabled', true);
+      $('#analyticsError').hide();
+      $('#analyticsGeneratedAt').text('Loading…');
+
+      $.getJSON('/admin/analytics/api/overview?days=' + encodeURIComponent(days))
+        .done(function(res) {
+          analyticsLoaded = true;
+          if (!res.success) { analyticsFailed(res.message); return; }
+          renderAnalytics(res.analytics);
+        })
+        .fail(function(xhr) {
+          analyticsFailed((xhr.responseJSON && xhr.responseJSON.message) ||
+            (xhr.status === 403 ? 'Admin access required.' : 'Could not reach the server.'));
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    function analyticsFailed(message) {
+      $('#analyticsErrorText').text(message || 'Could not load analytics.');
+      $('#analyticsError').show();
+      $('#analyticsGeneratedAt').text('—');
+      // Blank the figures rather than leaving the previous load on screen: a
+      // stale number next to an error banner is the worst of both.
+      $('#kpiQuestions, #kpiAnsweredRate, #kpiSatisfaction, #kpiPending').text('—');
+      ['analyticsVolumeChart', 'analyticsHourlyChart', 'analyticsTopicsChart']
+        .forEach(id => chartPlaceholder(id, 'Unavailable'));
+    }
+
+    function renderAnalytics(a) {
+      const grid   = cssVar('--border', '#e5e7eb');
+      const ink    = cssVar('--text-secondary', '#6b7280');
+      const green  = '#22c55e';
+      const red    = '#ef4444';
+      const blue   = '#3b82f6';
+
+      $('#analyticsGeneratedAt').text(
+        'Last ' + a.window_days + ' days · updated ' +
+        new Date(a.generated_at).toLocaleString('en-PH'));
+
+      // ── Headline figures ────────────────────────────────────────
+      const t = a.totals;
+      $('#kpiQuestions').text(t.questions_with_signal);
+      $('#kpiAnsweredRate').text(pct(t.answered_rate));
+      $('#kpiSatisfaction').text(pct(t.satisfaction));
+      $('#kpiPending').text(a.response_times.pending_count);
+
+      renderDelta($('#kpiQuestionsDelta'), a.trend.delta.questions, 'neutral');
+      renderDelta($('#kpiAnsweredRateDelta'), a.trend.delta.answered_rate, 'rate');
+      renderDelta($('#kpiSatisfactionDelta'), a.trend.delta.satisfaction, 'rate');
+
+      // The oldest wait, not the average: an average stays reassuring while one
+      // student has been ignored for three weeks.
+      const oldest = a.response_times.oldest_pending_hours;
+      $('#kpiPendingDelta')
+        .text(oldest === null || oldest === undefined
+          ? 'No one waiting'
+          : 'Longest wait: ' + (oldest >= 48
+              ? Math.round(oldest / 24) + ' days'
+              : Math.round(oldest) + ' hours'))
+        .css('color', (oldest !== null && oldest !== undefined && oldest >= 48)
+          ? '#ef4444' : 'var(--text-tertiary)');
+
+      // ── Answered vs. unanswered, by day ─────────────────────────
+      const series = a.series || [];
+      const hasVolume = series.some(d => d.total > 0);
+      $('#analyticsSeriesNote').text(
+        a.response_times.answered_count
+          ? 'Median escalation reply: ' + a.response_times.median_hours + 'h'
+          : '');
+
+      if (!hasVolume) {
+        chartPlaceholder('analyticsVolumeChart',
+          'No questions recorded in this window.');
+      } else {
+        clearPlaceholder('analyticsVolumeChart');
+        destroyChart('analyticsVolumeChart');
+        analyticsCharts.analyticsVolumeChart = drawChart(
+          'analyticsVolumeChart', {
+            type: 'bar',
+
+            data: {
+              labels: series.map(d => d.date.slice(5)),   // MM-DD; the year is noise
+              datasets: [
+                { label: 'Answered',   data: series.map(d => d.answered),   backgroundColor: green },
+                { label: 'Unanswered', data: series.map(d => d.unanswered), backgroundColor: red }
+              ]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { position: 'bottom', labels: { color: ink, boxWidth: 12 } } },
+              // Stacked: the height is the day's demand, the red band is the part
+              // that was failed. Side-by-side bars hide that relationship.
+              scales: {
+                x: { stacked: true, grid: { display: false }, ticks: { color: ink } },
+                y: { stacked: true, beginAtZero: true, grid: { color: grid },
+                     ticks: { color: ink, precision: 0 } }
+              }
+            }
+          });
+      }
+
+      // ── Hourly histogram ────────────────────────────────────────
+      const hourly = a.hourly || [];
+      if (!hourly.some(h => h.count > 0)) {
+        chartPlaceholder('analyticsHourlyChart', 'No traffic recorded yet.');
+        $('#analyticsPeakHour').text('');
+      } else {
+        clearPlaceholder('analyticsHourlyChart');
+        $('#analyticsPeakHour').text(a.peak_hour ? 'Peak: ' + a.peak_hour : '');
+        destroyChart('analyticsHourlyChart');
+        analyticsCharts.analyticsHourlyChart = drawChart(
+          'analyticsHourlyChart', {
+            type: 'bar',
+            data: {
+              labels: hourly.map(h => h.hour),
+              datasets: [{
+                label: 'Questions',
+                data: hourly.map(h => h.count),
+                // Fade everything that is not near the peak, so the busy block
+                // is readable without counting bars.
+                backgroundColor: hourly.map(h =>
+                  h.share_of_peak >= 0.66 ? blue : 'rgba(59,130,246,.35)')
+              }]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { grid: { display: false }, ticks: { color: ink, maxRotation: 0, autoSkip: true } },
+                y: { beginAtZero: true, grid: { color: grid }, ticks: { color: ink, precision: 0 } }
+              }
+            }
+          });
+      }
+
+      // ── Most asked topics ───────────────────────────────────────
+      const topics = (a.top_topics || []).slice(0, 6);
+      if (!topics.length) {
+        chartPlaceholder('analyticsTopicsChart',
+          'Not enough repeat questions to group yet.');
+      } else {
+        clearPlaceholder('analyticsTopicsChart');
+        destroyChart('analyticsTopicsChart');
+        analyticsCharts.analyticsTopicsChart = drawChart(
+          'analyticsTopicsChart', {
+            type: 'doughnut',
+            data: {
+              labels: topics.map(t => (t.topic || t.key || '').slice(0, 34)),
+              datasets: [{
+                data: topics.map(t => t.total),
+                backgroundColor: ['#3b82f6','#22c55e','#f59e0b','#8b5cf6','#ec4899','#14b8a6']
+              }]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { position: 'right', labels: { color: ink, boxWidth: 12, font: { size: 11 } } } }
+            }
+          });
+      }
+
+      // ── Unanswered topics: the upload roadmap ───────────────────
+      const gaps = a.unanswered_topics || [];
+      $('#analyticsUnansweredBody').html(
+        gaps.length
+          ? gaps.map(function(g) {
+              return '<tr>' +
+                '<td>' + esc(g.topic || g.key) + '</td>' +
+                '<td>' + g.total + '</td>' +
+                '<td class="analytics-bad">' + g.unanswered + '</td>' +
+                '<td>' + fmtWhen(g.last_asked) + '</td>' +
+              '</tr>';
+            }).join('')
+          : '<tr><td colspan="4" class="analytics-empty-row">' +
+            'Nothing unanswered — every question found an answer in your documents.</td></tr>');
+
+      // ── Documents to review ─────────────────────────────────────
+      const docs = a.suspect_documents || [];
+      $('#analyticsDocumentsBody').html(
+        docs.length
+          ? docs.map(function(d) {
+              return '<tr>' +
+                '<td>' + esc(d.source) + '</td>' +
+                '<td>' + d.total + '</td>' +
+                '<td class="analytics-good">' + d.up + '</td>' +
+                '<td class="analytics-bad">' + d.down + '</td>' +
+                '<td>' + pct(d.satisfaction) + '</td>' +
+              '</tr>';
+            }).join('')
+          : '<tr><td colspan="5" class="analytics-empty-row">' +
+            'No document has been downvoted.</td></tr>');
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  DATA CONFLICTS
     //
@@ -1081,12 +1569,6 @@
     let allConflicts = [];
     let conflictsLoaded = false;
 
-    function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
-
     $('#conflictsMenuItem').on('click', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
@@ -1096,12 +1578,10 @@
       if (!conflictsLoaded) loadConflicts(false);
     });
 
-    $(document).on('click', '#backToOverviewFromConflicts', function() {
+    $(document).on('click', '#backToAnalyticsFromConflicts', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#rescanConflictsBtn', function() { loadConflicts(true); });
@@ -1109,7 +1589,7 @@
     function loadConflicts(force) {
       const $btn = $('#rescanConflictsBtn');
       $btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Scanning…');
-      $('#conflictList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Reading documents… this can take a moment.</div>');
+      $('#conflictList').html('<div class="sc-empty"><i class="fas fa-spinner fa-spin"></i>&nbsp;Reading documents… this can take a moment.</div>');
 
       $.ajax({
         url: '/admin/conflicts/api/scan' + (force ? '?refresh=1' : ''),
@@ -1118,7 +1598,7 @@
       }).done(function(res) {
         conflictsLoaded = true;
         if (!res.success) {
-          $('#conflictList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Scan failed.') + '</div>');
+          $('#conflictList').html('<div class="sc-errorblock">' + esc(res.message || 'Scan failed.') + '</div>');
           return;
         }
         allConflicts = res.conflicts || [];
@@ -1129,7 +1609,7 @@
         );
         renderConflicts();
       }).fail(function(xhr) {
-        $('#conflictList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Scan failed' +
+        $('#conflictList').html('<div class="sc-errorblock">Scan failed' +
           (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
       }).always(function() {
         $btn.prop('disabled', false).html('<i class="fas fa-sync-alt"></i> Scan documents');
@@ -1143,8 +1623,8 @@
 
       if (!allConflicts.length) {
         $('#conflictList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
-          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          '<div class="sc-emptycard">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:var(--ui-success-ink);display:block;margin-bottom:.75rem;"></i>' +
           'No conflicting data found. Every role in your documents has exactly one value.</div>');
         return;
       }
@@ -1154,8 +1634,8 @@
         const resolved = !!res;
         const accent = resolved ? '#22c55e' : '#f59e0b';
         const badge = resolved
-          ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">RESOLVED</span>'
-          : '<span style="background:#fef3c7;color:#b45309;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">NEEDS REVIEW</span>';
+          ? '<span class="sc-badge sc-badge--ok">RESOLVED</span>'
+          : '<span class="sc-badge sc-badge--warn">NEEDS REVIEW</span>';
 
         const options = (c.candidates || []).map(function(cand) {
           const value = cand.person_display || cand.person;
@@ -1186,7 +1666,7 @@
         }).join('');
 
         const resolvedNote = resolved
-          ? '<div style="margin-top:.9rem;font-size:.8rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.6rem .8rem;">' +
+          ? '<div class="sc-note sc-note--ok sc-note--ok9">' +
               '<i class="fas fa-shield-halved"></i> The assistant answers <strong>' + esc(res.correct) + '</strong> for this' +
               (res.resolved_by ? ' · set by ' + esc(res.resolved_by) : '') +
               (res.note ? '<br><span style="color:var(--text-secondary);">Note: ' + esc(res.note) + '</span>' : '') +
@@ -1197,7 +1677,7 @@
 
         return '' +
         '<div class="conflict-card" data-key="' + esc(c.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">' +
+          '<div class="sc-cardhead">' +
             '<div>' +
               '<h3 style="margin:0;font-size:1.02rem;color:var(--text-primary);">' + esc(c.label) + '</h3>' +
               '<p style="margin:.35rem 0 0;font-size:.84rem;color:var(--text-secondary);">' +
@@ -1208,14 +1688,14 @@
 
           '<div style="display:flex;flex-direction:column;gap:.6rem;margin-top:1rem;">' + options + '</div>' +
 
-          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap;">' +
-            '<input type="text" class="cf-custom" placeholder="Neither is correct — type the correct value" ' +
-                   'style="flex:1;min-width:240px;padding:.5rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.85rem;">' +
-            '<input type="text" class="cf-note" placeholder="Note (optional)" ' +
-                   'style="flex:1;min-width:180px;padding:.5rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.85rem;">' +
-            '<button class="cf-save" style="padding:.5rem 1rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.85rem;cursor:pointer;">' +
+          '<div class="sc-row sc-mt9">' +
+            '<input type="text" class="cf-custom sc-input-inline sc-flex240" placeholder="Neither is correct — type the correct value" ' +
+                   '>' +
+            '<input type="text" class="cf-note sc-input-inline sc-flex180" placeholder="Note (optional)" ' +
+                   '>' +
+            '<button class="cf-save sc-btn sc-btn--primary sc-btn--mid" >' +
               '<i class="fas fa-check"></i> ' + (resolved ? 'Update' : 'Set as correct') + '</button>' +
-            (resolved ? '<button class="cf-clear" style="padding:.5rem 1rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.85rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Undo</button>' : '') +
+            (resolved ? '<button class="cf-clear sc-btn sc-btn--ghost sc-btn--mid" ><i class="fas fa-rotate-left"></i> Undo</button>' : '') +
           '</div>' +
           resolvedNote +
         '</div>';
@@ -1325,12 +1805,10 @@
       if (!gapsLoaded) loadGaps();
     });
 
-    $(document).on('click', '#backToOverviewFromGaps', function() {
+    $(document).on('click', '#backToAnalyticsFromGaps', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#refreshGapsBtn', function() { loadGaps(); });
@@ -1346,13 +1824,13 @@
     function loadGaps() {
       const status = $('#gapStatusFilter').val();
       const $btn = $('#refreshGapsBtn').prop('disabled', true);
-      $('#gapList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…</div>');
+      $('#gapList').html('<div class="sc-empty"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…</div>');
 
       $.getJSON('/admin/gaps/api/list' + (status ? '?status=' + status : ''))
         .done(function(res) {
           gapsLoaded = true;
           if (!res.success) {
-            $('#gapList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            $('#gapList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
             return;
           }
           allGaps = res.gaps || [];
@@ -1360,7 +1838,7 @@
           renderGaps();
         })
         .fail(function(xhr) {
-          $('#gapList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load content gaps' +
+          $('#gapList').html('<div class="sc-errorblock">Could not load content gaps' +
             (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
         })
         .always(function() {
@@ -1383,8 +1861,8 @@
           ? 'Nothing marked as covered yet.'
           : 'No unanswered questions recorded. Every question students asked was answered from your documents.';
         $('#gapList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
-          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          '<div class="sc-emptycard">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:var(--ui-success-ink);display:block;margin-bottom:.75rem;"></i>' +
           esc(msg) + '</div>');
         return;
       }
@@ -1393,8 +1871,8 @@
         const resolved = g.status === 'resolved';
         const accent = resolved ? '#22c55e' : '#3b82f6';
         const badge = resolved
-          ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">COVERED</span>'
-          : '<span style="background:#dbeafe;color:#1d4ed8;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">NEEDS A DOCUMENT</span>';
+          ? '<span class="sc-badge sc-badge--ok">COVERED</span>'
+          : '<span class="sc-badge sc-badge--info">NEEDS A DOCUMENT</span>';
 
         // The exact student wording matters: it is the difference between
         // uploading the right page and uploading something adjacent to it.
@@ -1407,12 +1885,12 @@
         }).join('');
 
         const noteRow = g.note
-          ? '<div style="margin-top:.75rem;font-size:.8rem;color:var(--text-secondary);background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.55rem .8rem;">' +
+          ? '<div class="sc-note">' +
               '<i class="fas fa-note-sticky"></i> ' + esc(g.note) + '</div>'
           : '';
 
         const resolvedRow = resolved
-          ? '<div style="margin-top:.75rem;font-size:.8rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.55rem .8rem;">' +
+          ? '<div class="sc-note sc-note--ok">' +
               '<i class="fas fa-check-double"></i> Marked covered' +
               (g.resolved_by ? ' by ' + esc(g.resolved_by) : '') +
               ' · ' + fmtWhen(g.resolved_at) +
@@ -1420,15 +1898,15 @@
           : '';
 
         const actions = resolved
-          ? '<button class="gap-reopen" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Reopen</button>'
-          : '<input type="text" class="gap-note" placeholder="Note (optional): which document covers this now?" ' +
-                 'style="flex:1;min-width:220px;padding:.45rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.82rem;">' +
-            '<button class="gap-resolve" style="padding:.45rem .9rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-check"></i> Mark as covered</button>';
+          ? '<button class="gap-reopen sc-btn sc-btn--ghost sc-btn--sm" ><i class="fas fa-rotate-left"></i> Reopen</button>'
+          : '<input type="text" class="gap-note sc-input-inline sc-input-inline--sm sc-flex220" placeholder="Note (optional): which document covers this now?" ' +
+                 '>' +
+            '<button class="gap-resolve sc-btn sc-btn--primary sc-btn--sm" ><i class="fas fa-check"></i> Mark as covered</button>';
 
         return '' +
         '<div class="gap-card" data-key="' + esc(g.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.15rem 1.4rem;">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">' +
-            '<div style="min-width:0;">' +
+          '<div class="sc-cardhead">' +
+            '<div class="sc-min0">' +
               '<h3 style="margin:0;font-size:1rem;color:var(--text-primary);">' + esc(g.topic) + '</h3>' +
               '<p style="margin:.3rem 0 0;font-size:.82rem;color:var(--text-secondary);">' +
                 'Asked <strong>' + (g.count || 1) + '×</strong> · first ' + fmtWhen(g.first_asked) +
@@ -1447,10 +1925,10 @@
 
           noteRow + resolvedRow +
 
-          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap;">' +
+          '<div class="sc-row sc-mt9">' +
             actions +
-            '<button class="gap-delete" title="Remove this row (spam or a test question)" ' +
-                    'style="padding:.45rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;margin-left:auto;">' +
+            '<button class="gap-delete sc-btn sc-btn--ghost sc-btn--icon-sm sc-btn--reg sc-push" title="Remove this row (spam or a test question)" ' +
+                    '>' +
               '<i class="fas fa-trash"></i></button>' +
           '</div>' +
         '</div>';
@@ -1523,12 +2001,10 @@
       if (!feedbackLoaded) loadFeedback();
     });
 
-    $(document).on('click', '#backToOverviewFromFeedback', function() {
+    $(document).on('click', '#backToAnalyticsFromFeedback', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#refreshFeedbackBtn', function() { loadFeedback(); });
@@ -1548,13 +2024,13 @@
 
     function loadFeedback() {
       const $btn = $('#refreshFeedbackBtn').prop('disabled', true);
-      $('#fbSourceList').html('<div style="text-align:center;color:var(--text-secondary);padding:2rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…</div>');
+      $('#fbSourceList').html('<div class="sc-empty sc-empty--sm"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…</div>');
 
       $.getJSON('/admin/feedback/api/list?verdict=down')
         .done(function(res) {
           feedbackLoaded = true;
           if (!res.success) {
-            $('#fbSourceList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            $('#fbSourceList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
             return;
           }
           fbTopics = res.topics || [];
@@ -1562,7 +2038,7 @@
           renderFeedback();
         })
         .fail(function(xhr) {
-          $('#fbSourceList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load feedback' +
+          $('#fbSourceList').html('<div class="sc-errorblock">Could not load feedback' +
             (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
         })
         .always(function() { $btn.prop('disabled', false); });
@@ -1588,8 +2064,8 @@
 
       if (!sources.length) {
         $('#fbSourceList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
-          '<i class="fas fa-circle-check" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          '<div class="sc-emptycard">' +
+          '<i class="fas fa-circle-check" style="font-size:2rem;color:var(--ui-success-ink);display:block;margin-bottom:.75rem;"></i>' +
           'No document has been downvoted. Either the answers are landing, or no one has voted yet.</div>');
       } else {
         const max = sources[0].downvotes || 1;
@@ -1601,7 +2077,7 @@
           '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:.8rem 1rem;">' +
             '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:baseline;">' +
               '<strong style="color:var(--text-primary);font-size:.9rem;word-break:break-word;">' + esc(s.source) + '</strong>' +
-              '<span style="color:#ef4444;font-weight:700;font-size:.85rem;white-space:nowrap;">' + s.downvotes + ' 👎</span>' +
+              '<span style="color:var(--ui-danger-ink);font-weight:700;font-size:.85rem;white-space:nowrap;">' + s.downvotes + ' 👎</span>' +
             '</div>' +
             '<div style="height:6px;border-radius:999px;background:var(--bg-main);margin:.5rem 0 .45rem;overflow:hidden;">' +
               '<div style="height:100%;width:' + pct + '%;background:#ef4444;"></div>' +
@@ -1624,11 +2100,11 @@
         const ex = bad[0] || (t.examples || [])[0] || {};
         return '' +
         '<div class="fb-card" data-key="' + esc(t.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid #ef4444;border-radius:10px;padding:.9rem 1.1rem;">' +
-          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+          '<div class="sc-cardhead">' +
             '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(t.topic || '(no question recorded)') + '</strong>' +
             '<span style="white-space:nowrap;font-size:.8rem;color:var(--text-secondary);">' +
-              '<span style="color:#16a34a;font-weight:700;">' + t.up + ' 👍</span> · ' +
-              '<span style="color:#ef4444;font-weight:700;">' + t.down + ' 👎</span></span>' +
+              '<span style="color:var(--ui-success-ink);font-weight:700;">' + t.up + ' 👍</span> · ' +
+              '<span style="color:var(--ui-danger-ink);font-weight:700;">' + t.down + ' 👎</span></span>' +
           '</div>' +
           (ex.answer_snippet
             ? '<div style="margin-top:.5rem;font-size:.8rem;color:var(--text-secondary);font-style:italic;">“' + esc(ex.answer_snippet) + '”</div>'
@@ -1638,7 +2114,7 @@
                 (ex.sources || []).map(esc).join(' | ') + '</div>'
             : '') +
           '<div style="margin-top:.6rem;display:flex;gap:.5rem;">' +
-            '<button class="fb-delete" title="Remove (test traffic)" style="padding:.35rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;margin-left:auto;">' +
+            '<button class="fb-delete sc-btn sc-btn--ghost sc-btn--icon sc-btn--reg sc-push" title="Remove (test traffic)">' +
               '<i class="fas fa-trash"></i></button>' +
           '</div>' +
         '</div>';
@@ -1691,12 +2167,10 @@
       if (!escLoaded) loadEscalations();
     });
 
-    $(document).on('click', '#backToOverviewFromEscalations', function() {
+    $(document).on('click', '#backToAnalyticsFromEscalations', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#refreshEscalationsBtn', function() { loadEscalations(); });
@@ -1713,13 +2187,13 @@
     function loadEscalations() {
       const status = $('#escStatusFilter').val();
       const $btn = $('#refreshEscalationsBtn').prop('disabled', true);
-      $('#escList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading requests…</div>');
+      $('#escList').html('<div class="sc-empty"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading requests…</div>');
 
       $.getJSON('/admin/feedback/api/escalations' + (status ? '?status=' + status : ''))
         .done(function(res) {
           escLoaded = true;
           if (!res.success) {
-            $('#escList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            $('#escList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
             return;
           }
           escItems = res.escalations || [];
@@ -1728,7 +2202,7 @@
           renderEscalations();
         })
         .fail(function(xhr) {
-          $('#escList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load requests' +
+          $('#escList').html('<div class="sc-errorblock">Could not load requests' +
             (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
         })
         .always(function() { $btn.prop('disabled', false); });
@@ -1738,7 +2212,7 @@
       if (!escItems.length) {
         const status = $('#escStatusFilter').val();
         $('#escList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
+          '<div class="sc-emptycard">' +
           '<i class="fas fa-inbox" style="font-size:2rem;color:#8b5cf6;display:block;margin-bottom:.75rem;"></i>' +
           (status === 'pending'
             ? 'No one is waiting. Every forwarded question has been handled.'
@@ -1750,15 +2224,15 @@
         const pending = it.status === 'pending';
         const accent = pending ? '#8b5cf6' : (it.status === 'answered' ? '#22c55e' : 'var(--border)');
         const badge = pending
-          ? '<span style="background:#ede9fe;color:#6d28d9;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">WAITING</span>'
+          ? '<span class="sc-badge sc-badge--violet">WAITING</span>'
           : it.status === 'answered'
-            ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">ANSWERED</span>'
-            : '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">DISMISSED</span>';
+            ? '<span class="sc-badge sc-badge--ok">ANSWERED</span>'
+            : '<span class="sc-badge sc-badge--muted">DISMISSED</span>';
 
         return '' +
         '<div class="esc-card" data-id="' + esc(it.id) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.1rem 1.4rem;">' +
-          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
-            '<div style="min-width:0;">' +
+          '<div class="sc-cardhead">' +
+            '<div class="sc-min0">' +
               '<h3 style="margin:0;font-size:.98rem;color:var(--text-primary);">' + esc(it.question) + '</h3>' +
               '<p style="margin:.3rem 0 0;font-size:.8rem;color:var(--text-secondary);">' +
                 '<i class="fas fa-building"></i> ' + esc(escRoutes[it.route] || it.route) +
@@ -1769,7 +2243,7 @@
           '</div>' +
 
           (it.note
-            ? '<div style="margin-top:.6rem;font-size:.8rem;color:var(--text-secondary);background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;">' +
+            ? '<div class="sc-note sc-note--a">' +
                 '<i class="fas fa-note-sticky"></i> ' + esc(it.note) + '</div>'
             : '') +
 
@@ -1780,20 +2254,20 @@
 
 
           (it.reply
-            ? '<div style="margin-top:.7rem;font-size:.82rem;color:#15803d;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.55rem .8rem;">' +
+            ? '<div class="sc-note sc-note--ok sc-note--ok7">' +
                 '<i class="fas fa-reply"></i> ' + esc(it.reply) +
                 (it.answered_by ? '<span style="color:var(--text-secondary);"> — ' + esc(it.answered_by) + '</span>' : '') +
               '</div>'
             : '') +
 
-          '<div style="display:flex;gap:.6rem;align-items:center;margin-top:.85rem;flex-wrap:wrap;">' +
+          '<div class="sc-row sc-mt85">' +
             (pending
-              ? '<input type="text" class="esc-reply" placeholder="The answer you gave them (kept as the basis for a document)" ' +
-                       'style="flex:1;min-width:240px;padding:.45rem .7rem;border:1.5px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-primary);font-size:.82rem;">' +
-                '<button class="esc-answer" style="padding:.45rem .9rem;border:none;border-radius:8px;background:var(--sc-green);color:#fff;font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-check"></i> Mark answered</button>' +
-                '<button class="esc-dismiss" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-ban"></i> Dismiss</button>'
-              : '<button class="esc-reopen" style="padding:.45rem .9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-weight:600;font-size:.82rem;cursor:pointer;"><i class="fas fa-rotate-left"></i> Reopen</button>') +
-            '<button class="esc-delete" title="Remove" style="padding:.45rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.82rem;cursor:pointer;margin-left:auto;">' +
+              ? '<input type="text" class="esc-reply sc-input-inline sc-input-inline--sm sc-flex240" placeholder="The answer you gave them (kept as the basis for a document)" ' +
+                       '>' +
+                '<button class="esc-answer sc-btn sc-btn--primary sc-btn--sm" ><i class="fas fa-check"></i> Mark answered</button>' +
+                '<button class="esc-dismiss sc-btn sc-btn--ghost sc-btn--sm" ><i class="fas fa-ban"></i> Dismiss</button>'
+              : '<button class="esc-reopen sc-btn sc-btn--ghost sc-btn--sm" ><i class="fas fa-rotate-left"></i> Reopen</button>') +
+            '<button class="esc-delete sc-btn sc-btn--ghost sc-btn--icon-sm sc-btn--reg sc-push" title="Remove">' +
               '<i class="fas fa-trash"></i></button>' +
           '</div>' +
         '</div>';
@@ -1875,12 +2349,10 @@
       if (!calLoaded) loadCalendar();
     });
 
-    $(document).on('click', '#backToOverviewFromCalendar', function() {
+    $(document).on('click', '#backToAnalyticsFromCalendar', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#refreshCalendarBtn', function() { loadCalendar(); });
@@ -1909,13 +2381,13 @@
     function loadCalendar() {
       const asOf = $('#calAsOf').val();
       const $btn = $('#refreshCalendarBtn').prop('disabled', true);
-      $('#calList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading calendar…</div>');
+      $('#calList').html('<div class="sc-empty"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading calendar…</div>');
 
       $.getJSON('/admin/calendar/api/list' + (asOf ? '?today=' + encodeURIComponent(asOf) : ''))
         .done(function(res) {
           calLoaded = true;
           if (!res.success) {
-            $('#calList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            $('#calList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
             return;
           }
           calState = res.state;
@@ -1929,7 +2401,7 @@
           renderCalendar();
         })
         .fail(function(xhr) {
-          $('#calList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load the calendar' +
+          $('#calList').html('<div class="sc-errorblock">Could not load the calendar' +
             (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
         })
         .always(function() { $btn.prop('disabled', false); });
@@ -1957,8 +2429,8 @@
       const total = calState.active.length + calState.upcoming.length + calState.past.length;
       if (!total) {
         $('#calList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
-          '<i class="fas fa-calendar-plus" style="font-size:2rem;color:#22c55e;display:block;margin-bottom:.75rem;"></i>' +
+          '<div class="sc-emptycard">' +
+          '<i class="fas fa-calendar-plus" style="font-size:2rem;color:var(--ui-success-ink);display:block;margin-bottom:.75rem;"></i>' +
           'No periods entered yet. Until one is added, the assistant can only repeat the dates written in the documents — ' +
           'it cannot say whether they have passed.</div>');
         return;
@@ -1997,7 +2469,7 @@
 
           return '' +
           '<div class="cal-card" data-key="' + esc(p.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + g.accent + ';border-radius:10px;padding:.75rem 1rem;display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
-            '<div style="min-width:0;">' +
+            '<div class="sc-min0">' +
               '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(p.label) + '</strong>' +
               '<div style="font-size:.8rem;color:' + colour + ';font-weight:600;margin-top:.2rem;">' + esc(when) + '</div>' +
               '<div style="font-size:.78rem;color:var(--text-secondary);margin-top:.15rem;">' + esc(span) +
@@ -2006,8 +2478,8 @@
               (p.set_by ? '<div style="font-size:.74rem;color:var(--text-tertiary);margin-top:.15rem;">set by ' + esc(p.set_by) + '</div>' : '') +
             '</div>' +
             '<div style="display:flex;gap:.4rem;">' +
-              '<button class="cal-edit" title="Load into the form above" style="padding:.35rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-pen"></i></button>' +
-              '<button class="cal-delete" title="Remove" style="padding:.35rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-trash"></i></button>' +
+              '<button class="cal-edit sc-btn sc-btn--ghost sc-btn--xxs sc-btn--reg" title="Load into the form above"><i class="fas fa-pen"></i></button>' +
+              '<button class="cal-delete sc-btn sc-btn--ghost sc-btn--xxs sc-btn--reg" title="Remove"><i class="fas fa-trash"></i></button>' +
             '</div>' +
           '</div>';
         }).join('');
@@ -2105,13 +2577,13 @@
             return '' +
             '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;margin-bottom:.4rem;' +
                  (f.already_saved ? 'opacity:.55;' : '') + '">' +
-              '<div style="min-width:0;">' +
+              '<div class="sc-min0">' +
                 '<strong style="color:var(--text-primary);font-size:.85rem;">' + esc(f.label || '(no name found)') + '</strong>' +
                 '<div style="font-size:.78rem;color:var(--text-secondary);">' + esc(span) + '</div>' +
               '</div>' +
               (f.already_saved
                 ? '<span style="font-size:.76rem;color:#15803d;font-weight:600;white-space:nowrap;"><i class="fas fa-check"></i> already saved</span>'
-                : '<button class="cal-use" data-i="' + i + '" style="padding:.35rem .8rem;border:none;border-radius:8px;background:#3b82f6;color:#fff;font-size:.78rem;font-weight:600;cursor:pointer;white-space:nowrap;">Use</button>') +
+                : '<button class="cal-use sc-btn sc-btn--blue sc-btn--xs sc-nowrap" data-i="' + i + '">Use</button>') +
             '</div>';
           }).join(''));
         $('#calScanResults').data('found', found);
@@ -2156,14 +2628,14 @@
           // Not an error. The admin needs to be able to tell "this question is
           // not about dates" apart from "the calendar is broken".
           $out.html(
-            '<div style="border:1px dashed var(--border);border-radius:8px;padding:.8rem 1rem;font-size:.82rem;color:var(--text-secondary);">' +
+            '<div class="sc-note sc-note--dashed">' +
               '<i class="fas fa-circle-info"></i> ' + esc(res.message) + '</div>');
           return;
         }
         $out.html(
           '<div style="font-size:.78rem;color:var(--text-tertiary);margin-bottom:.35rem;">' +
             'Sent to the assistant for “' + esc(res.question) + '”, as of ' + esc(calHuman(res.today)) + ':</div>' +
-          '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.85rem 1rem;font-size:.8rem;color:var(--text-primary);margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">' +
+          '<pre class="sc-pre">' +
             esc(res.block) + '</pre>');
       }).fail(function(xhr) {
         const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Preview failed.';
@@ -2210,12 +2682,10 @@
       if (!annLoaded) loadAnnouncements();
     });
 
-    $(document).on('click', '#backToOverviewFromAnnouncements', function() {
+    $(document).on('click', '#backToAnalyticsFromAnnouncements', function() {
       $('.dashboard-section').removeClass('active');
       $('.menu-item').removeClass('active');
-      $('#overviewSection').addClass('active');
-      $('#overviewMenuItem').addClass('active');
-      $('.header-left span').text('Dashboard');
+      showAnalytics();
     });
 
     $(document).on('click', '#refreshAnnouncementsBtn', function() { loadAnnouncements(); });
@@ -2233,13 +2703,13 @@
     function loadAnnouncements() {
       const asOf = $('#annAsOf').val();
       const $btn = $('#refreshAnnouncementsBtn').prop('disabled', true);
-      $('#annList').html('<div style="text-align:center;color:var(--text-secondary);padding:2.5rem;"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading announcements…</div>');
+      $('#annList').html('<div class="sc-empty"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading announcements…</div>');
 
       $.getJSON('/admin/announcements/api/list' + (asOf ? '?today=' + encodeURIComponent(asOf) : ''))
         .done(function(res) {
           annLoaded = true;
           if (!res.success) {
-            $('#annList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">' + esc(res.message || 'Could not load.') + '</div>');
+            $('#annList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
             return;
           }
           annItems = res.announcements || [];
@@ -2251,7 +2721,7 @@
           renderAnnouncements();
         })
         .fail(function(xhr) {
-          $('#annList').html('<div style="color:#ef4444;padding:2rem;text-align:center;">Could not load announcements' +
+          $('#annList').html('<div class="sc-errorblock">Could not load announcements' +
             (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
         })
         .always(function() { $btn.prop('disabled', false); });
@@ -2266,8 +2736,8 @@
     function renderAnnouncements() {
       if (!annItems.length) {
         $('#annList').html(
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:2.5rem;text-align:center;color:var(--text-secondary);">' +
-          '<i class="fas fa-bullhorn" style="font-size:2rem;color:#f59e0b;display:block;margin-bottom:.75rem;"></i>' +
+          '<div class="sc-emptycard">' +
+          '<i class="fas fa-bullhorn" style="font-size:2rem;color:var(--ui-warn-ink);display:block;margin-bottom:.75rem;"></i>' +
           'Nothing posted. The assistant is answering purely from the documents — which is correct ' +
           'until something changes that the documents cannot know about.</div>');
         return;
@@ -2279,12 +2749,12 @@
         // problem: expired (the date passed), taken down (an admin switched it
         // off), and scheduled (its start date has not arrived).
         const status = a.expired
-          ? '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">EXPIRED</span>'
+          ? '<span class="sc-badge sc-badge--muted">EXPIRED</span>'
           : !a.active
-            ? '<span style="background:var(--bg-main);color:var(--text-secondary);border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">TAKEN DOWN</span>'
+            ? '<span class="sc-badge sc-badge--muted">TAKEN DOWN</span>'
             : a.live
-              ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">LIVE</span>'
-              : '<span style="background:#dbeafe;color:#1d4ed8;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700;">SCHEDULED</span>';
+              ? '<span class="sc-badge sc-badge--ok">LIVE</span>'
+              : '<span class="sc-badge sc-badge--info">SCHEDULED</span>';
 
         const window_ = [];
         if (a.starts_on)  window_.push('from ' + calHuman(a.starts_on));
@@ -2293,8 +2763,8 @@
         return '' +
         '<div class="ann-card" data-key="' + esc(a.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + look.colour + ';border-radius:10px;padding:.85rem 1.1rem;' +
              (a.expired || !a.active ? 'opacity:.6;' : '') + '">' +
-          '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
-            '<div style="min-width:0;">' +
+          '<div class="sc-cardhead">' +
+            '<div class="sc-min0">' +
               '<span style="font-size:.7rem;font-weight:800;color:' + look.colour + ';letter-spacing:.05em;">' + look.label + '</span>' +
               '<strong style="display:block;color:var(--text-primary);font-size:.95rem;margin-top:.15rem;">' + esc(a.title) + '</strong>' +
               (a.body ? '<div style="font-size:.82rem;color:var(--text-secondary);margin-top:.3rem;">' + esc(a.body) + '</div>' : '') +
@@ -2306,11 +2776,11 @@
               '</div>' +
             '</div>' + status +
           '</div>' +
-          '<div style="display:flex;gap:.5rem;align-items:center;margin-top:.7rem;flex-wrap:wrap;">' +
-            '<button class="ann-toggle" style="padding:.35rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;font-weight:600;cursor:pointer;">' +
+          '<div class="sc-row sc-row--sm sc-mt7">' +
+            '<button class="ann-toggle sc-btn sc-btn--ghost sc-btn--xs" >' +
               (a.active ? '<i class="fas fa-eye-slash"></i> Take down' : '<i class="fas fa-eye"></i> Show again') + '</button>' +
-            '<button class="ann-edit" style="padding:.35rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;"><i class="fas fa-pen"></i> Edit</button>' +
-            '<button class="ann-delete" title="Remove permanently" style="padding:.35rem .7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-main);color:var(--text-secondary);font-size:.78rem;cursor:pointer;margin-left:auto;"><i class="fas fa-trash"></i></button>' +
+            '<button class="ann-edit sc-btn sc-btn--ghost sc-btn--xs sc-btn--reg" ><i class="fas fa-pen"></i> Edit</button>' +
+            '<button class="ann-delete sc-btn sc-btn--ghost sc-btn--icon sc-btn--reg sc-push" title="Remove permanently"><i class="fas fa-trash"></i></button>' +
           '</div>' +
         '</div>';
       }).join(''));
@@ -2428,14 +2898,14 @@
         const $out = $('#annPreviewOut').show();
         if (!res.applies) {
           $out.html(
-            '<div style="border:1px dashed var(--border);border-radius:8px;padding:.8rem 1rem;font-size:.82rem;color:var(--text-secondary);">' +
+            '<div class="sc-note sc-note--dashed">' +
               '<i class="fas fa-circle-info"></i> ' + esc(res.message) + '</div>');
           return;
         }
         $out.html(
           '<div style="font-size:.78rem;color:var(--text-tertiary);margin-bottom:.35rem;">' +
             'Added to every answer, as of ' + esc(calHuman(res.today)) + ':</div>' +
-          '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:.85rem 1rem;font-size:.8rem;color:var(--text-primary);margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">' +
+          '<pre class="sc-pre">' +
             esc(res.block) + '</pre>');
       }).fail(function(xhr) {
         const m = (xhr.responseJSON && xhr.responseJSON.message) || 'Preview failed.';
@@ -2458,6 +2928,31 @@
         renderAnnouncements();
       }
     });
+
+    // ── Open the screen the admin should be looking at ───────────
+    // #analyticsSection is rendered with .active, so the user arrives already
+    // on it and NO CLICK EVER FIRES. Every loader above hangs off a click
+    // handler, so on a fresh page load nothing ran: the header still read
+    // "Dashboard", the KPIs stayed "—", and the three canvases were never
+    // drawn — the screen looked broken until you navigated away and back.
+    //
+    // Called through showAnalytics() rather than loadAnalytics() so there is
+    // one definition of "you are on Overview now" (header title, active
+    // classes, figures, triage queue). Deliberately the LAST statement in this
+    // handler, for two reasons: showAnalytics touches `analyticsLoaded`, which
+    // is a `let` — call it any earlier and it dies in the temporal dead zone —
+    // and restoreLastSection() replays a click on a menu item, so every
+    // section's click handler above must already be bound or the restored
+    // screen would switch without loading its data.
+    //
+    // restoreLastSection() returns false when there is nothing to restore (first
+    // visit, cleared storage, a section that no longer exists), and Overview is
+    // the fallback. It is checked rather than assumed: a stale id that matched
+    // nothing would otherwise leave every section hidden and the admin looking
+    // at a blank page.
+    if (!(window.restoreLastSection && window.restoreLastSection())) {
+      showAnalytics();
+    }
 
   });
 

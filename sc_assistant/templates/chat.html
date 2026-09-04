@@ -22,7 +22,7 @@
       border: 1px solid var(--border);
     }
     .remove-image {
-      color: #ef4444;
+      color: var(--ui-danger-ink);
       cursor: pointer;
       margin-left: 10px;
       font-size: 1.2rem;
@@ -43,7 +43,7 @@
     /* Shares .upload-btn's box so the composer keeps three evenly spaced
        controls instead of one that sits 2px off. Only the active state is new. */
     .mic-btn.listening {
-      color: #ef4444;
+      color: var(--ui-danger-ink);
       animation: mic-pulse 1.2s ease-in-out infinite;
     }
     @keyframes mic-pulse {
@@ -92,7 +92,7 @@
       border: none;
       padding: 0;
       color: #c8d0da;
-      font-size: .72rem;
+      font-size: var(--text-xs);
       cursor: pointer;
       transition: color .2s, transform .15s;
       line-height: 1;
@@ -177,8 +177,11 @@
       border-radius: 999px;
       background: #c0392b;
       color: #fff;
-      font-size: .62rem;
-      font-weight: 700;
+      /* Was .62rem — 10px. The count in an unread badge is the one number on
+         this screen a student is looking for, and it was the smallest text in the
+         app. --text-xs is the 12px floor; it still fits the 16px pill. */
+      font-size: var(--text-xs);
+      font-weight: var(--weight-bold);
       line-height: 16px;
       text-align: center;
     }
@@ -235,15 +238,17 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: .7rem;
+      font-size: var(--text-xs);
       color: var(--text-secondary);
       margin-bottom: 6px;
     }
     .reply-status {
       padding: 1px 8px;
       border-radius: 999px;
-      font-weight: 700;
-      font-size: .64rem;
+      font-weight: var(--weight-bold);
+      /* Uppercase at 10px was the least readable label in the app, and it is the
+         one carrying "Answered" vs "Waiting" — the whole point of the row. */
+      font-size: var(--text-xs);
       text-transform: uppercase;
       letter-spacing: .3px;
     }
@@ -276,7 +281,7 @@
       gap: 6px;
       margin: 4px 0 0 52px;
       max-width: 90%;
-      font-size: .72rem;
+      font-size: var(--text-xs);
       color: var(--text-secondary);
     }
     .answer-sources-label {
@@ -469,10 +474,14 @@
     .ann-notice > i { margin-top: 2px; flex-shrink: 0; }
     .ann-notice.urgent    > i { color: #c0392b; }
     .ann-notice.important > i { color: #d4920a; }
-    .ann-notice.info      > i { color: #3b82f6; }
+    .ann-notice.info      > i { color: var(--ui-info-ink); }
     .ann-notice-text { flex: 1; min-width: 0; }
     .ann-notice-kind {
-      font-size: .66rem;
+      font-size: var(--text-xs);
+      /* 800 is a real weight now: base.html loads Inter as a 400–800 variable
+         font. It used to request only 400/500/600/700, so this label was being
+         faux-bolded — the browser smearing 700 outward, which is exactly the
+         blurring you do not want on 10px uppercase. */
       font-weight: 800;
       letter-spacing: .06em;
       text-transform: uppercase;
@@ -483,7 +492,7 @@
     .ann-notice-until {
       display: block;
       margin-top: 3px;
-      font-size: .7rem;
+      font-size: var(--text-xs);
       color: var(--text-secondary);
     }
     /* Dismiss hides it for this browser only, and only until the notice changes.
@@ -531,7 +540,7 @@
       border-bottom: 1px solid var(--border);
     }
     .report-modal-header h3 { margin: 0; font-size: 1.1rem; color: var(--text-primary); }
-    .report-modal-header h3 i { color: #ef4444; margin-right: .4rem; }
+    .report-modal-header h3 i { color: var(--ui-danger-ink); margin-right: .4rem; }
     .report-modal-close {
       background: none;
       border: none;
@@ -539,7 +548,7 @@
       color: var(--text-secondary);
       cursor: pointer;
     }
-    .report-modal-close:hover { color: #ef4444; }
+    .report-modal-close:hover { color: var(--ui-danger-ink); }
     .report-modal-body { padding: 1.25rem 1.5rem; }
     .report-intro { color: var(--text-secondary); font-size: 0.9rem; margin: 0 0 1rem; }
     .report-snippet {
@@ -615,6 +624,11 @@
 
 {% block body_attrs %}data-start-new="{{ start_new }}" data-is-guest="{{ 'true' if user.is_guest else 'false' }}" data-avatar="{{ user.avatar_url if user.avatar_url else 'https://ui-avatars.com/api/?name=' ~ user.username ~ '&background=fbbc05&color=0d4503&bold=true' }}"{% endblock %}
 
+{# chat.html replaces base's layout wholesale, so base's #main-content does not
+   exist here. Point the skip link at the transcript instead — it is the region
+   a returning student wants, and the composer is one Tab past it. #}
+{% block main_anchor %}messagesContainer{% endblock %}
+
 {% block layout %}
   <div class="sidebar" id="sidebar">
     {% include "partials/sidebar.html" %}
@@ -638,7 +652,18 @@
        invisible) when there is nothing live. #}
     <div id="announcementBanner" class="announcement-banner" style="display:none;"></div>
 
-    <div class="messages-container" id="messagesContainer">
+    {# tabindex="-1" makes this a valid skip-link destination: without it the
+       browser scrolls the transcript into view but leaves focus on <body>, so
+       the next Tab goes back to the top of the sidebar. Not in the tab order —
+       -1 is reachable by script and by fragment, never by tabbing.
+
+       A landmark, NOT an aria-live region. Answers arrive here token by token
+       (see the streaming loop in chat.js), and aria-live would queue one
+       announcement per chunk — a screen reader would read the answer letter
+       group by letter group and could not be interrupted. A labelled region is
+       navigable without that cost. #}
+    <div class="messages-container" id="messagesContainer" tabindex="-1"
+         role="region" aria-label="Conversation">
 
       <div class="empty-chat-state" id="emptyChatState" style="display: none;">
         <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="empty-logo">
@@ -652,9 +677,18 @@
       </div>
     </div>
 
-    <div class="typing-indicator" id="typingIndicator" style="display:none;">
-      <span></span><span></span><span></span>
-    </div>
+    {# The typing indicator used to be a hidden element here, between the message
+       list and the input, shown and hidden in place. It is now built by chat.js
+       INSIDE the assistant's own message bubble (see `thinkingBubble()`), because
+       that is where the answer is about to appear — the dots are a preview of the
+       message, not a status bar for the page.
+
+       It is not a hidden div here any more for a concrete reason: there is exactly
+       one bubble per request, so an element that must live inside the bubble has
+       to be created with it. Leaving a single shared copy in the template would
+       mean moving a node between bubbles, and the caption from a previous request
+       could ride along with it. #}
+
 
     <div class="chat-input-area">
       <div id="imagePreviewContainer" class="image-preview-container">
@@ -665,11 +699,11 @@
       </div>
 
       <form id="messageForm" class="message-form" enctype="multipart/form-data">
-        <input type="file" id="imageInput" accept="image/*" style="display: none;">
+        <input aria-label="Attach an image" type="file" id="imageInput" accept="image/*" style="display: none;">
         <button type="button" class="upload-btn" id="uploadBtn" title="Attach Image">
           <i class="fas fa-paperclip"></i>
         </button>
-        <textarea id="messageInput"
+        <textarea aria-label="Type your question" id="messageInput"
                   class="message-input"
                   placeholder="Ask a question…"
                   rows="1"
@@ -713,7 +747,7 @@
         <div id="escalateQuestionPreview" class="report-snippet"></div>
 
         <label class="report-label">Send to</label>
-        <select id="escalateRoute" class="report-select">
+        <select aria-label="Send this question to" id="escalateRoute" class="report-select">
           <option value="admin">College Administration</option>
         </select>
 
@@ -723,7 +757,7 @@
            the request is undeliverable without one. #}
         {% if user.is_guest %}
         <label class="report-label" style="margin-top:.75rem;">
-          Your email or mobile number <span style="color:#ef4444">*</span>
+          Your email or mobile number <span style="color:var(--ui-danger-ink)">*</span>
         </label>
         <input id="escalateContact" class="report-select" type="text"
                placeholder="you@example.com or 0917 123 4567">
@@ -734,7 +768,7 @@
         <label class="report-label" style="margin-top:.75rem;">
           Anything else they should know? <span style="opacity:.6">(optional)</span>
         </label>
-        <textarea id="escalateNote" class="report-textarea" rows="3"
+        <textarea aria-label="Extra details for the staff member" id="escalateNote" class="report-textarea" rows="3"
                   placeholder="e.g. I am an incoming transferee for the 2nd semester…"></textarea>
       </div>
       <div class="report-modal-footer">

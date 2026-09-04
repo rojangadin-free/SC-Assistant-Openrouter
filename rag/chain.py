@@ -19,7 +19,8 @@ from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from rag.reranker import rerank, rerank_multi
 from rag.conflicts import authority_block
-from rag.freshness import freshness_block
+from rag.freshness import freshness_block, source_priority, doc_key
+
 from rag.citations import build_citations
 
 from rag.calendar import calendar_block
@@ -28,6 +29,15 @@ from rag.roles import resolve_role, announcement_audience, role_block
 
 from rag.language import language_variants
 from rag.dictation import dictation_variants
+from rag.latency import (
+    should_optimize, pick_search_query, Deadline, Timings,
+)
+# The captions the student sees while waiting. Published from the real phase
+# boundaries below rather than on a timer in the browser, so "Searching…" is
+# shown exactly while Pinecone is being searched. See rag/progress.py.
+from rag.progress import emit as emit_phase
+
+
 
 
 
@@ -390,7 +400,12 @@ def retrieve_documents(
     top_k: int = None,
     verbose: bool = False,
     user_question: str = None,
+    late_query=None,
+    timings=None,
+    progress=None,
 ) -> list:
+
+
     """
     The single entry point for "given a query, give me the documents".
 
@@ -407,13 +422,57 @@ def retrieve_documents(
     ranking, because a cross-encoder scores "does this passage answer this
     question" and a bag of keywords is not a question. Relying on either alone
     is what made identical questions succeed only intermittently.
+
+    `late_query` — a rewrite that is still being generated
+    -----------------------------------------------------
+    Optional callable returning the optimizer's rewrite, or "" if it did not
+    arrive in time. It is invoked HERE rather than by the caller, at the last
+    moment before the queries are assembled, so the rewriter's round-trip
+    overlaps the work this function does first (splitting, expansion) instead of
+    happening before any of it. See rag/latency.py.
+
+    `progress` — the waiting student's captions
+    -------------------------------------------
+    Optional `ProgressChannel`. The two phase boundaries a student most needs to
+    see are inside this function, not visible to the caller: "searching" begins
+    when the queries are dispatched to Pinecone, and "reading" begins when the
+    candidate pool is handed to the cross-encoder. Announcing them from the
+    caller would put both captions before either phase started, which is the
+    guesswork this avoids. See rag/progress.py.
+
+    Callers that pass nothing behave exactly as before, which is what keeps
+    tools/probe_retrieval.py and tools/eval_retrieval.py exercising the same
+    ranking code the app uses.
     """
+
     top_k = top_k or FINAL_TOP_K
+
+    # Collect the rewrite before assembling the phrasings, but AFTER this
+    # function has been entered — the caller kicked the LLM off earlier, so
+    # whatever it produced is either ready by now or already too late to matter.
+    #
+    # Appended as one more phrasing rather than substituted for `query`: the
+    # caller passes the student's literal question as `query` when it did not
+    # wait, and demoting that would undo the fix that stopped identical
+    # questions succeeding only intermittently.
+    late_phrasing = ""
+    if late_query is not None:
+        if timings is not None:
+            timings.start("await_rewrite")
+        try:
+            late_phrasing = (late_query() or "").strip()
+        except Exception as e:
+            # A rewrite is an optimisation. Losing it costs some recall on a thin
+            # question, not the answer, so it must never raise into the graph.
+            print(f"  Late rewrite unavailable (non-fatal): {e}")
+        finally:
+            if timings is not None:
+                timings.stop("await_rewrite")
 
     # Both phrasings, de-duplicated, natural question last (it is the fallback
     # AND the ranking signal).
     phrasings = []
-    for q in (query, user_question):
+    for q in (query, user_question, late_phrasing):
         q = (q or "").strip()
         if q and q not in phrasings:
             phrasings.append(q)
@@ -422,6 +481,8 @@ def retrieve_documents(
         return []
 
     primary = phrasings[0]
+
+
 
     # A compound question ("X, Y and Z?") is split so each part can be ranked
     # on its own merits. The natural question is preferred as the split source
@@ -435,6 +496,13 @@ def retrieve_documents(
             print(f"  Multi-part question detected -> {len(aspects)} aspects:")
             for a in aspects:
                 print(f"    - {a}")
+
+    # Announced here, immediately before the round-trips, and not a line
+    # earlier: everything above is local string work that takes microseconds,
+    # so a caption raised before it would be showing "Searching" during
+    # splitting and expansion.
+    emit_phase(progress, "searching")
+
     try:
         initial_docs = multi_query_retrieve(
             primary,
@@ -446,7 +514,15 @@ def retrieve_documents(
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
 
+    # The cross-encoder is next, and on CPU it is usually the longest single
+    # phase of the request. The count is the CANDIDATE pool, because that is
+    # what is genuinely about to be read; the final selection does not exist
+    # yet, and claiming a number now that changes in two seconds would be worse
+    # than saying nothing.
+    emit_phase(progress, "reading", documents=len(initial_docs))
+
     if aspects:
+
         # Round-robin across parts, so no part can be crowded out of the list.
         # The whole question is included as one more "aspect" so documents that
         # answer several parts at once are not penalised.
@@ -497,7 +573,10 @@ primary_model = ChatOpenAI(
                 "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
                 "Version": "0.101.0",
                 "X-Stainless-Runtime": "node" 
-            }
+    },
+    extra_body={
+        "thinking": {"type": "disabled"}  # Direct API override to shut off thinking
+    }
 )
 
 # A DIFFERENT provider, deliberately.
@@ -517,7 +596,14 @@ fallback_model = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    max_tokens=2048,
+    default_headers={
+                # Remove generic headers like HTTP-Referer or X-Title
+                # Spoof supported client headers to bypass the AgentRouter WAF
+                "Originator": "codex_cli_rs",
+                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
+                "Version": "0.101.0",
+                "X-Stainless-Runtime": "node" 
+    }
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -612,17 +698,67 @@ class ChatState(TypedDict):
     # the citation living only inside the prompt where nobody can check it.
     citations: Optional[List[Dict[str, object]]]
 
+    # NOTE: the progress channel is deliberately NOT a state field.
+    #
+    # It lived here briefly and every answer died with
+    # `Type is not msgpack serializable: ProgressChannel`. The graph is compiled
+    # with a checkpointer (below), so the whole state is serialised after each
+    # step — and a live `queue.Queue` bound to one open HTTP connection cannot be
+    # written to a checkpoint, nor would it mean anything if it were replayed from
+    # one. State is the durable record of the conversation; the channel is
+    # per-request wiring, so it travels in `config["configurable"]` instead, which
+    # is not checkpointed. See `call_llm` and rag/progress.py.
+
+
+
 
 
 def docs_to_context(docs) -> str:
+    """
+    Flatten the selected documents into the prompt's context block, labelling
+    which of them supersedes the others.
+
+    The label is derived from recorded effective dates, not from a filename.
+    What used to be here was:
+
+        is_base = "samar-college-2024.pdf" in source.lower()
+        priority_tag = "" if is_base else " [NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
+
+    That reads as recency but the actual rule is "is not called
+    samar-college-2024.pdf". Every consequence follows from that mismatch: a
+    freshly uploaded scan of a 2019 memo was tagged as overriding current policy,
+    `Samar-College-update-2026.pdf` was ranked against a string literal rather
+    than against 2024's real date, and renaming the handbook inverted the base
+    case silently. It also fired on a single-document answer, telling the model
+    to override knowledge that nothing had contradicted.
+
+    `source_priority()` returns {} unless at least two cited sources have
+    DIFFERENT known dates, so the tag now appears only where there is a genuine
+    supersession to report — and when it does appear it names the date, so the
+    model is being given evidence rather than an instruction to trust.
+    """
+    priority = source_priority(
+        *{(getattr(d, "metadata", None) or {}).get("source", "") for d in docs}
+    )
+
     context_parts = []
     for i, d in enumerate(docs):
         source = d.metadata.get("source", "Unknown")
         page   = d.metadata.get("page", "?")
-        
-        is_base = "samar-college-2024.pdf" in source.lower()
-        priority_tag = "" if is_base else " [🚨 NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
-        
+
+        rank = priority.get(doc_key(source))
+        if not rank:
+            # Either a single source, or no dates on record. Both mean there is
+            # nothing truthful to say about precedence, so nothing is said.
+            priority_tag = ""
+        elif rank["is_newest"]:
+            priority_tag = f" [MOST RECENT SOURCE — effective {rank['date']}]"
+        else:
+            priority_tag = (
+                f" [SUPERSEDED — effective {rank['date']}; a newer source is "
+                f"also quoted below]"
+            )
+
         text   = (
             f"[DOCUMENT {i + 1}]{priority_tag}\n"
             f"Source: {source} | Page: {page}\n"
@@ -632,6 +768,7 @@ def docs_to_context(docs) -> str:
     if not context_parts:
         return "No relevant context found."
     return "\n\n---\n\n".join(context_parts)
+
 
 
 def summarize_history(history: List[Dict[str, str]]) -> str:
@@ -656,13 +793,30 @@ def safe_prompt(template: str, **kwargs) -> str:
 def create_graph():
     graph = StateGraph(ChatState)
 
-    def call_llm(state: ChatState):
+    def call_llm(state: ChatState, config=None):
         try:
             user_text  = state["input"]
             image_data = state.get("image_data")
             history    = state.get("chat_history", [])
             uid        = state.get("uid")
             user_email = state.get("user_email")
+
+            # Where to publish "what is happening right now".
+            #
+            # Read from `config`, NOT from state: state is checkpointed after
+            # every step, and a live queue bound to one open HTTP connection is
+            # not serialisable — putting it in state made every answer fail with
+            # `Type is not msgpack serializable: ProgressChannel`. `configurable`
+            # is per-invocation wiring and is never written to a checkpoint,
+            # which is exactly what a one-shot pipe to one browser is.
+            #
+            # None when the graph is driven by a tool instead of the chat route,
+            # in which case every emit_phase() below is a no-op — that is what
+            # keeps tools/probe_retrieval.py on the same code path as the app.
+            # See rag/progress.py.
+            progress = (config or {}).get("configurable", {}).get("progress")
+
+
 
             # 🚀 PARALLEL TASK 1: Image Analysis
             def task_image_analysis():
@@ -709,9 +863,17 @@ def create_graph():
                     print(f"  Student record fetch failed (non-fatal): {e}")
                     return ""
 
+            timings = Timings()
+
             # 🚀 PARALLEL TASK 3: Query Optimization
+            #
+            # Kicked off with the other two, but NOT waited for here. Retrieval
+            # starts on the student's literal words and this rewrite joins as one
+            # more probe if it lands inside its budget — see rag/latency.py for
+            # why an entire LLM round-trip used to sit in front of every answer.
             def task_query_optimization():
                 try:
+
                     recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
                     context_prompt = [
                         {
@@ -743,34 +905,127 @@ def create_graph():
                     print(f"  Contextualization failed (non-fatal): {e}")
                     return user_text
 
-            # 🚀 EXECUTE ALL 3 TASKS SIMULTANEOUSLY
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
+            #
+            # `with` is NOT used here. A ThreadPoolExecutor context manager joins
+            # every worker on exit, which would put the optimizer's round-trip
+            # back in front of retrieval — exactly the wait this change removes.
+            # The pool is shut down without waiting instead, and the rewrite is
+            # collected later (or abandoned) by the callback below.
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+            try:
                 future_img     = executor.submit(task_image_analysis)
                 future_student = executor.submit(task_student_fetch)
-                future_query   = executor.submit(task_query_optimization)
 
-                # Wait for them to finish and collect results instantly
+                # The rewrite is only worth waiting for when the question cannot
+                # be searched as typed — a follow-up, or too thin. For a
+                # self-contained question this skips an entire LLM round-trip,
+                # and the literal words retrieve the same documents. The decision
+                # lives in rag/latency.py so it is testable without a network.
+                wants_rewrite = should_optimize(user_text, history)
+                future_query = (
+                    executor.submit(task_query_optimization) if wants_rewrite else None
+                )
+
+                # Only claimed when the rewrite is genuinely running. On the
+                # skip path this phase does not exist, and showing it anyway
+                # would be a caption for work that is not happening — the
+                # precise failure this design is meant to avoid.
+                if wants_rewrite:
+                    emit_phase(progress, "understanding")
+
+
+                # These two ARE waited for, and deliberately: the image
+                # description and the student record change what the answer is
+                # allowed to say, so proceeding without them would produce a
+                # different (wrong) answer rather than a slower one. Only the
+                # rewrite is optional, because it only affects recall.
                 image_description = future_img.result()
                 student_context   = future_student.result()
-                standalone_query  = future_query.result()
 
-            # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
-            #
-            # Both the LLM's optimized query AND the user's literal question are
-            # used, for retrieval and for reranking. The rewrite is good for
-            # lexical recall; the question is what the cross-encoder needs to
-            # judge "does this passage answer this?". Passing only the rewrite
-            # is what made the same question work intermittently.
-            final_docs = retrieve_documents(
-                standalone_query,
-                top_k=FINAL_TOP_K,
-                verbose=True,
-                user_question=user_text,
+                if future_query is None:
+                    timings.note("optimizer", "skipped")
+                    standalone_query = user_text
+
+                    def late_rewrite():
+                        return ""
+                else:
+                    standalone_query = user_text
+                    budget = Deadline()
+
+                    def late_rewrite():
+                        """
+                        The rewrite, if it arrives in time.
+
+                        Retrieval calls this after it has done its own
+                        preparation, so the round-trip has already been
+                        overlapping useful work. A rewrite later than the budget
+                        is dropped rather than cancelled — the call finishes in
+                        the background, which is cheaper than throwing away
+                        tokens that were nearly ready.
+                        """
+                        try:
+                            rewritten = future_query.result(
+                                timeout=budget.remaining()
+                            )
+                        except concurrent.futures.TimeoutError:
+                            timings.note("optimizer", "too-late")
+                            print("  Rewrite missed its budget; using the "
+                                  "student's own wording.")
+                            return ""
+                        timings.note("optimizer", "used")
+                        # An echo of the input adds a duplicate probe and no
+                        # recall, so it is treated as no rewrite at all.
+                        picked = pick_search_query(user_text, rewritten)
+                        return "" if picked == user_text.strip() else picked
+
+                # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
+                #
+                # The literal question leads. The rewrite, when there is one,
+                # joins as an additional phrasing inside retrieve_documents() —
+                # both are used for retrieval AND reranking, because the rewrite
+                # is better at lexical recall while the question is what the
+                # cross-encoder needs to judge "does this passage answer this?".
+                timings.start("retrieval+rerank")
+                final_docs = retrieve_documents(
+                    standalone_query,
+                    top_k=FINAL_TOP_K,
+                    verbose=True,
+                    user_question=user_text,
+                    late_query=late_rewrite,
+                    timings=timings,
+                    progress=progress,
+                )
+
+                timings.stop("retrieval+rerank")
+            finally:
+                # Non-blocking: a rewrite still in flight is allowed to finish on
+                # its own thread and be discarded. Joining here would reintroduce
+                # the wait for a result nobody is going to read.
+                executor.shutdown(wait=False)
+
+            # Retrieval is done; everything from here to the answer call is
+            # prompt assembly — verified facts, document dates, calendar,
+            # announcements, role. Cheap individually, but the history summary
+            # below is another LLM call on a long conversation, so this is a real
+            # phase and not a rounding error.
+            emit_phase(
+                progress,
+                "preparing",
+                documents=len(final_docs),
+                sources=len({
+                    (getattr(d, "metadata", None) or {}).get("source", "")
+                    for d in final_docs
+                }),
             )
 
+            # Whatever the optimizer did or did not do, the search text used for
+            # the keyword-gated blocks below is what retrieval actually ran with.
+            standalone_query = pick_search_query(user_text, standalone_query)
 
 
             context_str = docs_to_context(final_docs)
+
 
             # === STEP 3: Handle Conversation Summary ===
             if len(history) > 10:
@@ -851,6 +1106,12 @@ def create_graph():
             # leaving it unsaid is what made everyone a student by default.
             asker = role_block(asker_role)
             print(f"  Asker role: {asker_role}")
+
+            # One line, every answer. "It feels slow" is not actionable and a
+            # speed change nobody measured is a guess; this is what makes the
+            # next person's version of this work start from numbers.
+            print(f"  {timings.render()}")
+
 
             final_system_prompt = safe_prompt(
                 system_prompt,

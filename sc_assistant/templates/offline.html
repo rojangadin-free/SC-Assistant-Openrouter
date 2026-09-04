@@ -30,7 +30,21 @@
       align-items: center;
       justify-content: center;
       padding: 24px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      /* Same stack as --font-sans in main.css, Inter included. This page cannot
+         fetch a webfont — it is what the service worker serves when there is no
+         network — but Inter is often already in the browser's font cache from a
+         previous visit, so naming it first means the offline screen usually looks
+         like the app the student was just using rather than a different site. When
+         it is not cached, the platform UI face takes over, which is the same
+         fallback every other page uses. */
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      /* Matches the app's body copy, which this page previously did not. */
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+
       background: #f6f8f5;
       color: #1f2933;
       text-align: center;

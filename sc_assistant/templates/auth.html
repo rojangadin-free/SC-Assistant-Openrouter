@@ -7,7 +7,39 @@
     <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}" type="image/x-icon">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    {# The font is linked here, not @imported by auth.css, so the request starts
+       during the first HTML parse instead of after auth.css has been fetched and
+       read. This page is the first thing most students see, and it is the one
+       page where a late font swap is most visible: the whole screen is one card
+       with two lines of text in it.
+
+       auth.html is standalone — it does not extend base.html — so these four
+       lines are necessarily a copy of the ones there. #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap">
+
+
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/auth.css')}}"/>
+
+    {# auth.html does not extend base.html, so it does not inherit base's link to
+       polish.css — and this is the first screen every student sees. Without it
+       the login page was the only page still shipping the unfixed values: the
+       #9ca3af helper text at 2.41:1, a 36px theme toggle, and no focus ring on
+       the code inputs. Last in the head for the same reason as in base.html:
+       it corrects declarations auth.css makes literally, so it has to win on
+       source order. #}
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/polish.css')}}"/>
+
+    {# And console.css after it, for the same reason this file has to link
+       polish.css by hand: auth.html does not extend base.html, so nothing in
+       the layout adds it. Without this line /login keeps the old card — square
+       radius, grey surface, no hairline — and is the one page in the app that
+       does not look like the rest of it. #}
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/console.css')}}"/>
+
+
     <style>
         /* ── Guest divider ─────────────────────────── */
         .or-divider {
@@ -16,7 +48,7 @@
             gap: 12px;
             margin: 0 0 1rem;
             color: var(--text-secondary);
-            font-size: 13px;
+            font-size: var(--text-sm);
         }
         .or-divider::before,
         .or-divider::after {
@@ -34,8 +66,8 @@
             border: 1.5px solid var(--border);
             border-radius: 12px;
             color: var(--text-secondary);
-            font-size: 15px;
-            font-weight: 500;
+            font-size: var(--text-md);
+            font-weight: var(--weight-medium);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -58,7 +90,10 @@
 
         /* ── Guest disclaimer ──────────────────────── */
         .guest-disclaimer {
-            font-size: 11.5px;
+            /* Was 11.5px. This line tells a non-enrolled visitor that the app is
+               still usable for them — the sentence that decides whether they stay
+               — and it was set smaller than anything else on the page. */
+            font-size: var(--text-xs);
             color: var(--text-secondary);
             text-align: center;
             line-height: 1.5;
@@ -75,7 +110,20 @@
     </style>
 </head>
 <body>
-    <div class="login-container">
+    {# Skip link. base.html gives one to every page that extends it; auth.html is
+       standalone, so /login was the one route shipping without it — I only found
+       that by querying the served DOM of all four routes instead of trusting the
+       shared template.
+
+       It matters less here than on /chat (there is no sidebar of past
+       conversations to walk past) but not zero: the header above the card holds
+       the theme toggle, and the reset flow puts six OTP boxes ahead of the
+       button. tabindex="-1" makes the container a real focus destination —
+       without it the browser scrolls the card into view but leaves focus on
+       <body>, so the next Tab starts again from the top. #}
+    <a class="skip-link" href="#loginMain">Skip to main content</a>
+
+    <div class="login-container" id="loginMain" tabindex="-1">
         <div class="login-header">
             <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
                 <i class="fas fa-moon"></i>
@@ -180,12 +228,12 @@
             <div class="form-group">
                 <label>Verification Code</label>
                 <div class="code-input-container">
-                    <input type="text" class="code-input" maxlength="1" data-index="0">
-                    <input type="text" class="code-input" maxlength="1" data-index="1">
-                    <input type="text" class="code-input" maxlength="1" data-index="2">
-                    <input type="text" class="code-input" maxlength="1" data-index="3">
-                    <input type="text" class="code-input" maxlength="1" data-index="4">
-                    <input type="text" class="code-input" maxlength="1" data-index="5">
+                    <input aria-label="Verification code, digit 1 of 6" type="text" class="code-input" maxlength="1" data-index="0">
+                    <input aria-label="Verification code, digit 2 of 6" type="text" class="code-input" maxlength="1" data-index="1">
+                    <input aria-label="Verification code, digit 3 of 6" type="text" class="code-input" maxlength="1" data-index="2">
+                    <input aria-label="Verification code, digit 4 of 6" type="text" class="code-input" maxlength="1" data-index="3">
+                    <input aria-label="Verification code, digit 5 of 6" type="text" class="code-input" maxlength="1" data-index="4">
+                    <input aria-label="Verification code, digit 6 of 6" type="text" class="code-input" maxlength="1" data-index="5">
                 </div>
             </div>
 

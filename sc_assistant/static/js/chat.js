@@ -23,7 +23,47 @@ $(document).ready(function() {
   const messagesContainer = $('#messagesContainer');
   const messageInput = $('#messageInput');
   const sendButton = $('#sendButton');
-  const typingIndicator = $('#typingIndicator');
+  // The indicator is no longer a fixed element in the page, so it cannot be
+  // cached: it is created inside each assistant bubble and removed with the
+  // first token. These look it up on use, and are safe no-ops when nothing is
+  // in flight — which is what the "clear any leftovers" callers below rely on.
+  //
+  // Only one request can be in flight (the send button is disabled for the
+  // duration), so a fixed id is still unambiguous.
+  const typingIndicator = () => $('#typingIndicator');
+
+  // The dots and the caption, as they appear inside a bubble. Built here rather
+  // than in chat.html so the bubble and the indicator that belongs to it are
+  // created together; see the note where the old markup used to live.
+  const thinkingBubble = () => `
+    <div class="typing-indicator" id="typingIndicator">
+      <div class="typing-dots"><span></span><span></span><span></span></div>
+      <span class="typing-phase" id="typingPhase" aria-live="polite"></span>
+    </div>`;
+
+  // Captions come from the SSE `phase` events published by rag/progress.py, so
+  // they are never ahead of the work: "Reading 34 pages" appears when the
+  // cross-encoder starts, not on a timer. A missing indicator is not an error —
+  // a phase event can arrive in the same read as the first chunk.
+  function setTypingPhase(text) {
+    $('#typingPhase').text(text || '');
+  }
+
+  // Faded, then removed. Removing it matters: it lives inside the answer bubble
+  // now, so an indicator merely hidden would keep a blank flex row above the
+  // text for the life of the message.
+  function clearTypingIndicator() {
+    const $ind = typingIndicator();
+    if (!$ind.length) return;
+    // The id goes first, so a request that finishes while this one is still
+    // fading cannot find the outgoing node and re-caption it.
+    $ind.removeAttr('id').addClass('fade-out');
+    setTimeout(() => $ind.remove(), 220);
+    messagesContainer.find('.message.is-thinking').removeClass('is-thinking');
+  }
+
+
+
   const messageForm = $('#messageForm');
   const emptyChatState = $('#emptyChatState');
   
@@ -254,9 +294,11 @@ $(document).ready(function() {
   // sources can be recovered from the DOM instead of being threaded through the
   // streaming code and stored per message.
   //
-  // The source footer (below) is read as well, because inline badges only appear
-  // when the model chose to cite mid-sentence — the footer is always there, so a
-  // vote never travels without provenance.
+  // Inline badges only appear when the model chose to cite mid-sentence, so they
+  // cannot be the only source of provenance. The footer used to be the fallback;
+  // now that it is gone, the citations are stashed on the message element instead
+  // (see rememberCitations) and read back here — a vote still never travels
+  // without the file and page it judged.
   function sourcesFor($message) {
     const out = [];
     $message.find('.message-bubble a[data-source]').each(function() {
@@ -266,8 +308,7 @@ $(document).ready(function() {
       const label = page ? `${file}|p.${page}` : `${file}`;
       if (file && out.indexOf(label) === -1) out.push(label);
     });
-    $message.find('.answer-sources .source-chip').each(function() {
-      const label = $(this).data('label');
+    ($message.data('citations') || []).forEach(function(label) {
       if (label && out.indexOf(label) === -1) out.push(label);
     });
     return out;
@@ -276,39 +317,21 @@ $(document).ready(function() {
 
   // ── Where this answer came from ────────────────────────────────
   //
-  // The retrieval pipeline knows the exact file and page behind every answer,
-  // and until now that knowledge died inside the prompt. Printing it does three
-  // things at once: the student can verify the claim, they can open the page and
-  // read the surrounding rules themselves, and a wrong answer arrives with the
-  // name of the file to fix instead of a guess.
+  // There used to be a "Based on <file>, pp. 6, 26, 43…" footer under every
+  // answer. It is gone: the inline [n] badges already do the job better, because
+  // they attribute one sentence rather than the whole reply, and the page list was
+  // a line of noise nobody was going to act on — least of all on a phone, where it
+  // ran off the edge of the screen.
   //
-  // The footer is deliberately quiet — one line, collapsed by default when there
-  // are several files — because a citation that shouts competes with the answer.
-  function renderSourceFooter($message, citations) {
+  // What is NOT gone is the provenance itself, which the vote handler depends on.
+  // The citations are kept on the message element as plain data, in the same
+  // "file|p.N" shape the chips used to expose via data-label, so the payload sent
+  // with a thumbs-up or thumbs-down is unchanged. Nothing is rendered.
+  function rememberCitations($message, citations) {
     if (!citations || !citations.length) return;
-    $message.find('.answer-sources').remove();
-
-    const chips = citations.map(function(c) {
-      // Deep-link to the page when the viewer supports it; the file itself
-      // otherwise. A citation you cannot open is only half a citation.
-      const firstPage = (c.pages && c.pages.length) ? c.pages[0] : null;
-      let url = '/chat/document/' + encodeURIComponent(c.source);
-      if (firstPage && /\.pdf$/i.test(c.source)) url += '#page=' + firstPage;
-
-      const label = (c.label || c.source).replace(/</g, '&lt;');
-      return '<a class="source-chip" href="' + url + '" target="_blank" rel="noopener" ' +
-             'data-label="' + String(c.label || c.source).replace(/"/g, '&quot;') + '" ' +
-             'title="Open ' + String(c.source).replace(/"/g, '&quot;') + '">' +
-               '<i class="fas fa-file-pdf"></i> ' + label +
-             '</a>';
-    }).join('');
-
-    $message.find('.message-row').after(
-      '<div class="answer-sources">' +
-        '<span class="answer-sources-label"><i class="fas fa-book-open"></i> Based on</span>' +
-        '<span class="answer-sources-list">' + chips + '</span>' +
-      '</div>'
-    );
+    $message.data('citations', citations.map(function(c) {
+      return String(c.label || c.source);
+    }));
   }
 
 
@@ -887,11 +910,10 @@ $(document).ready(function() {
 
     messagesContainer.append(html);
 
-    // Rebuild the "Based on" line from the stored citations. Same renderer as the
-    // live path, so a reopened answer shows its sources identically instead of
-    // looking like an answer that never had any.
+    // A replayed answer keeps its provenance too, so voting on an old answer in a
+    // reopened conversation still reports which file it came from.
     if (!isUser && citations && citations.length) {
-      renderSourceFooter($('#' + msgId), citations);
+      rememberCitations($('#' + msgId), citations);
     }
 
     if (autoScroll && messagesContainer.length > 0) {
@@ -1018,15 +1040,22 @@ $(document).ready(function() {
     const requestIsNew = isNewConversation;
     const requestConvId = activeConversationId;
 
-    typingIndicator.removeClass('fade-out').show();
-
     const assistantMessageId = 'msg-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
-    
+
+    // The bubble is created with the dots already in it. There is no caption to
+    // clear first, which the old shared indicator needed: a fresh element per
+    // request cannot inherit the page count from the previous answer.
+    //
+    // `is-thinking` marks it as not-yet-an-answer, and is what hides the empty
+    // streaming div and the feedback thumbs until there is something to judge.
     const htmlPlaceholder = `
-      <div class="message assistant" id="${assistantMessageId}">
+      <div class="message assistant is-thinking" id="${assistantMessageId}">
         <div class="message-row">
           <div class="avatar"><img src="${logoPath}" alt="AI Assistant"></div>
-          <div class="message-bubble"><div class="streaming-text"></div></div>
+          <div class="message-bubble">
+            ${thinkingBubble()}
+            <div class="streaming-text"></div>
+          </div>
         </div>
         <div class="message-report-row">
            ${feedbackButtons(assistantMessageId)}
@@ -1034,11 +1063,20 @@ $(document).ready(function() {
       </div>
     `;
 
+    // Appended NOW, before the request goes out — not after the response headers
+    // come back as it used to be. The dots are the acknowledgement that the
+    // question was sent, so they have to appear on the keypress; waiting for the
+    // server means the slowest questions, the ones that most need a "working on
+    // it", are the ones that sit with no feedback at all.
+    messagesContainer.append(htmlPlaceholder);
+    messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
+
     const formData = new FormData();
     formData.append("msg", message);
     if (imageFile) {
         formData.append("image", imageFile);
     }
+
 
     try {
         const response = await fetch('/chat/get', {
@@ -1048,7 +1086,8 @@ $(document).ready(function() {
 
         if (!response.ok) throw new Error("Network response was not ok");
 
-        messagesContainer.append(htmlPlaceholder);
+        // The bubble is already on screen — appended before the request went out —
+        // so this only has to find where to write.
         const assistantBubble = $(`#${assistantMessageId}`).find('.streaming-text');
 
         const reader = response.body.getReader();
@@ -1065,20 +1104,36 @@ $(document).ready(function() {
                 if (line.startsWith('data: ')) {
                     const data = JSON.parse(line.substring(6));
 
+                    // What the pipeline is doing right now. Published from the
+                    // real phase boundaries (rag/progress.py), so the caption is
+                    // never ahead of the work and the page count in "Reading 34
+                    // pages" is the pool retrieval actually returned.
+                    //
+                    // Handled before 'chunk' because it is the only event that
+                    // arrives while the student is still waiting.
+                    if (data.type === 'phase') {
+                        if (isFirstToken) setTypingPhase(data.label);
+                        continue;
+                    }
+
                     if (data.type === 'chunk') {
                         if (isFirstToken) {
-                            typingIndicator.addClass('fade-out').hide();
+                            // Removed, not hidden. The dots share the bubble with
+                            // the answer now, so leaving the node behind would keep
+                            // a blank row above the text — and a caption fading out
+                            // over the first words reads as a second answer.
+                            clearTypingIndicator();
                             isFirstToken = false;
                         }
+
                         fullAnswerText += data.text;
                         assistantBubble.html(renderCitations(fullAnswerText));
                         messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
                     } 
                     else if (data.type === 'done') {
-                        // Sources arrive with 'done', not with the chunks: the
-                        // footer is a property of the finished answer, and
-                        // re-rendering it on every token would make it flicker.
-                        renderSourceFooter($('#' + assistantMessageId), data.citations);
+                        // Sources arrive with 'done', not with the chunks: they
+                        // describe the finished answer.
+                        rememberCitations($('#' + assistantMessageId), data.citations);
 
                         // Re-key the bubble to the id the answer was SAVED under.
                         // The placeholder id was invented locally so streaming had
@@ -1115,12 +1170,25 @@ $(document).ready(function() {
         }
     } catch (err) {
         console.error("Streaming error:", err);
+
+        // Take the placeholder away, but ONLY if it never received a word. The
+        // bubble now exists from the moment the question was sent, so a request
+        // that dies before the first token would otherwise leave an empty bubble
+        // sitting above the error message.
+        //
+        // A partly-streamed answer is left alone: it is real text the student can
+        // read, and deleting it to replace it with "An error occurred." would
+        // throw away the more useful of the two.
+        const $pending = $('#' + assistantMessageId);
+        if ($pending.find('.streaming-text').text().trim() === '') $pending.remove();
+
         if (requestConvId === activeConversationId) {
             addMessage('An error occurred.');
         }
     } finally {
-        typingIndicator.addClass('fade-out');
-        setTimeout(() => typingIndicator.hide(), 300);
+        // Covers every exit the loop did not: a stream that ended with no chunk
+        // at all, and the error path above when a partial answer was kept.
+        clearTypingIndicator();
         sendButton.prop('disabled', false);
         messageInput.prop('disabled', false);
         if (window.innerWidth > 768) {
@@ -1197,7 +1265,7 @@ $(document).ready(function() {
       })
       .fail(function() {
         conversationList.append(
-          "<div class='conversation-item' style='pointer-events:none; color: #ef4444;'>Failed to load chats</div>"
+          "<div class='conversation-item' style='pointer-events:none; color: var(--ui-danger-ink);'>Failed to load chats</div>"
         );
       })
       .always(function() {
@@ -1220,7 +1288,10 @@ $(document).ready(function() {
     conversationLoader.show();
     sendButton.prop('disabled', true);
     messageInput.prop('disabled', true);
-    typingIndicator.hide();
+    // The `.message` removal above already takes the in-flight bubble and its
+    // dots with it. This clears the `is-thinking` bookkeeping and is a no-op when
+    // nothing was in flight.
+    clearTypingIndicator();
 
     $.post(`/chat/conversation/${convId}/restore`)
       .done(function() {
@@ -1278,7 +1349,7 @@ $(document).ready(function() {
         messageInput.focus();
       }
       
-      typingIndicator.hide();
+      clearTypingIndicator();
       conversationLoader.hide();
     });
   }

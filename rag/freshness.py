@@ -398,7 +398,116 @@ def delete_doc(filename: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def ensure_doc_date(
+    filename: str,
+    text: str = "",
+    *,
+    set_by: str = "auto",
+) -> Optional[dict]:
+    """
+    Record a document's effective date if — and only if — nothing better is known.
+
+    Why this exists
+    ---------------
+    Everything in this module worked, and none of it did anything, because no
+    document had a date. `list_docs()` returned `[]` for a corpus of two files:
+    `infer_effective_date()` was only ever called from the admin upload preview,
+    so files that were seeded into `data/` and indexed directly were never dated.
+    The consequence was silent — `freshness_block()` returned "" on every answer
+    and `compare()` said "cannot tell" every time — so the assistant went on
+    picking whichever contradicting chunk happened to rank higher.
+
+    Called from the indexing path, this closes that hole permanently: a document
+    that is good enough to index is good enough to date.
+
+    Never overwrites a date an ADMIN set
+    ------------------------------------
+    An admin who corrects a wrong guess must not have that correction undone by
+    the next re-index. So a record whose `date_source` is "admin" is left alone,
+    and everything else is refreshed (a re-index may have better text than the
+    first pass did, e.g. after OCR).
+
+    Returns the stored record, or None when no date could be inferred — the
+    caller must treat that as "still unknown", never as "today". See the module
+    docstring for why guessing `now` would be the worst available option.
+    """
+    key = doc_key(filename)
+    if not key:
+        return None
+
+    existing = get_doc_date(filename)
+    if existing and existing.get("date_source") == "admin":
+        return existing
+
+    inferred = infer_effective_date(filename, text)
+    if not inferred["date"]:
+        # Deliberately store nothing. An undated document must stay absent from
+        # the ranking so it can neither win nor lose a comparison it has no
+        # evidence for, and so the admin screen can still show it as undated.
+        return None
+
+    return set_doc_date(filename, text=text, set_by=set_by)
+
+
+def source_priority(*sources: str) -> Dict[str, dict]:
+    """
+    Rank the documents behind one answer by effective date.
+
+    Returns `{doc_key: {"filename", "date", "rank", "is_newest", "is_superseded"}}`
+    and — importantly — returns `{}` unless at least two of the sources have
+    DIFFERENT known dates.
+
+    That empty return is the whole design. This replaced a hardcoded filename in
+    `rag/chain.py`:
+
+        is_base = "samar-college-2024.pdf" in source.lower()
+        priority_tag = "" if is_base else " [NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
+
+    which asserted that every file in the corpus except one literal name
+    supersedes the handbook. Upload a scan of a 2019 memo and it was instantly
+    marked as overriding current policy; rename the handbook and the base case
+    inverted. The rule was "is not called samar-college-2024.pdf", dressed up as
+    a recency judgement.
+
+    Ranking on recorded dates makes the claim true or absent, never wrong: with
+    one document there is nothing to supersede, with two undated documents there
+    is no evidence, and in both cases no document is labelled authoritative.
+    """
+    dated: Dict[str, dict] = {}
+    for s in sources:
+        if not s:
+            continue
+        key = doc_key(s)
+        if key in dated:
+            continue
+        meta = get_doc_date(s)
+        d = _parse_iso_date((meta or {}).get("effective_date") or "")
+        if d:
+            dated[key] = {"filename": meta.get("filename") or s, "date": d}
+
+    if len(dated) < 2 or len({v["date"] for v in dated.values()}) < 2:
+        return {}
+
+    newest = max(v["date"] for v in dated.values())
+    ordered = sorted(dated.items(), key=lambda kv: kv[1]["date"], reverse=True)
+
+    out: Dict[str, dict] = {}
+    for rank, (key, v) in enumerate(ordered):
+        out[key] = {
+            "filename": v["filename"],
+            "date": v["date"].isoformat(),
+            "rank": rank,
+            "is_newest": v["date"] == newest,
+            # Only a document that is BOTH dated and older than the newest is
+            # superseded. An undated file never lands here at all, so it is
+            # never described as out of date on no evidence.
+            "is_superseded": v["date"] < newest,
+        }
+    return out
+
+
 def compare(a: str, b: str) -> dict:
+
     """
     Which of two documents is newer?
 

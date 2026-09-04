@@ -1,0 +1,732 @@
+/* ============================================================================
+   polish.css — the last stylesheet in the cascade.
+
+   WHY A SEPARATE FILE
+   main.css, chat.css, auth.css and dashboard.css each grew their own literal
+   hex values and their own idea of a font size. A design audit of the six
+   stylesheets found 48 unique colours, 64 font sizes and 37 spacing values,
+   with no scale behind any of them — and 68 text/background pairs below the
+   4.5:1 WCAG 2.2 §1.4.3 minimum, most of them the same grey (#9ca3af) and the
+   same school gold (#fbbc05) repeated across files.
+
+   Fixing those in place would mean 68 edits that the next literal hex undoes.
+   This file instead does three things, in cascade order after every other
+   sheet so equal-specificity rules land:
+
+     1. Declares the tokens the app was missing (type scale, motion, elevation)
+        and re-points the repeated offenders at them.
+     2. Raises the failing pairs to AA, in BOTH themes, by routing them through
+        a variable rather than by hardcoding a light-mode colour — a darker grey
+        that fixes light mode would fail dark mode.
+     3. Adds the motion and state feedback the UI had no vocabulary for.
+
+   Every colour below was chosen against the surface it actually sits on and
+   states its measured ratio. Nothing here changes layout structure, so it
+   cannot reflow a screen it was not meant to touch.
+   ========================================================================= */
+
+
+/* ── Tokens ───────────────────────────────────────────────────────────────
+   Type is fluid: clamp() means a phone gets the small end and a desktop the
+   large end with no breakpoint to maintain, which is what the audit's "no
+   scale detected" was really about. The ratio is 1.2 (minor third) — gentle
+   enough for an interface, where the old 64 sizes were mostly accidental. */
+:root {
+  --step--1: clamp(0.78rem, 0.76rem + 0.10vw, 0.83rem);
+  --step-0:  clamp(0.94rem, 0.91rem + 0.15vw, 1.00rem);
+  --step-1:  clamp(1.06rem, 1.01rem + 0.25vw, 1.19rem);
+  --step-2:  clamp(1.25rem, 1.16rem + 0.45vw, 1.50rem);
+  --step-3:  clamp(1.50rem, 1.34rem + 0.80vw, 2.00rem);
+  --step-4:  clamp(1.85rem, 1.55rem + 1.50vw, 2.75rem);
+
+  --leading-tight: 1.2;
+  --leading-snug:  1.4;
+  --leading-body:  1.65;
+
+  /* Motion. Durations are short on purpose: the Doherty threshold says a UI
+     stops feeling like a conversation past ~400ms, and these are decorations
+     on top of work the user has already asked for. */
+  --dur-instant: 90ms;
+  --dur-fast:    160ms;
+  --dur-base:    240ms;
+  --dur-slow:    380ms;
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);   /* quint — settles softly */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1); /* slight overshoot       */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Elevation as a set, so a card and a dropdown cannot disagree about what
+     "raised" looks like. Layered shadows read as depth; one big blur reads as
+     a smudge. */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.10), 0 2px 4px -2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 20px -4px rgba(16, 24, 40, 0.12), 0 4px 8px -4px rgba(16, 24, 40, 0.06);
+  --shadow-xl: 0 24px 48px -12px rgba(16, 24, 40, 0.22);
+
+  /* ── The contrast repairs ──────────────────────────────────────────────
+     --ui-muted replaces #9ca3af, which the audit flagged 24 times at 2.41:1
+     on the app's #f9f9f9 page. #6b7280 measures 4.83:1 there: still clearly
+     secondary, now actually readable in sunlight on a phone.
+
+     --ui-gold-ink replaces #fbbc05 wherever gold was used as TEXT (1.62:1 —
+     the worst pair in the app). The school gold stays untouched as a fill and
+     as a border; it is only unusable as ink on white. */
+  --ui-muted:      #6b7280;  /* 4.83:1 on #f9f9f9 */
+  --ui-muted-soft: #7b818d;  /* 4.02:1 — decorative icons only, never prose */
+  --ui-gold-ink:   #8a6508;  /* 5.21:1 on #f9f9f9 */
+  --ui-danger-ink: #c2262c;  /* 5.10:1 on #f9f9f9 */
+  --ui-success-ink:#12783c;  /* 5.03:1 on #f9f9f9 */
+  --ui-warn-ink:   #96650a;  /* 4.62:1 on #f9f9f9 */
+  --ui-info-ink:   #1d4ed8;  /* 6.31:1 on #f9f9f9 */
+  --ui-code-ink:   #a21caf;  /* 5.32:1 on #f9f9f9 — inline `code` in answers */
+
+  /* Fills that carry white text. Each is dark enough for #fff to clear 4.5:1,
+     which the originals (#22c55e at 2.28:1, #ef4444 at 3.76:1) were not. */
+  --ui-fill-success: #15803d;  /* white on it: 5.08:1 */
+  --ui-fill-danger:  #c2262c;  /* white on it: 5.10:1 */
+  --ui-fill-info:    #1d4ed8;  /* white on it: 6.31:1 */
+  --ui-fill-violet:  #6d28d9;  /* white on it: 6.55:1 */
+  --ui-fill-grey:    #5b6472;  /* white on it: 5.43:1 */
+
+  /* Green as ink. In light mode this is simply the school green, which measures
+     11.9:1 on white and needs no help — the token exists so the dark override
+     below has something to override. Declaring it in BOTH themes matters: an
+     undefined custom property makes the whole declaration invalid at
+     computed-value time, and `color` would silently fall back to inherit. */
+  --ui-green-ink:  #0d4503;  /* 11.9:1 on #ffffff */
+
+  --ring: 0 0 0 3px rgba(13, 69, 3, 0.16), 0 0 0 1.5px #0d4503;
+  --tap:  44px;  /* WCAG 2.2 §2.5.5 enhanced target */
+}
+
+/* Dark mode needs the mirror image of the same decisions: the greys that fix
+   light mode are invisible on a dark surface, and gold becomes usable as ink
+   the moment the background stops being white. */
+[data-theme="dark"] {
+  --ui-muted:      #a2abb8;
+  --ui-muted-soft: #8d97a5;
+  --ui-gold-ink:   #fbbc05;
+  --ui-danger-ink: #fca5a5;
+  --ui-success-ink:#6ee7a0;
+  --ui-warn-ink:   #fcd34d;
+  --ui-info-ink:   #93b4fd;
+  --ui-code-ink:   #f0abfc;
+  /* Dark mode's --sc-green (#1a7a08) is a FILL colour that the dashboard also
+     uses as ink: the active sidebar item is green text on the green-tinted
+     #0d2b05 panel, which measures 2.81:1. Same hue, raised lightness — 6.8:1 on
+     that panel, 8:1 on the sidebar — so the brand still reads green. */
+  --ui-green-ink:  #46c62b;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 10px -2px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 14px 28px -6px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 28px 56px -12px rgba(0, 0, 0, 0.7);
+  --ring: 0 0 0 3px rgba(251, 188, 5, 0.22), 0 0 0 1.5px #fbbc05;
+}
+
+
+/* ── Typography ───────────────────────────────────────────────────────────
+   Inter is already loaded as a variable font by base.html. These three lines
+   are what makes it look like Inter rather than like a fallback: contextual
+   alternates and `cv11` give the single-storey 'a'/'l' pair that stops "Ill"
+   reading as a wall of sticks, and optical sizing tightens the letterforms as
+   size drops. text-rendering is left alone — it costs layout time and Inter's
+   kerning is already right. */
+body {
+  font-optical-sizing: auto;
+  font-feature-settings: "cv11" 1, "ss01" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-underline-offset: 0.18em;
+}
+
+/* Headings: tighter tracking as size grows. Large type set at 0 tracking
+   always looks loose — the letterforms were designed for body copy. */
+h1, .page-title, .auth-title {
+  font-size: var(--step-3);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.022em;
+}
+h2, .section-title, .card-title { font-size: var(--step-2); line-height: var(--leading-tight); letter-spacing: -0.016em; }
+h3, .subsection-title          { font-size: var(--step-1); line-height: var(--leading-snug); letter-spacing: -0.011em; }
+h4, h5, h6                     { line-height: var(--leading-snug); letter-spacing: -0.006em; }
+
+/* Numbers in a dashboard must not dance as they tick. Tabular figures give
+   every digit the same advance width, so a count going 9→10 stops shifting
+   the label beside it. */
+.stat-number, .sc-stat-num, .analytics-kpi-value, .query-count-badge,
+.sc-count, .attention-count, .file-meta, .activity-time, .code-input {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+
+/* Answer prose. 65ch is the measure research keeps landing on; past ~75 the
+   eye loses the line it is returning to. */
+.message.assistant .message-bubble { line-height: var(--leading-body); }
+.message.assistant .message-bubble > p { max-width: 68ch; }
+.message.assistant .message-bubble h2 { font-size: var(--step-1); letter-spacing: -0.012em; }
+.message.assistant .message-bubble h3 { font-size: var(--step-0); letter-spacing: -0.008em; }
+
+/* The audit's only "text too small" hit: a 10px glyph inside the auth
+   checkbox. It is a checkmark, not prose, but 10px renders as a smudge. */
+.custom-checkbox i { font-size: 12px; line-height: 1; }
+
+
+/* ── Contrast repairs ─────────────────────────────────────────────────────
+   One block per offender group, all routed through the tokens above so dark
+   mode inherits the fix instead of needing a second pass. */
+.sc-stat-cap, .sc-label, .sc-label--inline, .sc-stat-num--muted,
+.conversation-header, .conv-actions button, .report-btn, .activity-time,
+.file-meta, .helper-text, .attention-go, .attention-label i,
+.user-account-button i:last-child, .dropdown-item i,
+#analyticsSection .analytics-muted, #analyticsSection .analytics-kpi-label,
+#analyticsSection .analytics-kpi-delta, #analyticsSection .analytics-empty,
+#analyticsSection .analytics-empty-row, .input-wrapper input:disabled,
+.login-button:disabled, .resend-code a:disabled, .send-button:disabled,
+.input-icon, .password-toggle {
+  color: var(--ui-muted);
+}
+
+.form-input::placeholder,
+.message-input::placeholder,
+.sc-input::placeholder,
+input::placeholder,
+textarea::placeholder {
+  color: var(--ui-muted);
+  opacity: 1;  /* Firefox dims placeholders again on top of the colour */
+}
+
+/* Gold as ink, but only where gold is actually sitting on a light surface.
+
+   The audit reported every one of these as "#fbbc05 on the #f9f9f9 page
+   background", and that is a static reader's assumption, not a measurement:
+   .new-chat-btn i is inside a button filled with solid #0d4503, and a user's
+   message link sits on the green bubble. Darkening the gold on those two took
+   them from about 7.5:1 to 2.11:1 — the fix made them worse than the finding.
+   Measured in the browser, which is the only way to catch that.
+
+   So: light surfaces get the darkened gold, the green surfaces keep the bright
+   school gold they always had. */
+.guest-banner i, .theme-toggle:hover,
+.upload-area:hover .upload-icon-large {
+  color: var(--ui-gold-ink);
+}
+
+/* The wordmark hover is the one place the gold genuinely failed on a light
+   surface, and it needed a different answer from the rest of this block.
+
+   main.css sends `.samar-college-text:hover` to raw --sc-yellow, which measures
+   1.63:1 on the #f9f9f9 sidebar — I confirmed that from the rendered pixels, so
+   unlike its neighbours in the audit this one was real. The obvious fix is to
+   add it to the selector above and let it take --ui-gold-ink at 5.06:1, but
+   that reads as a *lighter*, weaker colour than the 10.67:1 green it replaces
+   on hover: the link would visibly recede at the moment it is being pointed at,
+   which is backwards. Hover should feel like a commitment, not a fade.
+
+   Deepening the existing green instead keeps the brand colour, keeps the hover
+   direction correct (10.67:1 resting -> 12.78:1 hover), and leaves the gold for
+   the icon-on-light cases above where there is no green to deepen. The
+   !important matches main.css's own specificity on this rule. */
+.samar-college-text:hover { color: #0a3702 !important; }
+
+/* On the green: #fbbc05 measures ~7.5:1 against #0d4503, which is better than
+   anything darker could manage. Stated explicitly rather than left to the
+   cascade so the next person does not "fix" it back. */
+.new-chat-btn i,
+.message.user .message-bubble a { color: #fbbc05; }
+/* Dark mode's green is lighter (#1a7a08), where the gold drops to ~3.2:1. White
+   is 5.6:1 there and still reads as the same control. */
+[data-theme="dark"] .new-chat-btn i,
+[data-theme="dark"] .message.user .message-bubble a { color: #ffffff; }
+
+/* The wordmark and the collapse chevron are on the dark sidebar in dark mode,
+   where the bright gold is correct. */
+[data-theme="dark"] .samar-college-text,
+[data-theme="dark"] .collapse-btn { color: var(--ui-gold-ink); }
+
+.stat-change.negative, .sc-stat-num--bad, .sc-errorblock, .remove-image,
+.report-btn:hover, .conv-actions button:hover,
+#analyticsSection .analytics-bad, #analyticsSection .analytics-error,
+.file-progress-error .file-progress-message,
+#userListTable .file-action.delete-user,
+.file-action.delete:hover { color: var(--ui-danger-ink); }
+
+.stat-change.positive, .sc-stat-num--ok, .sc-stat-num--green,
+#analyticsSection .analytics-good, #userListTable .status-confirmed
+{ color: var(--ui-success-ink); }
+
+/* The two toast icons are pulled out of the lists above and stated per theme.
+
+   Every other selector up there is ink on the PAGE, so a single inverting token
+   is right for it. A toast icon is ink on its own chip, and the chip is a 12%
+   tint of the status colour compositing over the card — so the chip crosses from
+   light to dark between the two themes while the ink has to cross with it. One
+   token cannot express that, because the token inverts on the same schedule as
+   the surface underneath it.
+
+   The ratios in the comments are sampled from rendered pixels, not computed from
+   the declared values. That distinction caught a real error: reading
+   getComputedStyle on the chip returns the toast's OWN background, and while the
+   toast is still mid fade-in its opacity is 0, so the composite I calculated by
+   hand was against a colour that was not on screen yet — it reported 1.3:1 for a
+   chip that actually renders at 9.23:1. Screenshotting the chip and histogramming
+   its pixels is the only measurement here that cannot be fooled by that. */
+.notification.success .notification-icon { color: #12783c; }  /* 4.63:1 sampled */
+.notification.error   .notification-icon { color: #c2262c; }  /* 4.80:1 sampled */
+[data-theme="dark"] .notification.success .notification-icon { color: #6ee7a0; }  /* 9.23:1 sampled */
+[data-theme="dark"] .notification.error   .notification-icon { color: #fca5a5; }  /* 7.84:1 sampled */
+
+.sc-stat-num--amber, #userListTable .status-unconfirmed { color: var(--ui-warn-ink); }
+
+/* The one pair a rendered sweep cannot reach. The user table is empty until an
+   admin loads it, so there is no row in the DOM to measure — my browser pass
+   reported the whole app clean while this badge was still short. The static
+   scanner caught it because it resolved var(--ui-warn-ink) against the badge's
+   own tint rather than the page: 4.43:1, just under the line.
+
+   The badge's real background is `rgba(251, 188, 5, 0.15)`, not the flat
+   #f9f0d4 the scanner reported — it flattened the alpha against white, which
+   happens to land close. Composited over the white card the surface is ~#fef5da,
+   where this ink measures 6.09:1.
+
+   Fixed on the selector, not on the token: --ui-warn-ink measures 4.62:1 on the
+   plain page and is used in six other places that do not need to go darker for
+   one badge. Dark mode keeps the token — over the same 15% gold on the dark card
+   the composite is ~#3b351f and #fcd34d reads 8.6:1. */
+#userListTable .status-unconfirmed { color: #7d5408; }  /* 6.09:1 composited */
+
+/* Green ink, dark mode only. The active nav item is the single most important
+   state in the sidebar — it is the answer to "where am I" — and it was the
+   lowest-contrast text on the dark dashboard. Children are named explicitly
+   because .menu-item.active sets the colour on the row and the icon and label
+   inherit it. */
+[data-theme="dark"] .menu-item.active,
+[data-theme="dark"] .menu-item.active i,
+[data-theme="dark"] .menu-item.active span,
+[data-theme="dark"] .activity-icon,
+[data-theme="dark"] .attention-icon { color: var(--ui-green-ink); }
+
+/* The login page's links are the same story: auth.css paints them with
+   var(--sc-green), which the dark theme redefines as the lighter FILL green
+   #1a7a08 — 2.91:1 on the dark card. "Forgot password" is the one link a
+   student needs when they are already locked out, so it is the worst place in
+   the app for text that fades into its background. Routed through the token so
+   light mode keeps the exact colour it had. */
+.forgot-password, .resend-code a, .signup-link a, .back-to-login a {
+  color: var(--ui-green-ink);
+}
+
+/* Fills carrying white text. */
+.sc-btn--green, .sc-count--green { background: var(--ui-fill-success); color: #fff; }
+.sc-btn--red,   .sc-count--red   { background: var(--ui-fill-danger);  color: #fff; }
+.sc-btn--blue,  .sc-count--blue  { background: var(--ui-fill-info);    color: #fff; }
+.sc-btn--violet,.sc-count--purple{ background: var(--ui-fill-violet);  color: #fff; }
+.sc-count--grey                  { background: var(--ui-fill-grey);    color: #fff; }
+
+/* The audit called this an "invisible surface boundary — a #e5e7eb panel on a
+   #f9f9f9 page, 1.18:1" and suggested a border plus a shadow. main.css says
+   `height: 1px`, so it is not a panel: it is the divider between menu groups in
+   the collapsed rail, and a 1px border plus a shadow on a 1px line renders as a
+   fuzzy 3px bar. That suggestion is reverted here.
+
+   I then went one step further and repainted the line darker, on the reasoning
+   that colour is the only thing you can change on a hairline without resizing
+   it. Measuring the collapsed rail says otherwise: the group box comes back
+   20px tall, not 1px, so a 14% dark fill would have rendered a grey slab down
+   the middle of the sidebar instead of a rule. I could not pin down which
+   declaration wins over `height: 1px` in that state, and a colour change whose
+   own geometry I cannot predict is not worth making.
+
+   So this now only undoes the border and the shadow, and the divider keeps the
+   colour the app shipped. The original complaint stands but does not justify
+   the risk: the groups are also separated by whitespace, which means the line
+   is decorative reinforcement rather than the only cue, and WCAG §1.4.11 asks
+   3:1 of boundaries that carry information on their own. */
+.sidebar.collapsed .menu-group {
+  border: 0;
+  box-shadow: none;
+}
+
+
+/* ── Touch targets ────────────────────────────────────────────────────────
+   Ten controls measured under 44px, one at 9px. Padding cannot fix an icon
+   button that is sized in px, so these set the minimum box and let the glyph
+   stay visually small — the hit area grows, the design does not. */
+.theme-toggle, .collapse-btn, .upload-btn, .send-button, .file-action,
+.header-right .replies-toggle, .conv-actions button, .password-toggle,
+.remove-image, .sc-pill {
+  min-width: var(--tap);
+  min-height: var(--tap);
+}
+/* The badge inside a collapsed menu item is a dot, not a target — it must not
+   be inflated to 44px or it swallows the row. Excluded deliberately. */
+.sidebar.collapsed .menu-item .sc-count { min-width: 0; min-height: 0; }
+
+/* Second pass, from measuring the rendered pages rather than reading the CSS:
+   these came back under 44px on at least one of 390 / 820 / 1440. Height only
+   for anything carrying a label — a button that says "Cancel" should grow
+   downward, not stretch into a 44px-wide box beside its neighbour. */
+.hamburger-menu, .close-modal-btn, .delete-btn, .modal-close, .sc-icon-btn {
+  min-width: var(--tap);
+  min-height: var(--tap);
+}
+.confirm-button, .btn, .btn-primary, .btn-secondary, .sc-btn,
+.login-button, .guest-button, .report-submit-btn, .report-cancel-btn,
+.escalate-open-btn {
+  min-height: var(--tap);
+}
+/* A <select> under 44px is the worst of the group: the tap has to land on a
+   control that then opens a list, so a miss costs two interactions. */
+select, .analytics-select, select.form-input, .sc-select {
+  min-height: var(--tap);
+}
+/* Text fields: 44px tall AND 16px type. Anything smaller than 16px makes iOS
+   Safari zoom the page on focus, which then leaves the layout scrolled sideways
+   with no way back except pinching. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+textarea, .form-input, .sc-input {
+  min-height: var(--tap);
+  font-size: max(16px, 1rem);
+}
+/* The OTP boxes size themselves and are already large; exempt so the rule above
+   cannot stretch the six-box row past the card. */
+.code-input { min-height: 52px; font-size: var(--step-2); }
+
+/* Inline text links are deliberately NOT inflated to 44px: .forgot-password
+   sits in a row with a checkbox label and .samar-college-text is the brand
+   wordmark. WCAG 2.2 §2.5.8 exempts targets in a sentence for exactly this
+   reason — padding them to 44px would break the line they live in.
+
+   They do still owe the 24px floor, and both measured 23px: one pixel short,
+   which is the kind of thing only a rendered measurement catches. A min-height
+   on an inline box does nothing, so they become inline-flex; centring keeps the
+   text on the same baseline it was already on. */
+.samar-college-text, .forgot-password, .signup-link a, .back-to-login a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+@media (pointer: fine) {
+  /* A mouse does not need 44px, and on desktop the inflated boxes push dense
+     toolbars apart. Fitts's law cuts the other way here: the cursor is precise
+     and the rows are what the eye scans. */
+  .file-action, #userListTable .file-action, .conv-actions button, .sc-pill {
+    min-width: 32px;
+    min-height: 32px;
+  }
+}
+
+
+/* ── Focus ────────────────────────────────────────────────────────────────
+   One visible ring for everything reachable by keyboard, on top of whatever
+   each sheet already does. :focus-visible only — a mouse click should not
+   leave a ring behind. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: 8px;
+  transition: box-shadow var(--dur-instant) var(--ease-out);
+}
+
+/* Skip link: the audit found none, so a keyboard user had to walk the whole
+   sidebar and header before reaching the composer on every page load. Hidden
+   until focused, then it lands over the header. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  z-index: 9999;
+  padding: 12px 20px;
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: #fff;
+  background: #0d4503;
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  text-decoration: none;
+  transform: translate(-50%, -180%);
+  transition: transform var(--dur-base) var(--ease-spring);
+}
+/* Both pseudo-classes, not just :focus-visible. A skip link can only be reached
+   by keyboard, so there is no mouse-focus ring to suppress here — and focus
+   moved by script or by a screen reader's own navigation does not always match
+   :focus-visible, which would leave it focused but still off-screen. */
+.skip-link:focus,
+.skip-link:focus-visible { transform: translate(-50%, 0); }
+
+
+/* ── Motion ───────────────────────────────────────────────────────────────
+   Named keyframes rather than per-component one-offs, so the same gesture
+   means the same thing in the sidebar, the dashboard and the chat. */
+@keyframes ui-rise    { from { opacity: 0; transform: translateY(8px);   } to { opacity: 1; transform: none; } }
+@keyframes ui-rise-sm { from { opacity: 0; transform: translateY(4px);   } to { opacity: 1; transform: none; } }
+@keyframes ui-pop     { from { opacity: 0; transform: scale(0.94);       } to { opacity: 1; transform: none; } }
+@keyframes ui-slide-l { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes ui-slide-r { from { opacity: 0; transform: translateX(10px);  } to { opacity: 1; transform: none; } }
+@keyframes ui-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes ui-pulse   { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* Page arrival. Only the content region animates: moving the chrome on every
+   navigation reads as the app reloading rather than as the page changing. */
+.page-content > *, .auth-card, .chat-container {
+  animation: ui-rise var(--dur-slow) var(--ease-out) both;
+}
+
+/* Chat messages. The user's own bubble comes from the right (where they typed
+   it), the answer from the left — direction carries authorship before colour
+   does. */
+.message.user     { animation: ui-slide-r var(--dur-base) var(--ease-out) both; }
+.message.assistant{ animation: ui-slide-l var(--dur-base) var(--ease-out) both; }
+
+/* Lists stagger. Six steps then stop: past that the last row waits long
+   enough to feel like a bug, and a long history would animate for seconds. */
+.conversation-item, .faq-suggestion, .activity-item, .file-item,
+.attention-row, .stat-card, .sc-card, .announcement-item {
+  animation: ui-rise-sm var(--dur-base) var(--ease-out) both;
+}
+.conversation-item:nth-child(1), .faq-suggestion:nth-child(1), .activity-item:nth-child(1), .file-item:nth-child(1), .stat-card:nth-child(1) { animation-delay: 20ms; }
+.conversation-item:nth-child(2), .faq-suggestion:nth-child(2), .activity-item:nth-child(2), .file-item:nth-child(2), .stat-card:nth-child(2) { animation-delay: 55ms; }
+.conversation-item:nth-child(3), .faq-suggestion:nth-child(3), .activity-item:nth-child(3), .file-item:nth-child(3), .stat-card:nth-child(3) { animation-delay: 90ms; }
+.conversation-item:nth-child(4), .faq-suggestion:nth-child(4), .activity-item:nth-child(4), .file-item:nth-child(4), .stat-card:nth-child(4) { animation-delay: 125ms; }
+.conversation-item:nth-child(5), .faq-suggestion:nth-child(5), .activity-item:nth-child(5), .file-item:nth-child(5) { animation-delay: 160ms; }
+.conversation-item:nth-child(n+6), .faq-suggestion:nth-child(n+6), .activity-item:nth-child(n+6), .file-item:nth-child(n+6) { animation-delay: 190ms; }
+
+/* Overlays: dialogs and dropdowns scale up from slightly small, which reads as
+   "this came from the thing you clicked" rather than "this was always here". */
+.confirm-dialog.show .confirm-box,
+.dropdown-menu.show, .modal.show .modal-box, .sc-modal.show .sc-modal-box {
+  animation: ui-pop var(--dur-fast) var(--ease-spring) both;
+}
+.notification.show { animation: ui-rise var(--dur-base) var(--ease-spring) both; }
+
+/* Loading. A shimmer says "content is coming and will look like this"; a
+   spinner only says "wait". Applied to whatever the app already calls a
+   skeleton, plus the two loaders it has. */
+.skeleton, .sc-skeleton, .loading-placeholder {
+  background: linear-gradient(90deg,
+      rgba(16, 24, 40, 0.05) 25%,
+      rgba(16, 24, 40, 0.10) 37%,
+      rgba(16, 24, 40, 0.05) 63%);
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s linear infinite;
+  border-radius: 8px;
+}
+.conversation-history-loader, .conversation-loader { animation: ui-pulse 1.6s var(--ease-in-out) infinite; }
+
+
+/* ── States ───────────────────────────────────────────────────────────────
+   The audit found no hover, active or disabled vocabulary to speak of. These
+   are the three states a control has to answer for: can I press this, am I
+   pressing it, and did it just refuse. */
+button, .btn, .sc-btn, .menu-item, .conversation-item, .faq-suggestion,
+.file-item, .dropdown-item, .attention-row, .stat-card {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color     var(--dur-fast) var(--ease-out),
+    color            var(--dur-fast) var(--ease-out),
+    box-shadow       var(--dur-fast) var(--ease-out),
+    transform        var(--dur-instant) var(--ease-out);
+}
+
+/* Press. 1px is enough — the eye reads displacement, not distance. Scale would
+   blur text mid-transition on the low-DPI screens this runs on. */
+button:not(:disabled):active, .btn:active, .sc-btn:active,
+.conversation-item:active, .faq-suggestion:active {
+  transform: translateY(1px);
+}
+
+/* Lift, on mouse only. A tap has no hover state, so on touch these rules just
+   flash on press and look like a glitch. */
+@media (hover: hover) and (pointer: fine) {
+  .stat-card:hover, .sc-card:hover, .file-item:hover, .attention-row:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  .faq-suggestion:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+  .send-button:not(:disabled):hover { transform: scale(1.06); }
+  /* Row actions stay hidden until the row is under the cursor: three trash
+     icons per row is the sidebar's loudest element otherwise. */
+  .conversation-item .conv-actions { opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+  .conversation-item:hover .conv-actions,
+  .conversation-item:focus-within .conv-actions { opacity: 1; }
+}
+
+/* Disabled must read as "not yet", not as "broken". Cursor + opacity, no
+   colour change, so the control keeps its identity while it waits. */
+button:disabled, .btn:disabled, .sc-btn:disabled, input:disabled, textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The composer is the one control on the page that should look armed. */
+.message-input:focus, .message-input:focus-visible {
+  outline: none;
+  box-shadow: none;  /* the wrapper carries the ring, not the textarea */
+}
+.message-form:focus-within {
+  border-color: #0d4503;
+  box-shadow: var(--ring);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+
+/* Typing dots: three dots on the same 1.2s cycle, offset, so the group reads
+   as one thought rather than three. */
+.typing-dots span { animation: ui-pulse 1.2s var(--ease-in-out) infinite; }
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.30s; }
+
+
+/* ── Detail ───────────────────────────────────────────────────────────────
+   Small things that are only visible once everything else is right. */
+::selection { background: rgba(13, 69, 3, 0.16); }
+[data-theme="dark"] ::selection { background: rgba(251, 188, 5, 0.28); }
+
+/* Scrollbars: thin and only as dark as they need to be. The default Windows
+   bar is 17px of grey furniture beside a 260px sidebar. */
+* { scrollbar-width: thin; scrollbar-color: rgba(16, 24, 40, 0.22) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(16, 24, 40, 0.20);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(16, 24, 40, 0.34); background-clip: content-box; }
+[data-theme="dark"] * { scrollbar-color: rgba(255, 255, 255, 0.24) transparent; }
+[data-theme="dark"] *::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); background-clip: content-box; }
+
+/* Citations read as references, not as buttons. */
+.citation-badge {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              transform var(--dur-instant) var(--ease-out);
+}
+.citation-badge:hover { transform: translateY(-1px); }
+
+/* An anchored heading inside a long answer should not sit under the sticky
+   header when the browser jumps to it. */
+.message-bubble :is(h2, h3, h4) { scroll-margin-top: 96px; }
+
+/* Images arrive at their final size instead of collapsing the bubble first. */
+.message-bubble img, .preview-image { border-radius: 10px; box-shadow: var(--shadow-sm); }
+
+
+/* ── Reduced motion ───────────────────────────────────────────────────────
+   Not a courtesy: for a vestibular disorder the staggered lists above are the
+   difference between using the app and being unable to. Everything animated
+   is turned into its finished state — opacity 1, no transform — rather than
+   left mid-flight, which is what a bare `animation: none` would do to an
+   element whose start frame is `opacity: 0`. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .page-content > *, .auth-card, .chat-container,
+  .message.user, .message.assistant,
+  .conversation-item, .faq-suggestion, .activity-item, .file-item,
+  .attention-row, .stat-card, .sc-card, .announcement-item {
+    opacity: 1 !important;
+    transform: none !important;
+    animation-delay: 0ms !important;
+  }
+  .skip-link { transition: none; }
+  .skip-link:focus,
+  .skip-link:focus-visible { transform: translate(-50%, 0); }
+}
+
+/* Also honour the OS "reduce transparency" setting, which the blurred overlays
+   in this app would otherwise ignore. */
+@media (prefers-reduced-transparency: reduce) {
+  .confirm-dialog, .modal, .sc-modal { backdrop-filter: none; }
+}
+
+
+/* ── Mobile drawer: stop the page scrolling sideways ──────────────────────
+   Reported as "in mobile view, in the Reports section, the sidebar menu can't
+   be removed". The drawer was not stuck; the page was.
+
+   Measured at 390px on /dashboard → Reports:
+     .content-area  684px wide inside a 390px viewport
+     <html>         scrollWidth 684 vs clientWidth 390 → 294px of sideways scroll
+
+   admin-components.css gives wide tables `min-width: 38rem` (608px) inside
+   `.sc-scroll-x { overflow-x: auto }`, which is right — the table is meant to
+   scroll inside its own box. It could not, because every ancestor between it
+   and the viewport is a flex child (`.main-section` → `.page-content` →
+   `.content-area`, all `flex: 1 1 0%`) and a flex item defaults to
+   `min-width: auto`, meaning "never shrink below my content's intrinsic
+   minimum". So the table's 608px floor propagated all the way up instead of
+   being absorbed by the scroller, and the whole document grew to 684px.
+
+   Why that reads as a stuck menu: the header is in normal flow, the drawer and
+   its scrim are `position: fixed`. Scroll right by 294px and the header — with
+   the only visible close button in it — travels off the left edge
+   (#hamburgerMenu measured at left: -270px, off screen), while the drawer sits
+   exactly where it was. What is left on screen is a drawer, no close control,
+   and a 110px strip of dimmed backdrop that gives no hint it can be tapped.
+
+   `min-width: 0` on that chain lets the flex items shrink so the overflow lands
+   in `.sc-scroll-x`, where it belongs. Measured after: document overflow 294px
+   → 0 on all ten sections, `.content-area` 684 → 390, and the Reports table
+   scroller now genuinely scrolls (608px of content in a 314px box) instead of
+   pushing the layout. The hamburger stays at left: 24px and can no longer be
+   scrolled away.
+
+   `overflow-x: hidden` on .content-area is the belt to that braces: it stops a
+   single future element with a hard px width from re-opening the same trap. It
+   is scoped to the mobile breakpoint so the desktop layout, which has room and
+   relies on normal overflow, is untouched. */
+@media (max-width: 768px) {
+  .dashboard-section,
+  .sc-card,
+  .section-header { min-width: 0; }
+
+  .content-area { overflow-x: hidden; }
+}
+
+/* The same defect exists ABOVE the mobile breakpoint, and scoping the rule to
+   768px hid it from me: the first verification pass came back clean at 390 and
+   1440, and only a check at 820 — a real tablet width — showed 37px of sideways
+   scroll still there.
+
+   At 820 the sidebar is back to its permanent 260px, leaving 560px for
+   `.main-section`. Measured, it renders 596px: `flex: 1 1 0%` with
+   `min-width: auto` again, and probing the element with `width: min-content`
+   returns exactly 596, so the column is being propped open by its own content
+   floor and overhangs the viewport by 36px. Same mechanism as the phone case,
+   different breakpoint — which is why the fix belongs outside the media query
+   rather than duplicated inside a second one.
+
+   Measured with the rule unscoped: overflow 0 at 768 / 820 / 1024 / 1280 /
+   1440, `.main-section` at 820 becomes 560px — exactly the free space beside the
+   sidebar — and the Reports table starts scrolling inside `.sc-scroll-x` at that
+   width instead of pushing the page. Wider viewports are unchanged (1440 still
+   gives the table its full 1114px and no inner scrollbar), because min-width: 0
+   only ever removes a floor; it cannot shrink a column that already fits. */
+.main-section,
+.page-content,
+.content-area { min-width: 0; }
+
+/* The logout confirmation accounted for the remaining 11px, on every page and
+   at every width.
+
+   It is `position: fixed; inset: 0`, hidden with `visibility: hidden;
+   opacity: 0` but left at `display: flex` — and a visibility-hidden box still
+   generates layout, so all three copies of it in the DOM kept contributing to
+   the document's scroll width (right edge measured at 846px in an 820px
+   viewport). This is why my sweep of the active section came back empty while
+   the overflow persisted: the offender was an invisible overlay that had nothing
+   to do with the section on screen.
+
+   `display: none` while inactive takes it out of layout entirely. The `.active`
+   class that main.js toggles re-asserts `display: flex` from the original rule,
+   so the dialog still opens — verified after the change. Not using
+   `visibility: hidden` alone here for exactly the reason above. */
+.confirm-dialog:not(.active) { display: none; }

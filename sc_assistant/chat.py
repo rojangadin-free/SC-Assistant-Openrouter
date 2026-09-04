@@ -18,6 +18,8 @@ from aws.dynamodb import (
 from rag.gaps import looks_unanswered, record_gap
 from rag.feedback import record_vote, get_vote, get_votes
 from rag.roles import resolve_role
+from rag.progress import ProgressChannel
+
 
 
 from rag.escalation import (
@@ -129,24 +131,81 @@ def chat():
             "role": resolve_role(session.get("role"), is_guest=guest),
         }
 
+        # The channel the pipeline reports its progress on.
+        #
+        # It rides in `configurable`, NOT in the payload. The graph is compiled
+        # with a checkpointer, so anything in the state gets serialised after
+        # every step — and a live queue tied to this one open HTTP connection is
+        # not msgpack-serialisable, which turned every answer into
+        # "Sorry, something went wrong while preparing that answer."
+        # `configurable` is per-invocation wiring that is never checkpointed,
+        # which is exactly what a one-shot pipe to one browser is.
+        progress = ProgressChannel()
+        config = {
+            "configurable": {
+                **config["configurable"],
+                "progress": progress,
+            }
+        }
 
-        result = app_graph.invoke(input_payload, config=config)
-        messages_to_llm = result.get("messages_to_llm", [])
-
-        # The files/pages the answer is built from. Computed during retrieval
-        # (rag/citations.py) because that is the only point where provenance
-        # still exists — the prompt is a flat string by the time it ships.
-        citations = result.get("citations", []) or []
-
-        if not messages_to_llm:
-            return jsonify({"error": "Context compilation failed. Please try again."}), 500
 
 
         # 🚀 Server-Sent Events Token Streaming Loop
         @stream_with_context
         def generate():
+            # The pipeline runs INSIDE the generator, deliberately.
+            #
+            # It used to run above, before `Response(...)` was returned. That
+            # made the phase captions unreachable: retrieval and reranking —
+            # the seconds a student actually waits — all elapsed while the
+            # browser was still waiting for response headers, so there was no
+            # open connection to tell anything to. Three static dots were the
+            # only honest UI available.
+            #
+            # Everything that touches `session` stays outside (above): Flask
+            # will not let a response mutate the session once streaming has
+            # begun, and the conversation id has to be settled before the first
+            # byte anyway.
             full_answer = ""
+
+            # Flushed before the pipeline starts so the browser paints something
+            # immediately rather than after the first phase completes.
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'searching', 'label': 'Looking through Samar College documents'})}\n\n"
+
             try:
+                result = app_graph.invoke(input_payload, config=config)
+            except Exception as graph_err:
+                print(f"Graph invocation failed: {graph_err}")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Sorry, something went wrong while preparing that answer. Please try again.'})}\n\n"
+                return
+
+            messages_to_llm = result.get("messages_to_llm", [])
+
+            # The files/pages the answer is built from. Computed during retrieval
+            # (rag/citations.py) because that is the only point where provenance
+            # still exists — the prompt is a flat string by the time it ships.
+            citations = result.get("citations", []) or []
+
+            if not messages_to_llm:
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Context compilation failed. Please try again.'})}\n\n"
+                return
+
+            # Every caption the pipeline published while it ran, in order. They
+            # are delivered as a group because `invoke()` is synchronous: the
+            # generator cannot interleave with it, so this replays the real
+            # sequence the moment control returns. Each still carries the phase
+            # it belongs to, so the UI shows the last true state rather than a
+            # guess.
+            for event in progress.drain():
+                yield f"data: {json.dumps(event)}\n\n"
+
+            # The answer LLM is about to be called and the first token has not
+            # arrived. This is the one caption the graph cannot publish itself,
+            # because the model is invoked out here.
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'writing', 'label': 'Generating response'})}\n\n"
+
+            try:
+
                 # stream_answer() (rag/chain.py) walks the providers itself.
                 # `chatModel.stream()` could not: with_fallbacks wraps the CALL,
                 # but a stream fails INSIDE the caller's loop — long after the

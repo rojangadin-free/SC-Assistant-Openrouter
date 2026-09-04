@@ -1,7 +1,43 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* The Inter @import is gone — auth.html now links the font in its own <head>,
+   with preconnects, so it starts loading in the first HTML parse instead of after
+   this file has been fetched and parsed. */
 
 /* CSS Variables for SC Minimal Theme */
 :root {
+    /* ── TYPOGRAPHY ───────────────────────────────────────────────
+       Deliberately duplicated from main.css. auth.html is a standalone page: it
+       does not extend base.html and does not load main.css, because main.css
+       styles `body` as the app shell (flex, 100vh, overflow:hidden) and the login
+       screen is a centred card, not a shell. So the tokens have to exist here
+       too, and the values must be kept identical — a login screen one step off
+       the app's type scale is the first thing a student sees. */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                 'Helvetica Neue', Arial, sans-serif;
+
+    --text-xs:   0.75rem;
+    --text-sm:   0.8125rem;
+    --text-base: 0.875rem;
+    --text-md:   0.9375rem;
+    --text-lg:   1.0625rem;
+    --text-xl:   1.25rem;
+    --text-2xl:  1.625rem;
+
+    --leading-tight:   1.25;
+    --leading-snug:    1.4;
+    --leading-normal:  1.6;
+    --leading-relaxed: 1.7;
+
+    --weight-book:     350;
+    --weight-normal:   400;
+
+
+    --weight-medium:   500;
+    --weight-semibold: 600;
+    --weight-bold:     700;
+
+    --tracking-tight: -0.011em;
+
+
     /* Samar College Brand Colors */
     --sc-green: #0d4503;
     --sc-green-light: #166107;
@@ -12,14 +48,16 @@
     
     --text-primary: #111827;
     --text-secondary: #4b5563;
-    --text-tertiary: #9ca3af;
+    /* 2.41:1 on the page as #9ca3af — below WCAG 2.2 §1.4.3's 4.5:1. Kept in
+       step with main.css, which defines the same token for every other page. */
+    --text-tertiary: #6b7280;
     
     --border: #e5e7eb;
     
     --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
     
-    --success: #16a34a;
-    --error: #ef4444;
+    --success: #12783c;
+    --error: #c2262c;
 }
 
 /* Dark theme variables */
@@ -33,7 +71,8 @@
     
     --text-primary: #f9fafb;
     --text-secondary: #d1d5db;
-    --text-tertiary: #6b7280;
+    /* Lighter than the light theme's, not darker — see main.css. */
+    --text-tertiary: #a2abb8;
     
     --border: #2d3139;
     --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
@@ -43,19 +82,35 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg-main); /* Reverted to clean light background */
     color: var(--text-primary);
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
-    line-height: 1.5;
+    /* Was a hardcoded 14px, which is both off the app's scale (the rest of the UI
+       reads at 15px) and immune to the browser's font-size setting, since px does
+       not respond to it. */
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
     padding: 20px;
     transition: background-color 0.3s ease;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-optical-sizing: auto;
 }
+
+/* Form controls do not inherit the page font in any browser; each field in this
+   file was declaring `font-family: inherit` separately to fix it, and the
+   verification code inputs were never fixed at all — the six digits were being
+   drawn in the browser's default face while the labels above them were Inter. */
+input, select, textarea, button {
+    font-family: inherit;
+    color: inherit;
+}
+
+
 
 /* Login container */
 .login-container {
@@ -101,13 +156,16 @@ body {
 }
 .logo-img { width: 100%; height: 100%; object-fit: contain; }
 
-.login-header h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--text-primary); letter-spacing: -0.5px; }
-.login-header p { color: var(--text-secondary); font-size: 0.95rem; }
+/* letter-spacing was -0.5px: a fixed value, so at a larger browser font size the
+   tracking stayed half a pixel and the heading grew looser relative to its own
+   size. The token is in em, which tracks whatever size it is applied to. */
+.login-header h1 { font-size: var(--text-xl); font-weight: var(--weight-bold); line-height: var(--leading-tight); letter-spacing: var(--tracking-tight); margin-bottom: 0.5rem; color: var(--text-primary); }
+.login-header p { color: var(--text-secondary); font-size: var(--text-base); }
 
 /* Step indicator */
 .step-indicator { display: flex; justify-content: center; margin-bottom: 1.5rem; }
 .step { display: flex; align-items: center; }
-.step-number { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-main); border: 1px solid var(--border); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; transition: all 0.3s; }
+.step-number { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-main); border: 1px solid var(--border); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-weight: var(--weight-semibold); font-size: var(--text-sm); transition: all 0.3s; }
 .step.active .step-number { background: var(--sc-green); color: white; border-color: var(--sc-green); }
 .step.completed .step-number { background: var(--success); color: white; border-color: var(--success); }
 .step-line { width: 50px; height: 2px; background: var(--border); margin: 0 8px; transition: all 0.3s; }
@@ -121,8 +179,21 @@ body {
 .form-input {
     width: 100%; padding: 12px 16px 12px 42px;
     background: var(--bg-main); border: 1px solid var(--border);
-    border-radius: 10px; color: var(--text-primary); font-size: 0.95rem;
-    transition: all 0.2s ease; font-family: inherit;
+    /* 16px, and an absolute px value on purpose. Mobile Safari zooms the entire
+       page in when a focused input's text is under 16px and does not zoom back
+       out afterwards — on the login screen, which is the first thing every
+       student touches, that leaves them pinching the page back into place before
+       they can reach the password field. A rem value would not be safe here: if
+       the user has set a smaller default font size, 1rem computes under 16px and
+       Safari zooms anyway.
+
+       This is not scoped to a media query because 16px is a perfectly good size
+       for a login field on a desktop too. */
+    border-radius: 10px; color: var(--text-primary); font-size: 16px;
+    transition: border-color var(--dur-base, 200ms) ease,
+                box-shadow var(--dur-base, 200ms) ease,
+                background var(--dur-base, 200ms) ease;
+    font-family: inherit;
 }
 .form-input:focus { outline: none; border-color: var(--sc-green); box-shadow: 0 0 0 3px rgba(13, 69, 3, 0.1); background: var(--bg-surface); }
 .form-input::placeholder { color: var(--text-tertiary); }
@@ -133,16 +204,31 @@ body {
 /* Code input styles */
 .code-input-container { display: flex; justify-content: space-between; margin-bottom: 1.5rem; }
 .code-input {
-    width: 48px; height: 48px; text-align: center; font-size: 1.2rem; font-weight: 600;
+    width: 48px; height: 48px; text-align: center; font-size: 1.2rem; font-weight: var(--weight-semibold);
     border-radius: 10px; border: 1px solid var(--border); background: var(--bg-main);
     color: var(--text-primary); transition: all 0.2s ease;
+    /* Tabular figures so all six boxes look identically filled. With Inter's
+       default proportional digits a "1" sits visibly narrower in its box than a
+       "0", which makes a correctly typed code look misaligned. */
+    font-variant-numeric: tabular-nums;
 }
 .code-input:focus { outline: none; border-color: var(--sc-green); box-shadow: 0 0 0 3px rgba(13, 69, 3, 0.1); background: var(--bg-surface); }
 .code-input.error { border-color: var(--error); animation: shake 0.4s; }
 @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 
 /* Password visibility toggle */
-.password-toggle { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); cursor: pointer; transition: color 0.2s ease; z-index: 2; }
+/* polish.css raises this to a 44x44 tap target (WCAG 2.2 §2.5.5). An absolutely
+   positioned <i> does not centre its own glyph, so once the box grew from ~15px
+   to 44px the eye stopped sitting at the field's right edge and floated ~28px
+   into the input, overlapping the typed password. Measured in the browser: box
+   right edge 883px against an input right edge of 897px. Centring the glyph in
+   the grown box puts it back on the edge it was designed for while keeping the
+   larger hit area. */
+.password-toggle {
+    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+    color: var(--text-tertiary); cursor: pointer; transition: color 0.2s ease; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+}
 .password-toggle:hover { color: var(--text-primary); }
 
 /* Form options */
@@ -150,7 +236,7 @@ body {
 .checkbox-wrapper { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .custom-checkbox { width: 18px; height: 18px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; }
 .checkbox-wrapper input:checked + .custom-checkbox { background: var(--sc-green); border-color: var(--sc-green); }
-.custom-checkbox i { color: white; font-size: 10px; display: none; }
+.custom-checkbox i { color: white; font-size: 12px; display: none; }
 .checkbox-wrapper input:checked + .custom-checkbox i { display: block; }
 .checkbox-wrapper input { display: none; }
 .checkbox-wrapper label { color: var(--text-secondary); cursor: pointer; font-weight: 500; }
@@ -181,8 +267,18 @@ body {
 .notification { position: fixed; bottom: 20px; right: 20px; background: var(--bg-surface); border-radius: 8px; padding: 1rem 1.25rem; box-shadow: var(--shadow-md); display: flex; align-items: center; gap: 12px; transform: translateY(100px); opacity: 0; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); z-index: 1001; max-width: 350px; border: 1px solid var(--border); border-left: 4px solid var(--sc-green); }
 .notification.show { transform: translateY(0); opacity: 1; }
 .notification-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 0.9rem; }
-.notification.success .notification-icon { background: #dcfce7; color: var(--success); }
-.notification.error .notification-icon { background: #fee2e2; color: var(--error); }
+/* These two chips were literal light-mode pastels, and polish.css correctly
+   flips the glyph inside them to the dark-mode inks (#6ee7a0 / #fca5a5). The
+   combination is what breaks: light-mode ink on a light chip is fine, but a
+   dark-mode ink on that same never-changing pastel measured ~1.3:1 — the tick
+   in a success toast was effectively invisible in dark mode.
+
+   An alpha tint of the status colour fixes both themes at once: it composites
+   over whatever --bg-surface currently is, so the chip is a pale green on the
+   white card and a deep green on the dark one, and the glyph keeps its
+   contrast either way. */
+.notification.success .notification-icon { background: rgba(18, 120, 60, 0.12); color: var(--success); }
+.notification.error .notification-icon { background: rgba(194, 38, 44, 0.12); color: var(--error); }
 .notification-title { font-weight: 600; color: var(--text-primary); margin-bottom: 2px; font-size: 0.95rem; }
 .notification-message { font-size: 0.85rem; color: var(--text-secondary); }
 
@@ -192,4 +288,15 @@ body {
     .login-container { padding: 2rem 1.5rem; border-radius: 0; border: none; border-top: 5px solid var(--sc-yellow); box-shadow: none; min-height: 100vh; margin: 0; }
     .theme-toggle { top: 15px; right: 15px; }
     .login-header h1 { font-size: 1.4rem; }
+
+    /* Six fixed 48px boxes plus their gaps need about 288px of row. On a 320px
+       phone (an SE, or any Android in display-zoom mode) the card's own padding
+       leaves ~272px, so the last box was pushed outside the card. Letting them
+       shrink from 48px keeps all six on one line at any width — they stay square
+       because the height is fixed and the content is one character.
+
+       min-width:0 is required: a flex item will not shrink below its content
+       width without it, and the digit was enough to hold the box open. */
+    .code-input-container { gap: 6px; }
+    .code-input { width: 100%; max-width: 48px; min-width: 0; }
 }

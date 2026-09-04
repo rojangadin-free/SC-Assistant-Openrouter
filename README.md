@@ -31,6 +31,9 @@ and each one has its own document under [`docs/`](docs/).
 | No idea what students actually ask | **Analytics.** Volume, top topics, refusal rate | [ANALYTICS.md](docs/ANALYTICS.md) |
 | Retrieval silently missed whole programs (e.g. SCTI) | **Indexing fixes.** Chunking that respects document structure, inspectable before you index | [INDEXING_FIXES.md](docs/INDEXING_FIXES.md) |
 | Admin decisions vanish for half the traffic once there are two containers | **Shared storage.** One seam behind every admin store, file or DynamoDB | [SHARED_STORAGE.md](docs/SHARED_STORAGE.md) |
+| A fake progress bar, a hidden Analytics screen, an Overview listing five arbitrary rows as "recent", two screens printing the same satisfaction figure differently, and a reload that always threw you back to the landing screen | **Admin dashboard.** Real per-file indexing progress, the analytics UI wired up, a triage queue that answers "what needs me", one screen stating each figure once, and a reload that keeps you where you were | [ADMIN_DASHBOARD.md](docs/ADMIN_DASHBOARD.md) |
+
+
 
 ---
 
@@ -48,7 +51,9 @@ src/                    PDF loading, chunking, prompt text
 aws/                    Cognito / DynamoDB / S3 wrappers
 data/                   the source PDFs
 
-tests/                  18 suites, 1,003 assertions    -> python run_tests.py
+tests/                  21 suites, 1,280 assertions    -> python run_tests.py
+
+
 tools/                  dev & ops scripts              -> python tools/<name>.py
 docs/                   one .md per feature
 ```
@@ -134,7 +139,9 @@ python run.py --https     # https://<your-lan-ip>:8443, self-signed
 python run_tests.py
 ```
 
-18 suites, 1,003 assertions, **no AWS credentials and no network required** — each
+21 suites, 1,280 assertions, **no AWS credentials and no network required** — each
+
+
 suite redirects its storage to a temp file, so the real `conflict_resolutions.json`
 and friends are never touched. Suites run in separate processes because those
 redirects have to be set before module import.
@@ -144,7 +151,66 @@ Run one suite directly when you're working on a feature:
 ```bash
 python tests/test_conflicts_api.py
 python tests/test_freshness.py
+python tests/test_latency.py
 ```
+
+### Answer speed
+
+`rag/latency.py` owns *when* work in the answer path is allowed to happen, and
+`tests/test_latency.py` is what keeps it honest. Two things it enforces:
+
+- A self-contained question ("who is the dean of the college of education")
+  skips the query-optimizer LLM entirely, because a rewrite cannot find a
+  document the student's own words miss. That removes a whole round-trip from
+  the blank screen before the first token.
+- A follow-up ("what about for transferees?") still waits for the rewrite.
+  Searched literally it retrieves the *previous* topic — a wrong answer, which
+  is worse than a slow one — so anything ambiguous resolves toward waiting.
+
+When the rewrite is wanted it is no longer waited for *first*: retrieval starts
+on the literal question immediately and the rewrite joins as one more probe if
+it lands inside `SC_OPTIMIZER_BUDGET_SECONDS` (default 2.5). A late one is
+dropped, not cancelled.
+
+Every answer logs where its time went, so the next change here starts from
+numbers rather than from "it feels slow":
+
+```
+[timing] optimizer=skipped retrieval+rerank=1.31s total=1.34s
+```
+
+### What the student sees while waiting
+
+The wait above is now also *legible*. Between pressing Enter and the first token
+the typing dots carry a caption of what the pipeline is actually doing:
+
+```
+Searching Samar College documents  ->  Reading 34 pages from 3 documents  ->  Writing the answer
+```
+
+The captions are published by the code that does the work (`rag/progress.py`,
+emitted from `rag/chain.py`), not rotated on a timer in the browser. That
+distinction is the whole point: a scripted caption would flash all four states in
+300 ms on a fast answer and sit on "Writing the answer" for four seconds on a slow
+retrieval — and it would openly contradict the `[timing]` line above it. The page
+count is the real retrieved pool, so it agrees with the "Based on" footer.
+
+Two consequences worth knowing:
+
+- The pipeline runs **inside** the SSE generator. It used to run before the
+  response was returned, which meant every phase elapsed while the browser was
+  still waiting on headers — there was no open connection to send a caption to, so
+  three static dots were the only honest UI available. `tests/test_progress.py`
+  §6 guards this.
+- "Understanding your question" only appears when the optimizer rewrite actually
+  runs. For a self-contained question `rag/latency.py` skips it, and announcing a
+  phase that was skipped is exactly the dishonesty this avoids.
+
+A caption can never cost an answer: the channel is bounded, lossy, and swallows
+its own errors, and `emit()` with no channel is a no-op so `tools/probe_retrieval.py`
+and `tools/eval_retrieval.py` keep driving the same graph with no browser attached.
+
+
 
 ---
 

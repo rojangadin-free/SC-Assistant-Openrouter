@@ -11,7 +11,14 @@ answer_feedback.json
 answer_feedback.json.tmp
 escalations.json
 escalations.json.tmp
+# In-flight upload/indexing progress. Pure scratch state: it describes threads
+# in one running container, so a committed copy would only ever describe a job
+# that finished on someone else's machine.
+index_jobs.json
+index_jobs.json.tmp
+
 # Admin-entered academic-calendar periods (real dates differ per deployment,
+
 # and a committed one would be silently wrong for the next school year)
 calendar_periods.json
 calendar_periods.json.tmp
@@ -20,6 +27,16 @@ calendar_periods.json.tmp
 # to life on every fresh deployment, on a day when it is simply false.
 announcements.json
 announcements.json.tmp
+
+# Per-document effective dates (which handbook supersedes which). Runtime state
+# for the same reason as the stores above: it holds admin corrections for the
+# documents THIS deployment actually has, and a committed copy would claim dates
+# for files that are not in the next deployment's corpus. It is also cheap to
+# rebuild — `python tools/backfill_doc_dates.py --apply` re-derives every
+# inferred date from the documents themselves.
+doc_freshness.json
+doc_freshness.json.tmp
+
 
 
 
@@ -239,5 +256,12 @@ firebase_key.json
 .test_announcements.json
 .test_*.json
 .smoke_*.json
+
+# Scratch output from tools/verify_admin_styles.py. It extracts the dashboard's
+# inline <script> to a file so `node --check` can parse it, which makes it a
+# derived copy of code that already lives in dashboard.js — committing it would
+# create a second, stale version of the same script.
+_inline_dashboard.js
+
 
 

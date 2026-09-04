@@ -1,10 +1,113 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* The Inter @import that used to sit here is gone, and so are the copies in
+   auth.css and dashboard.css. A CSS @import cannot start until the stylesheet
+   containing it has been fetched and parsed, so the font request began a full
+   round-trip late and could not overlap with the CSS download — on a phone on
+   campus wifi that is the delay where the page renders in Times New Roman and
+   then reflows. The font is now a <link> in base.html (and auth.html, which does
+   not extend it), preceded by preconnects, so the connection is opened while the
+   HTML is still being read. */
 
 /* =========================================
  * MAIN STYLESHEET (main.css) - SC THEME
  * ========================================= */
 
 :root {
+  /* ── TYPOGRAPHY ───────────────────────────────────────────────
+     One scale, defined once. Before this, every stylesheet invented its own
+     sizes — .62rem, .66rem, .7rem, .72rem, .76rem, .78rem, .8rem, .82rem, .85rem
+     and .875rem all appeared, which is nine sizes doing the work of three and no
+     two panels agreeing on what "small" meant.
+
+     Values are rem, so they scale with the browser's font size: a student who
+     has set a larger default (or is using Android's font-size accessibility
+     slider) gets a larger UI instead of being overridden. */
+
+  /* The local names come first for a reason: if Google Fonts is blocked or slow,
+     the fallback should be the platform's own UI face — which is what the rest of
+     the phone looks like — rather than dropping to Times New Roman. */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+               'Liberation Mono', monospace;
+
+  /* 12px floor. Nothing in the UI goes below --text-xs: the 10px and 11px labels
+     this replaces were legible on a laptop and guesswork on the cheap phones most
+     of this app is read on. */
+  --text-xs:   0.75rem;    /* 12px — badges, meta, timestamps      */
+  --text-sm:   0.8125rem;  /* 13px — secondary/supporting text     */
+  --text-base: 0.875rem;   /* 14px — body copy, answers, inputs    */
+  --text-md:   0.9375rem;  /* 15px — emphasised body, card titles  */
+  --text-lg:   1.0625rem;  /* 17px — section headings              */
+  --text-xl:   1.25rem;    /* 20px — page headings                 */
+  --text-2xl:  1.625rem;   /* 26px — the one hero line per screen  */
+
+  /* Long-form prose needs more leading than a button label. Splitting these
+     stops the "1.6 everywhere" look, where a single-line heading carries the
+     spacing of a paragraph. */
+  --leading-tight:   1.25;
+  --leading-snug:    1.4;
+  --leading-normal:  1.6;
+  /* For text set in --weight-book. Thinner strokes need more space between
+
+     lines: at 1.6 the lines of a light face start to look like one grey block,
+     because there is less ink per line to separate them. */
+  --leading-relaxed: 1.7;
+
+  /* Inter is loaded as a 300–800 variable font, so any value in between is real —
+     but naming five keeps the UI from drifting into eight indistinguishable
+     degrees of bold. */
+  /* Book — between Light and Regular. Used for the answer text, which is the
+     longest continuous prose in the app.
+
+     350, not 300: at 300 the answer read as genuinely too thin on a normal
+     (non-Retina) Windows display, which is what most of the school's PCs are.
+     Light weights survive on high-DPI screens because each stem still gets
+     several pixels; at 1x a 300 stem is rounded down to roughly one pixel of
+     partial coverage and the text turns grey and hazy rather than fine. 350 keeps
+     the lighter, airier look and puts the ink back.
+
+     Deliberately NOT used for small, muted or reversed text: at 12px, or in grey
+     on grey, or white on the green bubble, a lighter weight costs legibility that
+     the size and colour have already spent. */
+  --weight-book:     350;
+  --weight-normal:   400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* Inter's default spacing is set for text sizes; at heading sizes it reads
+     loose. Negative tracking is applied to the display sizes only. */
+  --tracking-tight:  -0.011em;
+  --tracking-wide:    0.05em;
+
+
+  /* ── MOTION ───────────────────────────────────────────────────
+     Durations and easings as tokens, for the same reason the type sizes are:
+     the app had transitions at 0.2s, 0.25s, 0.3s and 0.15s, plus four different
+     cubic-beziers, so no two panels animated alike.
+
+     Three durations is the whole budget. Anything a user does (hover, press,
+     focus) should feel instant — under ~150ms reads as "the UI responded".
+     Anything the app does on its own (a panel opening, a message arriving) needs
+     long enough to be followed, but past ~350ms the interface starts to feel like
+     it is making you wait. */
+  --dur-fast:  120ms;   /* hover, press, focus — direct response to input   */
+  --dur-base:  200ms;   /* small state changes: dropdowns, chips, toggles   */
+  --dur-slow:  320ms;   /* something entering or leaving the screen         */
+
+  /* Decelerating: fast at the start, settling at the end. This is the one to use
+     for anything ARRIVING, because it mimics a real object coming to rest — the
+     motion is over almost immediately and only the last few pixels are slow. */
+  --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+  /* Symmetrical. For changes that are neither arrival nor exit: a colour shift, a
+     rotating chevron, a border lighting up. */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Slight overshoot, then back. Reserved for a genuine "done" moment — a vote
+     registering, a toast landing. Used sparingly: on anything repetitive a bounce
+     stops reading as delight and starts reading as noise. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+
   /* Samar College Brand Colors */
   --sc-green: #0d4503;
   --sc-green-light: #166107;
@@ -18,7 +121,11 @@
   
   --text-primary: #111827;
   --text-secondary: #4b5563;
-  --text-tertiary: #9ca3af;
+  /* #9ca3af measured 2.41:1 on the #f9f9f9 page — below the 4.5:1 WCAG 2.2
+     §1.4.3 minimum, and it is the resolved value behind 24 of the failing
+     pairs a design audit found. #6b7280 is 4.83:1: still unmistakably
+     secondary, now readable on a phone outdoors. */
+  --text-tertiary: #6b7280;
   --dark-bg: #202124; 
   
   --border: #e5e7eb;
@@ -45,7 +152,11 @@
   
   --text-primary: #f9fafb;
   --text-secondary: #d1d5db;
-  --text-tertiary: #6b7280;
+  /* This was #6b7280 — DARKER than the light theme's tertiary, which is the
+     wrong direction: on the #0f1115 dark surface it measured about 3.6:1, so
+     dark mode had the worse of the two. Tertiary text has to get lighter as the
+     background gets darker. #a2abb8 measures 7.4:1 here. */
+  --text-tertiary: #a2abb8;
   --dark-bg: #000000;
   
   --border: #2d3139;
@@ -55,15 +166,175 @@
 /* 2. GLOBAL STYLES */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
   background-color: var(--bg-main);
   color: var(--text-primary);
   display: flex;
   height: 100vh;
   height: calc(var(--vh, 1vh) * 100);
   overflow: hidden;
+  /* Inter's stems are thin at UI sizes; without these it renders heavier on a Mac
+     than the design assumes, and the two platforms disagree about how bold
+     "semibold" looks. */
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Inter ships as a variable font here, so let the browser use the optical size
+     axis rather than scaling one master to every size. */
+  font-optical-sizing: auto;
 }
+
+/* Form controls do NOT inherit the page font — every browser substitutes its own
+   ~13px system face instead. That is why `font-family: inherit` was repeated in
+   six different places (auth.html, chat.html, auth.css, dashboard.css,
+   settings.css, admin-components.css): each one was patching the same omission
+   locally. Declared once here, those become redundant.
+
+   font-size is deliberately NOT set: inputs have their own rules, and on iOS any
+   input under 16px makes Safari zoom the page on focus. See .message-input. */
+input, select, textarea, button {
+  font-family: inherit;
+  line-height: var(--leading-snug);
+  color: inherit;
+}
+
+/* Headings. Inter is spaced for text at text sizes and reads loose above ~18px,
+   so the display sizes get slightly negative tracking and tighter leading — a
+   two-line page title should not have paragraph spacing between its lines. */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  /* Avoids the single orphaned word on the second line of a wrapped heading.
+     Ignored by browsers that do not support it, so there is nothing to guard. */
+  text-wrap: balance;
+}
+h1 { font-size: var(--text-2xl); }
+h2 { font-size: var(--text-xl); }
+h3 { font-size: var(--text-lg); }
+h4, h5, h6 { font-size: var(--text-md); }
+
+/* Digits that line up. Inter's default figures are proportional, so a column of
+   counts (the dashboard metrics, the analytics tables, page numbers in a
+   citation) shifts left and right as the values change — and a number that moves
+   while you compare it against the one above is a number you have to re-read.
+   Applied only where numbers are actually tabulated. */
+table, .sc-count, .metric-value, .stat-value, .reply-meta, .answer-sources {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Long-form text where a wrapped URL or a long Waray compound would otherwise
+   push a bubble wider than the screen. */
+p { line-height: var(--leading-normal); }
+
+
+/* ── MOTION: THE OPT-OUT ─────────────────────────────────────────────────
+   For a reader who has asked their OS for less motion. On Windows 11 that is
+   Settings → Accessibility → Visual effects → Animation effects, and it is off on
+   plenty of machines by default or under battery saver — so this branch is not a
+   rare edge case, it is what a good share of users actually get.
+
+   Nothing is set to 0s: `animation: none` would stop `animationend` from firing,
+   and JS that removes an element in that handler would leave it on screen
+   forever. 0.01ms completes instantly and still fires the event. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* ...EXCEPT the indicators, which must keep looping.
+     The blanket rule above is the standard snippet, and taken alone it is wrong:
+     `animation-iteration-count: 1` collapses an infinite loop to a single 0.01ms
+     pass, so the spinner froze mid-rotation and the typing dots stopped dead —
+     which is what "every animation is gone, the loading animation and typing
+     indicator are not working" was.
+
+     The distinction is not decoration versus motion, it is decoration versus
+     INFORMATION. A message sliding into place is ornament and can be dropped
+     freely. A spinner is the only thing on screen saying the request is still
+     alive, and three blinking dots are the only thing saying the assistant is
+     composing an answer — remove those and the app looks hung. The reduced-motion
+     preference asks for less gratuitous movement, not for progress feedback to be
+     taken away.
+
+     These are safe to keep by the standard's own reasoning: the concern behind
+     the setting is large-area, parallax and vestibular-triggering movement. A 6px
+     dot pulsing and a 24px ring turning are small, local, and away from the text
+     being read. */
+  .loader-spinner,
+  .history-loader-spinner,
+  .loading,
+  .typing-dots span {
+    animation-iteration-count: infinite !important;
+  }
+  /* Restated because the rule above set every duration to 0.01ms, and a spinner
+     completing a revolution every hundredth of a millisecond is a strobe, not an
+     indicator. Slightly slower than the defaults: at reduced motion a calmer
+     rotation still reads as "working" without the whirl. */
+  .loader-spinner,
+  .history-loader-spinner,
+  .loading {
+    animation-duration: 1.2s !important;
+  }
+  /* The dots keep their own cadence — the 1.4s cycle with staggered delays is
+     what makes them read as typing rather than as a fault light. */
+  .typing-dots span {
+    animation-duration: 1.4s !important;
+  }
+}
+
+/* ── SHARED KEYFRAMES ────────────────────────────────────────────────────
+   Defined once here instead of being redeclared per stylesheet. `fadeIn` was
+   already being referenced by .empty-chat-state in chat.css without ever being
+   defined in that file — the animation silently did nothing. */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+/* Fade plus a short lift. The distance is deliberately small: 6px reads as the
+   element settling into place, while a longer travel reads as a slide and draws
+   attention to the animation rather than to what arrived. */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+/* For skeletons and any "working on it" surface. */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+
+/* ── FOCUS ───────────────────────────────────────────────────────────────
+   Several components removed the browser's focus ring (`outline: none` on the
+   inputs, the composer, the FAQ buttons) and replaced it with a colour change on
+   :focus — which is invisible to anyone navigating by keyboard through a form
+   they cannot see the mouse position in.
+
+   :focus-visible rather than :focus, so a mouse click does not leave a ring
+   behind on a button, but Tab always does. Two colours: the green ring is
+   invisible against the green buttons, so those get the gold instead. */
+:focus-visible {
+  outline: 2px solid var(--sc-green);
+  outline-offset: 2px;
+  /* No transition on the outline itself — a focus ring that fades in lags behind
+     the key press and makes the app feel slow to respond. */
+}
+.login-button:focus-visible,
+.send-button:focus-visible,
+.new-chat-btn:focus-visible,
+.confirm-logout-button:focus-visible {
+  outline-color: var(--sc-yellow);
+}
+[data-theme="dark"] :focus-visible { outline-color: var(--sc-yellow); }
+
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -81,7 +352,7 @@ body {
   height: 100%;
   flex-shrink: 0;
   z-index: 1000;
-  transition: width 0.3s ease;
+  transition: width var(--dur-slow) var(--ease-in-out);
 }
 
 /* Minimalist Sidebar Header */
@@ -170,7 +441,12 @@ body {
   gap: 12px;
   margin-bottom: 4px;
   cursor: pointer;
-  transition: all 0.2s;
+  /* Named properties instead of `all`. With `all`, the 3px border-left that
+     .active adds was itself transitioned, so selecting a section made the label
+     shunt sideways as the border grew — and `all` also animates properties added
+     later, which is how an unrelated change starts animating by accident. */
+  transition: background var(--dur-fast) var(--ease-in-out),
+              color      var(--dur-fast) var(--ease-in-out);
   font-size: 0.9rem;
   font-weight: 500;
 }
@@ -179,11 +455,79 @@ body {
 .menu-item i { font-size: 1.1rem; min-width: 24px; text-align: center; color: inherit; }
 .menu-item a { color: inherit; text-decoration: none; width: 100%; display: flex; align-items: center; gap: 12px; }
 
+/* Sidebar menu groups — the admin dashboard's ten sections, grouped by job.
+   A heading, not a control: no hover, no pointer, and not a .menu-item, so
+   `$('.menu-item').removeClass('active')` in dashboard.js cannot touch it. */
+.menu-group {
+  padding: 0.9rem 0.8rem 0.35rem;
+  /* Was 0.68rem — under 11px, uppercase, at 65% opacity. Three things working
+     against legibility at once, on the labels that tell an admin which of ten
+     sections they are looking at. At the 12px floor the uppercase tracking below
+     does its job instead of fighting the size. */
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  opacity: 0.65;
+  user-select: none;
+  cursor: default;
+}
+.menu-divider { height: 1px; background: var(--border); margin: 0.6rem 0.3rem; }
+
+/* Counts sit at the trailing edge, so they line up in a column the eye can scan
+   instead of floating at the end of labels of seven different lengths.
+   flex-shrink guards the two-digit case: without it a long label wins the
+   contest and the number gets clipped to "1". */
+.menu-item .sc-count { margin-left: auto; flex-shrink: 0; }
+
 /* Collapsed Sidebar */
 .sidebar.collapsed { width: 72px; }
 .sidebar.collapsed .sidebar-header { justify-content: center; padding: 1rem 0; cursor: pointer; }
 .sidebar.collapsed .collapse-btn, .sidebar.collapsed .samar-college-text, .sidebar.collapsed .menu-item span, .sidebar.collapsed .user-account-button span, .sidebar.collapsed .user-account-button .fa-chevron-up, .sidebar.collapsed .conversation-header, .sidebar.collapsed #conversationList, .sidebar.collapsed #conversationHistoryLoader, .sidebar.collapsed .new-chat-btn span, .sidebar.collapsed .menu-item a span { display: none; }
 .sidebar.collapsed .menu-item, .sidebar.collapsed .user-account-button, .sidebar.collapsed .new-chat-btn { justify-content: center; padding: 0.8rem 0; gap: 0; }
+
+/* Collapsed, a group heading becomes the rule it was already implying: the
+   grouping is what carries the meaning, and the words do not fit in 72px. */
+.sidebar.collapsed .menu-group { padding: 0; margin: 0.6rem 0.3rem; height: 1px; background: var(--border); overflow: hidden; }
+.sidebar.collapsed .menu-group span { display: none; }
+
+/* Scoped to collapsed only: .menu-item has no positioning otherwise, and adding
+   it globally would change the containing block for anything absolute dropped
+   inside a menu item later. */
+.sidebar.collapsed .menu-item { position: relative; }
+
+/* The count survives collapse as a dot. The digits are deliberately dropped
+   (font-size:0) rather than shrunk — an unreadable number invites a guess, while
+   a dot says only "there is something here", which is all 72px can honestly
+   carry.
+
+   `display:block` is doing real work here and must not be tidied away. The rule
+   above hides `.sidebar.collapsed .menu-item span`, and a badge is now a span
+   directly inside a menu item, so it matches. This selector is more specific but
+   specificity is per-declaration: without restating `display` the badge inherits
+   `display:none` and every count vanishes the moment the sidebar is collapsed,
+   which is precisely the state that most needs them.
+
+   No `!important`: jQuery's `.show()` writes the tag's default display to the
+   element's own style attribute (`inline`, for a span) whenever a stylesheet is
+   what is hiding it, and that inline style is what makes a badge appear at all.
+   It also outranks this rule — which is harmless, because an absolutely
+   positioned box is blockified regardless of the `display` it was given. */
+.sidebar.collapsed .menu-item .sc-count {
+  display: block;
+  position: absolute;
+  top: 7px;
+  right: 14px;
+  margin-left: 0;
+  min-width: 9px;
+  height: 9px;
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
+  border-radius: 999px;
+}
+
 
 /* 4. MAIN & HEADER */
 .main-section { flex: 1; display: flex; flex-direction: column; height: 100vh; background: var(--bg-main); position: relative; }
@@ -204,8 +548,47 @@ body {
 }
 
 .header-left { display: flex; align-items: center; gap: 10px; }
-.theme-toggle { background: transparent; border: 0px solid var(--border); color: var(--text-secondary); font-size: 1.1rem; cursor: pointer; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+
+/* .header-right had NO rule anywhere in the project — that is the bug where the
+   inbox sat above the header instead of beside the moon icon.
+
+   Without a display, the div is a plain block, and its two children stack:
+   .theme-toggle is `display: flex`, which makes it block-level and forces its own
+   line, so the inbox took line one and the moon took line two. Two 36px buttons
+   is ~76px of content in a 60px header, and because .header centres its items
+   vertically the overflow split above and below the bar — which is why the inbox
+   was clipped by the top edge of the screen.
+
+   flex puts them back on one row. The gap is 8px rather than the 10px used on the
+   left, because these are round icon buttons whose padding already reads as
+   space, while the left side is text. */
+.header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* The inbox is styled in chat.html, which only gives it `position: relative` for
+   its badge — no size — so it was a bare 1rem glyph next to a 36px circle.
+   Matching the theme toggle's box makes the pair look like one control group and
+   gives the inbox a real touch target; two selectors deep so it still wins over
+   the template's own rule, which the browser reads after this file. */
+.header-right .replies-toggle {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; cursor: pointer;
+  font-size: 1.1rem; flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease-in-out),
+              transform  var(--dur-fast) var(--ease-out);
+}
+.header-right .replies-toggle:hover { background: var(--bg-surface); }
+.header-right .replies-toggle:active { transform: scale(0.92); }
+.theme-toggle { background: transparent; border: 0px solid var(--border); color: var(--text-secondary); font-size: 1.1rem; cursor: pointer; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: background var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out), transform var(--dur-fast) var(--ease-out); }
 .theme-toggle:hover { background: var(--bg-surface); color: var(--sc-yellow); border-color: var(--sc-yellow); }
+/* Press feedback. A button that visibly gives when pressed is the cheapest way to
+   confirm the tap landed — which matters most on a phone, where there is no
+   cursor and no hover state to have told you the target was live. */
+.theme-toggle:active { transform: scale(0.92); }
+/* The icon itself swaps between sun and moon in JS. Rotating it on hover hints
+   that it toggles rather than opens something. */
+.theme-toggle:hover i { transform: rotate(-15deg); }
+.theme-toggle i { transition: transform var(--dur-base) var(--ease-out); }
 
 /* 5. USER ACCOUNT */
 .user-account-section { padding: 0.75rem; flex-shrink: 0; border-top: 1px solid var(--border); position: relative; }
@@ -235,7 +618,12 @@ body {
 .user-account-button i:last-child { color: var(--text-tertiary); transition: transform 0.3s; }
 .user-account-section.active .user-account-button i:last-child { transform: rotate(180deg); }
 
-.user-dropdown { position: absolute; bottom: calc(100% + 5px); left: 0.75rem; right: 0.75rem; background: var(--bg-main); border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow-md); display: block; opacity: 0; visibility: hidden; transition: opacity 0.2s, transform 0.2s; transform: translateY(10px); z-index: 1000; overflow: hidden; }
+/* Opening upward from the account button, so it rises the way it appears to be
+   pushed. `visibility` is in the transition list on purpose: it is not
+   interpolatable, so it flips at the END of the outgoing transition instead of
+   immediately — which is what keeps the menu from becoming unclickable while it
+   is still visibly fading out. */
+.user-dropdown { position: absolute; bottom: calc(100% + 5px); left: 0.75rem; right: 0.75rem; background: var(--bg-main); border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow-md); display: block; opacity: 0; visibility: hidden; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out), visibility var(--dur-base); transform: translateY(10px); z-index: 1000; overflow: hidden; }
 .user-dropdown.show { opacity: 1; visibility: visible; transform: translateY(0); }
 .dropdown-item { display: flex; align-items: center; gap: 12px; padding: 0.75rem 1rem; color: var(--text-primary); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: background 0.2s; }
 .dropdown-item:hover { background: var(--bg-surface); color: var(--sc-green); }
@@ -250,8 +638,10 @@ body {
 /* 6. MODALS & NOTIFICATIONS */
 .confirm-dialog { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 9999; opacity: 0; visibility: hidden; transition: opacity 0.2s; backdrop-filter: blur(2px); }
 .confirm-dialog.active { opacity: 1; visibility: visible; }
-.confirm-box { background: var(--bg-main); border-radius: 12px; padding: 1.5rem; max-width: 380px; width: 90%; border: 1px solid var(--border); box-shadow: var(--shadow-md); transform: scale(0.95); transition: transform 0.2s; }
-.confirm-dialog.active .confirm-box { transform: scale(1); }
+/* Scales up from 96% AND lifts 8px. Scale alone reads as a zoom; the small rise
+   makes it read as a sheet coming forward, which is what a modal is. */
+.confirm-box { background: var(--bg-main); border-radius: 12px; padding: 1.5rem; max-width: 380px; width: 90%; border: 1px solid var(--border); box-shadow: var(--shadow-md); transform: scale(0.96) translateY(8px); transition: transform var(--dur-base) var(--ease-out); }
+.confirm-dialog.active .confirm-box { transform: scale(1) translateY(0); }
 .confirm-title { margin: 0 0 0.5rem; color: var(--text-primary); font-size: 1.1rem; font-weight: 700; }
 .confirm-message { margin: 0 0 1.5rem; color: var(--text-secondary); font-size: 0.95rem; line-height: 1.5; }
 .confirm-buttons { display: flex; gap: 8px; justify-content: flex-end; }
@@ -261,11 +651,25 @@ body {
 .confirm-logout-button { background: #ef4444; color: white; }
 .confirm-logout-button:hover { background: #dc2626; }
 
-.notification { position: fixed; bottom: 20px; right: 20px; background: var(--bg-main); border-radius: 8px; padding: 1rem; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 12px; transform: translateY(100px); opacity: 0; transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 9999; max-width: 350px; border: 1px solid var(--border); border-left: 4px solid var(--sc-green); }
+/* The overshoot easing is deliberate here and almost nowhere else: a toast is a
+   one-off "that worked", and the small bounce as it lands is what makes it
+   register in peripheral vision without needing to be loud. `all` is replaced by
+   the two properties actually moving — with `all`, the box-shadow and border
+   colour were being interpolated too, for no visible gain. */
+.notification { position: fixed; bottom: 20px; right: 20px; background: var(--bg-main); border-radius: 8px; padding: 1rem; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 12px; transform: translateY(100px); opacity: 0; transition: transform var(--dur-slow) var(--ease-spring), opacity var(--dur-base) var(--ease-out); z-index: 9999; max-width: 350px; border: 1px solid var(--border); border-left: 4px solid var(--sc-green); }
 .notification.show { transform: translateY(0); opacity: 1; }
 .notification-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; flex-shrink: 0; }
-.notification.success .notification-icon { background: #dcfce7; color: #16a34a; }
-.notification.error .notification-icon { background: #fee2e2; color: #dc2626; }
+/* Same fix as auth.css, and the same reason. These chips were literal light-mode
+   pastels while the glyph inside them is var(--ui-success-ink)/--ui-danger-ink,
+   which polish.css redefines for dark mode as light inks (#6ee7a0 / #fca5a5).
+   On a chip that never changes that lands around 1.3:1, so the tick in every
+   toast the app raises was invisible in dark mode — and this file serves the
+   whole app, not just the login page.
+
+   An alpha tint composites over the current --bg-surface, so the chip follows
+   the theme and the ink keeps its contrast in both. */
+.notification.success .notification-icon { background: rgba(18, 120, 60, 0.12); color: var(--ui-success-ink); }
+.notification.error .notification-icon { background: rgba(194, 38, 44, 0.12); color: var(--ui-danger-ink); }
 .notification-title { font-weight: 700; color: var(--text-primary); margin-bottom: 2px; font-size: 0.95rem; }
 .notification-message { font-size: 0.85rem; color: var(--text-secondary); }
 
@@ -284,13 +688,19 @@ body {
     vertical-align: middle;
     margin: 0 4px;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background var(--dur-fast) var(--ease-in-out),
+                border-color var(--dur-fast) var(--ease-in-out),
+                box-shadow var(--dur-fast) var(--ease-in-out),
+                transform var(--dur-fast) var(--ease-out);
     text-decoration: none !important;
 }
 .citation-badge:hover {
     background: rgba(13, 69, 3, 0.1);
     border-color: rgba(13, 69, 3, 0.3);
     box-shadow: 0 1px 3px rgba(0,0,0,0.05); /* Slight lift effect */
+    /* The comment above said "slight lift effect" but nothing moved — the shadow
+       was doing it alone. One pixel is enough to sell it. */
+    transform: translateY(-1px);
 }
 .citation-badge i { font-size: 0.85em; opacity: 0.8; }
 

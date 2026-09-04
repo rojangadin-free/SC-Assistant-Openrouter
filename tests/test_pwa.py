@@ -207,6 +207,22 @@ check("/api/ is never cached", "'/api/'" in sw)
 check("/admin is never cached", "'/admin'" in sw)
 check("/auth is never cached", "'/auth'" in sw)
 
+# Regression. The admin blueprint is registered at the ROOT, so its routes are
+# '/files', '/upload' and '/dashboard' — the '/admin' prefix above does not cover
+# any of them, which is easy to miss because the section is called "admin".
+#
+# The consequence was a bug that looked nothing like a caching problem: after an
+# upload the document list came back from the service worker's cache, i.e. the
+# list as it was BEFORE the upload, so the new file appeared only after a manual
+# reload. Cached '/upload/status/<id>' is worse still — frozen progress, since the
+# poller reads the same response every time.
+#
+# Asserted by path because the failure is silent: the app works, the numbers are
+# just old.
+for path in ("'/files'", "'/upload'", "'/dashboard'"):
+    check(f"{path} is never cached (admin routes live at the root)", path in sw)
+
+
 # Regression, and the expensive one. The shell was originally cache-FIRST with no
 # revalidation, which meant an edited voice.js was served from cache forever
 # unless someone remembered to bump CACHE_VERSION: the file on disk was right, the

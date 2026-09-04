@@ -5,7 +5,8 @@ import io
 import json
 import logging
 import tempfile
-from typing import List, Optional, Iterable, Tuple
+from typing import Callable, List, Optional, Iterable, Tuple
+
 
 import fitz  # PyMuPDF
 import pdfplumber
@@ -328,13 +329,29 @@ def ocr_column(image: Image.Image, column_index: int, total_columns: int) -> str
 # ============================================================
 # PDF PROCESSING
 # ============================================================
-def process_pdf(filepath: str, filename: str) -> List[Document]:
+def process_pdf(filepath: str, filename: str,
+                progress: Optional[Callable[[str, int, int], None]] = None) -> List[Document]:
+    """
+    `progress(phase, done, total)` is called once per page, if supplied.
+
+    Page granularity is the point: OCR is the slowest thing this codebase does and
+    it happens per page, so a per-page tick is the finest signal that is both
+    cheap to record and actually meaningful to watch. The callback is optional so
+    the CLI `build_index` path and the tests stay unaffected, and this module
+    keeps no dependency on `rag/jobs.py`.
+    """
     docs: List[Document] = []
     with fitz.open(filepath) as fdoc, pdfplumber.open(filepath) as pdoc:
         total_pages = len(fdoc)
         logger.info(f"Processing PDF: {filename} | Pages: {total_pages}")
-        
+
+        if progress:
+            # Report the total before the first page: a bar that knows it has 40
+            # pages to go is honest from frame one, where "page 1 of ?" is not.
+            progress("extracting", 0, total_pages)
+
         for page_idx in range(total_pages):
+
             fitz_page = fdoc.load_page(page_idx)
             plumber_page = pdoc.pages[page_idx] if page_idx < len(pdoc.pages) else None
             page_num = page_idx + 1
@@ -413,7 +430,14 @@ def process_pdf(filepath: str, filename: str) -> List[Document]:
                         },
                     )
                 )
+
+            if progress:
+                # Ticked after the page is fully handled (OCR and tables
+                # included), so "page 7 of 40" means seven pages are actually
+                # done rather than seven started.
+                progress("extracting", page_num, total_pages)
     return docs
+
 
 def _extract_and_append_tables(
     fitz_page, existing_text: str, filename: str, page_num: int
@@ -903,7 +927,67 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
 # ============================================================
 # BUILD / APPEND
 # ============================================================
+def _record_effective_date(filename: str, docs: List[Document]) -> None:
+    """
+    Record this document's effective date as it is indexed.
+
+    Why here
+    --------
+    `rag/freshness.py` can tell that `Samar-College-update.pdf` (S.Y. 2025-2026)
+    supersedes `Samar-College-2024.pdf`, and for the whole life of that module it
+    never got the chance: `infer_effective_date()` was only ever called from the
+    admin upload preview, so documents that were seeded into `data/` and indexed
+    from here had no date at all. `list_docs()` returned `[]` for the entire
+    corpus, `freshness_block()` therefore returned "" on every single answer, and
+    `compare()` answered "no effective date on record" every time it was asked
+    which of two contradicting sources was current.
+
+    Nothing failed loudly. The assistant just went on choosing between two deans
+    by whichever chunk the reranker happened to score higher, which is the
+    coin-flip the freshness module exists to replace.
+
+    Indexing is the right hook because it is the one path EVERY document travels,
+    whether it was uploaded, re-indexed or shipped in the repo.
+
+    Only the front of the document is read
+    --------------------------------------
+    `date_from_text()` looks at the first 4000 characters, because only the front
+    matter makes claims about the document itself — a date deeper in the body is
+    far more likely to be a deadline or an event. Passing the whole handbook would
+    be wasted work and would not change the answer.
+
+    Never fatal
+    -----------
+    A missing date degrades ranking. A raised exception here would lose an
+    indexed document, which is strictly worse, so this swallows everything.
+    """
+    if not docs:
+        return
+    try:
+        from rag.freshness import ensure_doc_date
+
+        head = "\n".join((d.page_content or "") for d in docs[:8])
+        record = ensure_doc_date(filename, head)
+        if record and record.get("effective_date"):
+            logger.info(
+                f"  {filename}: effective {record['effective_date']} "
+                f"({record.get('date_why') or record.get('date_source')})"
+            )
+        else:
+            # Said out loud, because an undated document cannot win or lose a
+            # freshness comparison — it will keep contradicting its neighbours
+            # with nothing to break the tie, and the admin is the only one who
+            # can fix that.
+            logger.warning(
+                f"  {filename}: no effective date could be inferred. It will not "
+                f"take part in newest-source ranking until an admin sets one."
+            )
+    except Exception as e:
+        logger.warning(f"  {filename}: could not record an effective date: {e}")
+
+
 def build_index(
+
     data_path: str = "data/",
     index_name: str = "rag-database-2026",
     embeddings=None,
@@ -923,6 +1007,10 @@ def build_index(
         if not os.path.isfile(path):
             continue
             
+        # Where this file's pages start, so its date can be inferred from its own
+        # front matter rather than from whatever was gathered before it.
+        first = len(raw_docs)
+
         lower = fname.lower()
         if lower.endswith(".pdf"):
             raw_docs.extend(process_pdf(path, fname))
@@ -936,8 +1024,11 @@ def build_index(
                     d.metadata["source"] = fname
                     clean_metadata(d)
                 raw_docs.extend(docs)
-                
+
+        _record_effective_date(fname, raw_docs[first:])
+
     logger.info("Chunking documents...")
+
     final_chunks = _chunk_and_dedup(raw_docs)
     logger.info(f"Total chunks after dedup: {len(final_chunks)}")
     
@@ -968,11 +1059,34 @@ def append_file_to_index(
     index_name: str = "rag-database-2026",
     real_name: Optional[str] = None,
     embeddings=None,
+    progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> int:
+    """
+    Index one file, optionally reporting progress as it goes.
+
+    `progress(phase, done, total)` receives "extracting" once per page, then
+    "chunking", then "indexing" once per upsert batch. `done`/`total` may be 0
+    for phases with no meaningful counter, and the caller is expected to treat
+    that as "in this phase, position unknown" rather than as 0%.
+
+    Callers that pass no callback (the CLI, the tests) behave exactly as before.
+    """
     if embeddings is None:
         raise ValueError("Embeddings required")
-        
+
+    def _tick(phase: str, done: int = 0, total: int = 0) -> None:
+        if not progress:
+            return
+        try:
+            progress(phase, done, total)
+        except Exception as e:
+            # Progress reporting must never be able to fail an upload. A broken
+            # status write is a cosmetic problem; losing an indexed document
+            # because of one is not.
+            logger.warning(f"progress callback failed ({phase}): {e}")
+
     filename = real_name if real_name else os.path.basename(filepath)
+
     dim = get_embedding_dimension(embeddings)
     pc = Pinecone(api_key=PINECONE_API_KEY)
     ensure_index_exists(pc, index_name, dimension=dim)
@@ -987,10 +1101,15 @@ def append_file_to_index(
     lower = filename.lower()
     
     if lower.endswith(".pdf"):
-        raw_docs = process_pdf(filepath, filename)
+        # Only the PDF path reports per-page progress, because it is the only one
+        # that can spend minutes in OCR. DOCX and text loaders are fast enough
+        # that a phase label alone is honest.
+        raw_docs = process_pdf(filepath, filename, progress=progress)
     elif lower.endswith(".docx"):
+        _tick("extracting")
         raw_docs = process_docx_linear(filepath, filename)
     else:
+        _tick("extracting")
         loader = get_loader(filepath)
         if not loader:
             raise ValueError(f"Unsupported file type: {filename}")
@@ -998,24 +1117,39 @@ def append_file_to_index(
         for d in raw_docs:
             d.metadata["source"] = filename
             clean_metadata(d)
-            
+
+    # Before chunking: `raw_docs` still has whole pages in reading order, which
+    # is what the date patterns were written against. After chunking the front
+    # matter has been split, stitched and re-headed, and "Effective August 2025"
+    # can end up in a different chunk from the words that qualify it.
+    _record_effective_date(filename, raw_docs)
+
+    _tick("chunking")
     final_chunks = _chunk_and_dedup(raw_docs)
-    
+
     if final_chunks:
+
         index = pc.Index(index_name)
         retriever = PineconeHybridSearchRetriever(
             embeddings=embeddings,
             sparse_encoder=bm25,
             index=index,
         )
-        for batch in batched(final_chunks, 100):
+        # Counted in batches rather than chunks: `add_texts` embeds and upserts a
+        # whole batch as one unit, so a batch is the smallest point at which
+        # progress can truthfully be said to have moved.
+        total_batches = (len(final_chunks) + 99) // 100
+        _tick("indexing", 0, total_batches)
+        for batch_no, batch in enumerate(batched(final_chunks, 100), start=1):
             retriever.add_texts(
                 [d.page_content for d in batch],
                 metadatas=[d.metadata for d in batch],
             )
-            
+            _tick("indexing", batch_no, total_batches)
+
     logger.info(f"Appended {len(final_chunks)} chunks from {filename}")
     return len(final_chunks)
+
 
 
 if __name__ == "__main__":
