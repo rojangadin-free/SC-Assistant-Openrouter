@@ -759,20 +759,18 @@ _VISION_CLIENT: Optional[ChatOpenAI] = None
 def get_vision_client() -> ChatOpenAI:
     global _VISION_CLIENT
     if _VISION_CLIENT is None:
+        # No max_tokens cap, no spoofed Codex headers, reasoning off - the same
+        # fix as the fallback model in rag/chain.py: a capped completion with
+        # reasoning enabled can spend its whole budget before the first visible
+        # character, and OpenRouter ignores the AgentRouter WAF headers anyway.
         _VISION_CLIENT = ChatOpenAI(
             model=FALLBACK_MODEL_NAME,
             openai_api_key=OPENROUTER_API_KEY,
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.1,
-            max_tokens=2048,
-            default_headers={
-                # Remove generic headers like HTTP-Referer or X-Title
-                # Spoof supported client headers to bypass the AgentRouter WAF
-                "Originator": "codex_cli_rs",
-                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-                "Version": "0.101.0",
-                "X-Stainless-Runtime": "node" 
-            }
+            extra_body={
+                "reasoning": {"enabled": False}
+            },
         )
     return _VISION_CLIENT
 
