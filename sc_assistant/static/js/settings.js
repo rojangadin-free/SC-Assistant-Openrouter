@@ -16,33 +16,14 @@ $(document).ready(function() {
   } // <--- MOVE THE BRACE HERE!
 
   // --- Update Data Consent ---
+  // The Data Access Agreement is now presented (and accepted) once, during
+  // signup on the auth page — see auth.html/auth.js. This toggle just flips
+  // the previously-agreed-to preference on or off, no re-prompting needed.
   const dataConsentToggle = $('#data_consent');
-  const eulaModal = $('#eulaModal');
   
   if (dataConsentToggle.length) {
-    // 1. Intercept the switch being clicked
     dataConsentToggle.on('change', function() {
-      const isChecked = $(this).is(':checked');
-      
-      if (isChecked) {
-        // If turning ON, show popup and wait for user decision
-        eulaModal.fadeIn('fast');
-      } else {
-        // If turning OFF, just send the update immediately
-        sendConsentUpdate(false);
-      }
-    });
-
-    // 2. User clicks "I Agree"
-    $('#btnAcceptEula').on('click', function() {
-      eulaModal.fadeOut('fast');
-      sendConsentUpdate(true);
-    });
-
-    // 3. User clicks "Decline" or clicks outside
-    $('#btnDeclineEula').on('click', function() {
-      eulaModal.fadeOut('fast');
-      dataConsentToggle.prop('checked', false); // Snap the switch back to OFF
+      sendConsentUpdate($(this).is(':checked'));
     });
 
     // Helper function to handle the AJAX call

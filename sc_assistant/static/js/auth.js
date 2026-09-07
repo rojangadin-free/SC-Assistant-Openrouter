@@ -25,6 +25,59 @@ $(document).ready(function() {
     const passwordMatch = $('#passwordMatch');
     const codeInputs = $('.code-input'); // Still used in the new form
     const resendCodeLink = $('#resendCodeLink');
+
+    // ── End User / Data Access Agreement gate ───────────────────────
+    // Used on both forms: the checkbox is what enables the submit button.
+    // The link just opens the full agreement text to read; agreeing there
+    // checks whichever form's box was used to open it.
+    const eulaModal = $('#eulaModal');
+    const btnAcceptEula = $('#btnAcceptEula');
+    const btnDeclineEula = $('#btnDeclineEula');
+
+    function makeEulaGate(checkboxSelector, customBoxSelector, buttonSelector, linkSelector) {
+        const checkbox = $(checkboxSelector);
+        const customBox = $(customBoxSelector);
+        const button = $(buttonSelector);
+
+        function setChecked(isChecked) {
+            checkbox.prop('checked', isChecked);
+            customBox.toggleClass('checked', isChecked);
+            button.prop('disabled', !isChecked);
+        }
+
+        customBox.on('click', function() {
+            setChecked(!checkbox.prop('checked'));
+        });
+
+        checkbox.on('change', function() {
+            setChecked($(this).prop('checked'));
+        });
+
+        $(linkSelector).on('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation(); // Don't let the click bubble into the <label> and toggle the checkbox
+            activeEulaGate = gate;
+            eulaModal.fadeIn('fast');
+        });
+
+        const gate = { checkbox, setChecked };
+        return gate;
+    }
+
+    let activeEulaGate = null;
+    const loginEulaGate = makeEulaGate('#loginDataConsent', '#loginCustomCheckbox', '#loginButton', '#openEulaLinkLogin');
+    const signupEulaGate = makeEulaGate('#signupDataConsent', '#signupCustomCheckbox', '#signupButton', '#openEulaLink');
+
+    btnAcceptEula.on('click', function() {
+        eulaModal.fadeOut('fast');
+        if (activeEulaGate) activeEulaGate.setChecked(true);
+    });
+
+    btnDeclineEula.on('click', function() {
+        eulaModal.fadeOut('fast');
+        // Just closes the modal — reading it without checking the box
+        // leaves the submit button disabled, same as never opening it.
+    });
     
     // Load remembered email
     const savedEmail = localStorage.getItem('rememberedEmail');
@@ -282,6 +335,14 @@ $(document).ready(function() {
     // Handle login submission
     loginForm.on('submit', function(e) {
         e.preventDefault();
+
+        if (!loginEulaGate.checkbox.prop('checked')) {
+            showNotification('Please agree to the End User Agreement to sign in.', 'error');
+            activeEulaGate = loginEulaGate;
+            eulaModal.fadeIn('fast');
+            return;
+        }
+
         if (rememberMeCheckbox.is(':checked')) {
             localStorage.setItem('rememberedEmail', $('#email').val());
         } else {
@@ -306,6 +367,14 @@ $(document).ready(function() {
     // Handle signup submission
     signupForm.on('submit', function(e) {
         e.preventDefault();
+
+        if (!signupEulaGate.checkbox.prop('checked')) {
+            showNotification('Please review and accept the Data Access Agreement to continue.', 'error');
+            activeEulaGate = signupEulaGate;
+            eulaModal.fadeIn('fast');
+            return;
+        }
+
         const signupButton = $('#signupButton');
         signupButton.prop('disabled', true).html('<span class="loading"></span>Creating Account...');
         $.post("/signup", signupForm.serialize(), function(response) {

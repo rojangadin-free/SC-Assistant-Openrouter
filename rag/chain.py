@@ -576,20 +576,12 @@ def retrieve_documents(
 
 # --- MODEL INSTANTIATION ---
 primary_model = ChatOpenAI(
-    model=CHAT_MODEL_NAME,
-    openai_api_key=AGENTROUTER_API_KEY,
-    openai_api_base="https://agentrouter.org/v1",
+    model="deepseek/deepseek-v4-flash-0731",
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.2,
-    default_headers={
-                # Remove generic headers like HTTP-Referer or X-Title
-                # Spoof supported client headers to bypass the AgentRouter WAF
-                "Originator": "codex_cli_rs",
-                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-                "Version": "0.101.0",
-                "X-Stainless-Runtime": "node" 
-    },
     extra_body={
-        "thinking": {"type": "disabled"}  # Direct API override to shut off thinking
+        "reasoning": {"enabled": False}
     }
 )
 
@@ -610,6 +602,7 @@ fallback_model = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
+    max_tokens=2048,
     default_headers={
                 # Remove generic headers like HTTP-Referer or X-Title
                 # Spoof supported client headers to bypass the AgentRouter WAF

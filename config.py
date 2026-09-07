@@ -23,7 +23,7 @@ AGENTROUTER_API_KEY = os.getenv("AGENTROUTER_API_KEY")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 
 # LLM Configuration
-CHAT_MODEL_NAME = "deepseek-v4-flash"
+CHAT_MODEL_NAME = "deepseek/deepseek-v4-flash-0731"
 
 # The fallback must be reachable through a DIFFERENT provider than the primary.
 # AgentRouter fronts requests with a content filter that rejects some perfectly

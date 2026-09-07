@@ -28,16 +28,40 @@ def signup():
     email = request.form.get("email")
     password = request.form.get("password")
     username = request.form.get("username")
+    # 🚀 Set on the auth page now: the student accepts (or doesn't) the Data
+    # Access Agreement modal before the account is created, instead of being
+    # asked again later in Settings.
+    data_consent = request.form.get("data_consent", "false").lower() == "true"
 
     if not all([email, password, username]):
         return jsonify({"success": False, "message": "All fields are required."})
 
+    if not data_consent:
+        return jsonify({"success": False, "message": "You must accept the Data Access Agreement to create an account."})
+
     result = sign_up_user(username, email, password)
     if result["success"]:
+        # Best-effort: persist the agreed-to preference to Cognito right away,
+        # the same way settings.update_consent does post-login, so it's
+        # already correct the first time they log in (login() below reads
+        # custom:data_consent back out of the token claims).
+        try:
+            cognito_client.admin_update_user_attributes(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=username,
+                UserAttributes=[
+                    {'Name': 'custom:data_consent', 'Value': str(data_consent).lower()}
+                ]
+            )
+        except Exception:
+            # Non-fatal: the session value below still reflects the user's
+            # choice for their current session even if this call fails.
+            pass
+
         session.update({
             "user": email, "uid": result.get("user_sub"),
             "username": username, "role": "user",
-            "data_consent": False  # Default to False until they log in and we fetch their actual setting
+            "data_consent": data_consent
         })
         return jsonify({"success": True, "redirect": url_for("chat.chat_page")})
     return jsonify(result)

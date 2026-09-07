@@ -222,6 +222,16 @@ check("/auth is never cached", "'/auth'" in sw)
 for path in ("'/files'", "'/upload'", "'/dashboard'"):
     check(f"{path} is never cached (admin routes live at the root)", path in sw)
 
+# Regression, and the privacy-sensitive one. /settings renders the data-consent
+# toggle server-side from the session. While it was served stale-while-revalidate,
+# a student who flipped the toggle, left, and came back saw the toggle in its OLD
+# position — and had no way to tell whether the AI still had access to their
+# grades and balance. The symptom is "I have to reload before my settings
+# change", and a privacy control that appears not to stick is worse than one
+# that visibly fails.
+check("/settings is never cached (consent toggle renders from the session)",
+      "'/settings'" in sw)
+
 
 # Regression, and the expensive one. The shell was originally cache-FIRST with no
 # revalidation, which meant an edited voice.js was served from cache forever

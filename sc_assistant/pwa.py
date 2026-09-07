@@ -62,7 +62,12 @@ bp_pwa = Blueprint("pwa", __name__)
 # mode guaranteed to be mistaken for the fix not working. Bumping the version
 # deletes the previous cache on activate, so the stale copy cannot outlive the
 # deploy.
-CACHE_VERSION = "sc-assistant-v4"
+#
+# v5 adds '/settings' to NEVER_CACHE. The settings page renders the data-consent
+# toggle server-side from the session, so a stale-while-revalidated /settings
+# showed the toggle in its previous position until the user reloaded — the same
+# class of bug as the '/files' one below, with the same fix.
+CACHE_VERSION = "sc-assistant-v5"
 
 
 
@@ -181,10 +186,15 @@ const SHELL = %(shell)s;
    file appears", and the reload was doing nothing except giving the background
    revalidation a chance to land. '/upload' also covers '/upload/status/<id>',
    which had the same problem and is worse — cached progress means a bar frozen
-   at whatever percentage happened to be cached. */
+   at whatever percentage happened to be cached.
+
+   '/settings' is network-only for a different reason: the page is rendered from
+   the session, and its data-consent toggle showed whatever state the previous
+   visit cached until the user manually reloaded. Privacy settings are the one
+   page where "what I just changed" must be what I see. */
 const NEVER_CACHE = [
   '/chat', '/api/', '/admin', '/auth', '/logout', '/health',
-  '/files', '/upload', '/dashboard', '/delete'
+  '/files', '/upload', '/dashboard', '/delete', '/settings'
 ];
 
 

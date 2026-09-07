@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_openai import ChatOpenAI
 
-from config import AGENTROUTER_API_KEY, CHAT_MODEL_NAME
+from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -760,9 +760,9 @@ def get_vision_client() -> ChatOpenAI:
     global _VISION_CLIENT
     if _VISION_CLIENT is None:
         _VISION_CLIENT = ChatOpenAI(
-            model=CHAT_MODEL_NAME,
-            openai_api_key=AGENTROUTER_API_KEY,
-            openai_api_base="https://agentrouter.org/v1",
+            model=FALLBACK_MODEL_NAME,
+            openai_api_key=OPENROUTER_API_KEY,
+            openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.1,
             max_tokens=2048,
             default_headers={
