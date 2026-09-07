@@ -137,12 +137,27 @@
 
         <!-- ── Login Form ───────────────────────────────── -->
         <form id="loginForm">
+            {# type="text", not type="email". This pool signs in by username, so
+               either identifier is valid here and the browser's built-in email
+               validation was rejecting the username before the request was even
+               sent ("Please include an '@'"). The server resolves an email to
+               its username, so both work; the hint below says so rather than
+               leaving the student to guess which one the field wants. #}
             <div class="form-group">
-                <label for="email">Email Address</label>
+                <label for="email">Email or Username</label>
                 <div class="input-wrapper">
                     <i class="fas fa-envelope input-icon"></i>
-                    <input type="email" id="email" name="email" class="form-input" placeholder="Enter your email" required>
+                    {# Placeholder kept short on purpose: "you@example.com or your
+                       username" measured 282px of text in a 264px field at 375px
+                       wide, so it was clipped mid-word on a phone — and the hint
+                       below already spells out that both forms are accepted. #}
+                    <input type="text" id="email" name="email" class="form-input"
+                           placeholder="Email or username"
+                           autocomplete="username" inputmode="email"
+                           autocapitalize="none" spellcheck="false"
+                           aria-describedby="loginIdentifierHint" required>
                 </div>
+                <p class="field-hint" id="loginIdentifierHint">Sign in with either your email address or your username.</p>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
@@ -309,10 +324,21 @@
     </div>
 
     <!-- Notification toast -->
-    <div class="notification" id="notification">
+    <!-- role="status" + aria-live: the toast is the ONLY place a failed sign-in
+         is reported, so a screen-reader user who cannot see it gets no feedback
+         at all — they are left on a form that looks unchanged. "polite" rather
+         than "assertive" because the message arrives after the user's own
+         action, so it does not need to interrupt mid-sentence. -->
+    <div class="notification" id="notification" role="status" aria-live="polite" aria-atomic="true">
+
         <div class="notification-icon">
-            <i class="fas fa-check"></i>
+            <!-- aria-hidden: the glyph duplicates the "Error"/"Success" title
+                 that sits right beside it, and inside a live region every extra
+                 node is read aloud — Font Awesome ligatures announce as stray
+                 characters before the sentence the student needs. -->
+            <i class="fas fa-check" aria-hidden="true"></i>
         </div>
+
         <div class="notification-content">
             <div class="notification-title">Success</div>
             <div class="notification-message">Operation completed successfully</div>

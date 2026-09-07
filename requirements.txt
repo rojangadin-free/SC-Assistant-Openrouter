@@ -30,13 +30,6 @@ Flask==3.1.2
 python-dotenv==1.0.1
 gunicorn==23.0.0
 
-# zoneinfo's data source. Python's stdlib zoneinfo (used by rag/chain.py to
-# stamp the prompt with the Asia/Manila date) reads the OS tz database, which
-# slim images do not ship; this pure-Python wheel is the fallback it needs.
-# Without it the container raises ZoneInfoNotFoundError at request time, after
-# a build that looked perfectly healthy.
-tzdata>=2024.2
-
 # --- LLM / RAG ---
 langchain>=0.3.7
 langchain-core>=0.3.15

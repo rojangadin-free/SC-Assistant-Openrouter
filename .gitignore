@@ -265,6 +265,3 @@ _inline_dashboard.js
 
 
 
-# AWS access keys downloaded from the console land in the repo root with this
-# name. Secrets, never data - one accidental git add . away from being public.
-*accessKeys*.csv

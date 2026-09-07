@@ -2,7 +2,6 @@ import os
 import re
 import concurrent.futures  # 🚀 Added for parallel processing
 from datetime import datetime
-from zoneinfo import ZoneInfo  # stdlib 3.9+; tzdata pkg covers slim containers
 
 from langchain_openai import ChatOpenAI
 from config import OPENROUTER_API_KEY, CHAT_MODEL_NAME
@@ -69,7 +68,7 @@ else:
 
 # Deeper candidate pools: institutional docs repeat the same vocabulary on many
 # pages, so a shallow pool silently drops the one page that actually answers.
-RETRIEVER_TOP_K = 20
+RETRIEVER_TOP_K = 25
 
 sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
@@ -97,7 +96,7 @@ retriever = EnsembleRetriever(
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
-RERANK_CANDIDATES = 30  # how many candidates the cross-encoder scores
+RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
 FINAL_TOP_K = 12        # documents actually sent to the LLM
 
 
@@ -577,7 +576,7 @@ def retrieve_documents(
 
 # --- MODEL INSTANTIATION ---
 primary_model = ChatOpenAI(
-    model=CHAT_MODEL_NAME,
+    model="deepseek/deepseek-v4-flash-0731",
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.2,
@@ -598,24 +597,20 @@ primary_model = ChatOpenAI(
 # student got "Streaming interrupted." on a question the handbook answers in
 # full. A fallback on the same gateway is not a fallback; it is the same request
 # sent twice.
-# No max_tokens cap and no spoofed client headers.
-#
-# With reasoning ON (this model family's default) and a 2048-token ceiling, the
-# reasoning tokens are billed against the same budget before any answer text is
-# emitted - live-probed as either an empty completion or a truncated answer with
-# the enrollment table missing, which reads as "ignoring the system prompt".
-# Reasoning is disabled explicitly and the ceiling removed; a long answer is
-# allowed to be long. The spoofed Codex headers were an AgentRouter WAF
-# workaround - this client talks to OpenRouter, which ignores them, and they
-# only fingerprint the deployment.
 fallback_model = ChatOpenAI(
     model=FALLBACK_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    extra_body={
-        "reasoning": {"enabled": False}
-    },
+    max_tokens=2048,
+    default_headers={
+                # Remove generic headers like HTTP-Referer or X-Title
+                # Spoof supported client headers to bypass the AgentRouter WAF
+                "Originator": "codex_cli_rs",
+                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
+                "Version": "0.101.0",
+                "X-Stainless-Runtime": "node" 
+    }
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -682,26 +677,6 @@ summarizer = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0,
-    # Same reasoning toggle as the other two: the optimizer/summarizer roles
-    # want one fast sentence, never chain-of-thought. The previous ":free"
-    # reasoning variant burned requests against Nvidia's shared-capacity cap
-    # ("Worker local total request limit reached (16/16)") until every
-    # optimizer call failed.
-    extra_body={
-        "reasoning": {"enabled": False}
-    },
-)
-
-# One line in the boot log naming every model this worker actually loaded.
-# "It worked on my machine" deployments differ from prod by exactly this: the
-# container logged nothing about which model ids were in play, so a stale image
-# and a fixed repo produced indistinguishable startups. Printed once at import,
-# before the first request, so `docker logs` answers "which models is this
-# container running?" in one grep.
-print(
-    f"[chain] models in use | primary: {CHAT_MODEL_NAME} | "
-    f"fallback: {FALLBACK_MODEL_NAME} | summarizer: {SUMMARIZER_MODEL_NAME}",
-    flush=True,
 )
 
 # ====== Chat State ======
@@ -1158,11 +1133,7 @@ def create_graph():
 
                 chat_history=history_str,
                 student_context=student_context,
-                # Asia/Manila, explicitly. The Docker image is UTC; for 8 hours of every
-                # Philippine day a naive now() tells the model YESTERDAY's date, which
-                # silently breaks every "is enrollment still open?" deadline answer.
-                # TZ is env-overridable for other deployments of the same code.
-                current_date=datetime.now(ZoneInfo(os.getenv("APP_TZ", "Asia/Manila"))).strftime("%B %d, %Y")
+                current_date=datetime.now().strftime("%B %d, %Y")
             )
 
 

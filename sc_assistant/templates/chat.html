@@ -4,11 +4,7 @@
 {% block title %}Samar College AI-Assistant{% endblock %}
 
 {% block extra_head %}
-  <!-- Vendored, not CDN: the enrollment table is rendered client-side by
-       marked, and a blocked/unreachable CDN on the deployed site made every
-       answer render as raw markdown instead. Served from the same origin,
-       so it works wherever the app itself works. -->
-  <script src="{{ url_for('static', filename='js/vendor/marked.min.js') }}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet"
         type="text/css"
         href="{{ url_for('static', filename='css/chat.css') }}"/>

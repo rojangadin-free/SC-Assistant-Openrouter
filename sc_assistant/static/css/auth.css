@@ -201,6 +201,18 @@ input, select, textarea, button {
 .input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); font-size: 15px; z-index: 2; transition: color 0.2s; }
 .form-input:focus ~ .input-icon { color: var(--sc-green); }
 
+/* Persistent, non-error helper line under an input — currently the one that
+   tells students the sign-in field takes either an email or a username. Uses
+   --text-secondary rather than --text-tertiary: this is instruction the student
+   needs before they can act, not decoration, and --text-tertiary is reserved
+   for placeholder-weight text here. */
+.field-hint {
+    margin: 0.375rem 0 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal, 1.5);
+    color: var(--text-secondary);
+}
+
 /* Code input styles */
 .code-input-container { display: flex; justify-content: space-between; margin-bottom: 1.5rem; }
 .code-input {

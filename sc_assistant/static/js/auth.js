@@ -79,7 +79,17 @@ $(document).ready(function() {
         // leaves the submit button disabled, same as never opening it.
     });
     
-    // Load remembered email
+    // Mirrors aws.cognito._looks_like_email — kept simple on purpose, since the
+    // server does the authoritative resolution and this only decides whether a
+    // value is safe to carry into a type="email" field.
+    function looksLikeEmail(value) {
+        const at = (value || '').lastIndexOf('@');
+        return at > 0 && value.slice(at + 1).includes('.');
+    }
+
+    // Load remembered identifier (email or username — the storage key predates
+    // usernames being accepted here, and is left alone so anyone who ticked
+    // "Remember me" before this change still gets their value back).
     const savedEmail = localStorage.getItem('rememberedEmail');
     if (savedEmail) {
         $('#email').val(savedEmail);
@@ -172,8 +182,11 @@ $(document).ready(function() {
         formSubtitle.text("We'll send you a code to reset your password");
         toggleLink.hide();
         
+        // The sign-in field accepts an email OR a username; this one is a real
+        // type="email" input, so only carry the value over when it is an email.
+        // Prefilling a username here would make the field invalid on arrival.
         const loginEmail = $('#email').val();
-        if (loginEmail) {
+        if (loginEmail && looksLikeEmail(loginEmail)) {
             $('#resetEmail').val(loginEmail);
         }
     });

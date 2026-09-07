@@ -14,9 +14,12 @@ def get_session_id():
 
 def get_cognito_username():
     """
-    Get the correct username for Cognito operations.
-    Try to use the user's email first (most reliable),
-    then fall back to session username.
+    Get the correct username for Cognito admin_* operations.
+
+    Order matters: this pool signs in by username, not email, so an email in the
+    Username slot is rejected with InvalidParameterException. The ID token's
+    'cognito:username' claim is the authoritative value, and login() copies it
+    into the session, so both are tried before falling back to the email.
     """
     # Try to get the actual username from the ID token if available
     if "id_token" in session:
@@ -26,13 +29,16 @@ def get_cognito_username():
             cognito_username = claims.get("cognito:username")
             if cognito_username:
                 return cognito_username
-        except:
+        except Exception:
             pass
-    
-    # Fall back to email (works as username in Cognito)
-    email = session.get("user")
-    if email:
-        return email
-    
-    # Last resort: session username
-    return session.get("username", "")
+
+    # Copied out of the token at login, so it survives even if the token itself
+    # is no longer in the session.
+    cognito_username = session.get("cognito_username")
+    if cognito_username:
+        return cognito_username
+
+    # Last resorts. Neither is a real Cognito username in this pool, but a
+    # wrong value produces a clear AWS error rather than silently acting on
+    # somebody else's account.
+    return session.get("user") or session.get("username", "")
