@@ -68,7 +68,7 @@ else:
 
 # Deeper candidate pools: institutional docs repeat the same vocabulary on many
 # pages, so a shallow pool silently drops the one page that actually answers.
-RETRIEVER_TOP_K = 25
+RETRIEVER_TOP_K = 20
 
 sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
@@ -96,7 +96,7 @@ retriever = EnsembleRetriever(
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
-RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
+RERANK_CANDIDATES = 30  # how many candidates the cross-encoder scores
 FINAL_TOP_K = 12        # documents actually sent to the LLM
 
 
@@ -576,13 +576,14 @@ def retrieve_documents(
 
 # --- MODEL INSTANTIATION ---
 primary_model = ChatOpenAI(
-    model="deepseek/deepseek-v4-flash-0731",
+    model=CHAT_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.2,
     extra_body={
         "reasoning": {"enabled": False}
-    }
+    },
+    timeout=30
 )
 
 # A DIFFERENT provider, deliberately.
@@ -602,15 +603,10 @@ fallback_model = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    max_tokens=2048,
-    default_headers={
-                # Remove generic headers like HTTP-Referer or X-Title
-                # Spoof supported client headers to bypass the AgentRouter WAF
-                "Originator": "codex_cli_rs",
-                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-                "Version": "0.101.0",
-                "X-Stainless-Runtime": "node" 
-    }
+    extra_body={
+        "reasoning": {"enabled": False}
+    },
+    timeout=30
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -676,7 +672,11 @@ summarizer = ChatOpenAI(
     model=SUMMARIZER_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
-    temperature=0,
+    temperature=0.1,
+    extra_body={
+        "reasoning": {"enabled": False}
+    },
+    timeout=30
 )
 
 # ====== Chat State ======

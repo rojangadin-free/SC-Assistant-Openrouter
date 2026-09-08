@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_openai import ChatOpenAI
 
-from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME
+from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME, AGENTROUTER_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -764,15 +764,7 @@ def get_vision_client() -> ChatOpenAI:
             openai_api_key=OPENROUTER_API_KEY,
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.1,
-            max_tokens=2048,
-            default_headers={
-                # Remove generic headers like HTTP-Referer or X-Title
-                # Spoof supported client headers to bypass the AgentRouter WAF
-                "Originator": "codex_cli_rs",
-                "User-Agent": "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-                "Version": "0.101.0",
-                "X-Stainless-Runtime": "node" 
-            }
+            max_tokens=2048
         )
     return _VISION_CLIENT
 

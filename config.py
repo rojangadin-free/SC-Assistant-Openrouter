@@ -8,8 +8,8 @@ load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID")
 COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
 COGNITO_CLIENT_SECRET = os.getenv("COGNITO_CLIENT_SECRET")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-S3_BUCKET_NAME = "sc-assistant-bucket"
+AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
+S3_BUCKET_NAME = "sc-assistant-bucket2"
 
 # Vector Store Configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -53,9 +53,9 @@ CHAT_MODEL_NAME = "deepseek/deepseek-v4-flash-0731"
 # that rejected the first attempt, so the student sees "Streaming interrupted."
 # with no answer at all. This model is served by OpenRouter, so a provider-side
 # block on one is not a block on the other.
-FALLBACK_MODEL_NAME = "nvidia/nemotron-3-ultra-550b-a55b:free"
+FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
 
-SUMMARIZER_MODEL_NAME = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+SUMMARIZER_MODEL_NAME = "google/gemini-2.5-flash-lite"
 
 
 if not PINECONE_API_KEY:
