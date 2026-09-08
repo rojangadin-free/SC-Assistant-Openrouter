@@ -22,6 +22,27 @@ AGENTROUTER_API_KEY = os.getenv("AGENTROUTER_API_KEY")
 # Flask Configuration
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "your_default_secret_key")
 
+# Where admin state lives (see docs/SHARED_STORAGE.md and rag/store.py).
+#
+# `rag/store.py` reads STORE_BACKEND from the environment, and `.env` is not in
+# the image — it is gitignored, and the deploy passes secrets in as individual
+# `-e` flags. So the container fell back to the `file` default and wrote every
+# admin decision to its own writable layer, while the developer's machine (which
+# does have .env) wrote to DynamoDB. The two were never looking at the same data:
+# a calendar period saved locally simply did not exist for the deployed app, and
+# anything the deployed app saved was discarded on the next redeploy.
+#
+# Defaulting to `dynamodb` here, rather than adding another `-e` line to the
+# workflow, is deliberate: the failure mode of a MISSING env var is silent
+# divergence that looks like a UI bug, and the next store added would inherit the
+# same trap. `file` is still selectable for offline work — `run_tests.py` sets it
+# explicitly — but the shared backend is now what you get by not thinking about it.
+STORE_BACKEND = os.getenv("STORE_BACKEND", "dynamodb")
+os.environ["STORE_BACKEND"] = STORE_BACKEND
+STORE_TABLE_NAME = os.getenv("STORE_TABLE_NAME", "SCAssistantStores")
+os.environ["STORE_TABLE_NAME"] = STORE_TABLE_NAME
+
+
 # LLM Configuration
 CHAT_MODEL_NAME = "deepseek/deepseek-v4-flash-0731"
 

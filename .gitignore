@@ -263,5 +263,13 @@ firebase_key.json
 # create a second, stale version of the same script.
 _inline_dashboard.js
 
+# Scratch children/backups written by tools/verify_settings_persist.py. It hides
+# the local JSON stores to simulate a fresh container, so these only exist while
+# that script is mid-run — and a committed one would restore itself over real
+# state on the next run.
+*.persistprobe
+tools/_persist_child.py
+
+
 
 

@@ -154,14 +154,31 @@ SUITES = [
 
 
 
+# Every suite runs against local temp files, never the shared table.
+#
+# This is forced here rather than left to each suite. `.env` now sets
+# STORE_BACKEND=dynamodb so admin settings survive a redeploy, and any suite that
+# does not set the variable itself inherits it — at which point it stops testing
+# its own temp file and starts reading, and WRITING, the deployment's real
+# `SCAssistantStores` rows. That showed up as three suites failing on row counts
+# they never created ("total questions: got 4, want 3"): they were seeing
+# production data. The damage runs the other way too, since those suites resolve,
+# reopen and delete rows.
+#
+# Suites that set STORE_BACKEND themselves are unaffected — this only supplies the
+# value for the ones that assumed a `file` default.
+CHILD_ENV = {**os.environ, "STORE_BACKEND": "file"}
+
 results = []
 for label, script in SUITES:
     print(f"\n{'#'*70}\n#  {label}  ({script})\n{'#'*70}")
     code = subprocess.run(
         [sys.executable, "-X", "utf8", os.path.join(TESTS_DIR, script)],
         cwd=RUN_FROM,
+        env=CHILD_ENV,
     ).returncode
     results.append((label, script, code))
+
 
 print(f"\n{'='*70}\n  SUMMARY\n{'='*70}")
 for label, script, code in results:

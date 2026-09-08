@@ -44,6 +44,38 @@ def create_app():
     def health_check():
         return "OK", 200
 
+    # ----------------------------------------------------------------------- #
+    # Say where admin state is going, at boot
+    # ----------------------------------------------------------------------- #
+    # The whole shared-storage layer is invisible when it is misconfigured: on
+    # `file` the dashboard works perfectly, saves successfully, and simply keeps
+    # the data somewhere no other instance — and no future container — will ever
+    # look. That is how a calendar period saved on one machine came to be missing
+    # on the deployed site with no error anywhere.
+    #
+    # `.env` is not in the image (gitignored, and secrets arrive as `-e` flags), so
+    # STORE_BACKEND was unset in production and silently defaulted to `file`.
+    # config.py now defaults it to `dynamodb`; this line makes the actual choice
+    # visible in the container logs, so the next misconfiguration is one `docker
+    # logs` away instead of a UI mystery.
+    try:
+        from rag.store import describe_backend
+
+        info = describe_backend()
+        if info["shared_across_instances"]:
+            print(f"[startup] Admin state -> DynamoDB table '{info['table']}' (shared)")
+        else:
+            print(
+                "[startup] WARNING: admin state -> local JSON files (NOT shared).\n"
+                "           Calendar periods, announcements, conflict decisions and\n"
+                "           document dates will be invisible to other instances and\n"
+                "           lost on the next redeploy.\n"
+                "           fix   : set STORE_BACKEND=dynamodb"
+            )
+    except Exception as e:
+        print(f"[startup] Could not determine storage backend: {e}")
+
+
 
     with app.app_context():
         from . import auth

@@ -67,6 +67,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import threading
 import uuid
 from typing import Dict, List, Optional
 
@@ -79,11 +80,35 @@ from rag.store import JsonBlobStore
 
 STORE_PATH = os.getenv("ANNOUNCEMENTS_FILE", "announcements.json")
 
-_store = JsonBlobStore(
-    name="announcements",
-    path=STORE_PATH,
-    default=lambda: {"announcements": []},
-)
+
+def _empty_store() -> dict:
+    return {"announcements": []}
+
+
+# Built lazily, like every other store in this package.
+#
+# It used to be a module-level `JsonBlobStore(...)` evaluated at import time,
+# which is a real bug rather than a style difference: `tests/test_announcements.py`
+# sets ANNOUNCEMENTS_FILE *before* importing this module and got away with it, but
+# `tools/create_stores_table.py` flips STORE_BACKEND between snapshots — and a
+# store captured at import time keeps whatever path it was born with, so the
+# migration read announcements from the file and then wrote them nowhere. That is
+# exactly how announcements came to be the one admin feature that still reset on
+# every redeploy.
+_store_obj: Optional[JsonBlobStore] = None
+_store_obj_path: Optional[str] = None
+_store_init_lock = threading.Lock()
+
+
+def _store() -> JsonBlobStore:
+    global _store_obj, _store_obj_path
+    path = os.getenv("ANNOUNCEMENTS_FILE", STORE_PATH)
+    with _store_init_lock:
+        if _store_obj is None or _store_obj_path != path:
+            _store_obj = JsonBlobStore("announcements", path, _empty_store)
+            _store_obj_path = path
+        return _store_obj
+
 
 # How loud, in the UI only. Ordered most- to least-urgent; the list order *is* the
 # sort order, so adding a level in the middle is a one-line change.
@@ -142,7 +167,8 @@ def _neg_str(s: str) -> tuple:
 
 
 def list_announcements(*, include_expired: bool = True) -> List[dict]:
-    data = _store.load()
+    data = _store().load()
+
     items = [a for a in data.get("announcements", []) if isinstance(a, dict)]
     if not include_expired:
         items = [a for a in items if not is_expired(a)]
@@ -277,7 +303,7 @@ def save_announcement(
             del items[: len(items) - MAX_ANNOUNCEMENTS]
         saved["r"] = record
 
-    _store.mutate(_apply)
+    _store().mutate(_apply)
     return saved.get("r")
 
 
@@ -296,7 +322,7 @@ def delete_announcement(key: str) -> bool:
         data["announcements"] = keep
         removed["ok"] = True
 
-    _store.mutate(_apply)
+    _store().mutate(_apply)
     return removed["ok"]
 
 
@@ -320,8 +346,9 @@ def set_active(key: str, active: bool) -> Optional[dict]:
                 return
         return False
 
-    _store.mutate(_apply)
+    _store().mutate(_apply)
     return found.get("r")
+
 
 
 # ---------------------------------------------------------------------------
