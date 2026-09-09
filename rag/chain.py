@@ -587,8 +587,8 @@ primary_model = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.2,
-    reasoning_effort="low",
-    timeout=30
+    max_tokens=2048,
+    timeout=60
 )
 
 # A DIFFERENT provider, deliberately.
@@ -619,7 +619,7 @@ fallback_model = ChatOpenAI(
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    reasoning_effort="low",
+    max_tokens=2048,
     timeout=30
 )
 
