@@ -575,51 +575,39 @@ def retrieve_documents(
 
 
 # --- MODEL INSTANTIATION ---
-#
-# Reasoning is disabled on the primary, and that is a LATENCY decision, not a
-# quality one. A thinking model emits its entire reasoning trace before the first
-# token of the actual answer, and `stream_answer()` below can only forward what
-# the provider sends — so the student watches "Generating response" for the whole
-# of it. Turning it off is what makes the first word appear in about a second
-# instead of after a silent thinking phase.
 primary_model = ChatOpenAI(
     model=CHAT_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.2,
-    max_tokens=2048,
-    timeout=60
+    extra_body={
+        "reasoning": {
+            # 1. Base State Control
+            "enabled": True,             # Explicitly force reasoning on or off
+            
+            # 2. Effort Allocation (OpenAI-Style / Normalized)
+            # Accepted values: "max", "xhigh", "high", "medium", "low", "minimal", "none"
+            "effort": "minimal"
+        }
+    },
+    timeout=30
 )
 
-# A DIFFERENT provider, deliberately.
-#
-# AgentRouter runs a content filter in front of the model, and it rejects
-# questions that are entirely ordinary on a campus. "latin honor" returns
-# HTTP 400 `content-blocked` — nothing to do with the prompt, the documents or
-# the retrieval, which had already found the correct pages 52-56.
-#
-# When this fallback also pointed at agentrouter.org, the retry was screened by
-# the same rule that rejected the first attempt, so both legs failed and the
-# student got "Streaming interrupted." on a question the handbook answers in
-# full. A fallback on the same gateway is not a fallback; it is the same request
-# sent twice.
-#
-# NOTE: no `reasoning` key here, and it must stay that way. This model mandates
-# reasoning and rejects the disable flag outright:
-#
-#   400 - Reasoning is mandatory for this endpoint and cannot be disabled.
-#
-# That refusal happens before the first token, so `stream_answer()` treats it as
-# a dead provider and moves on — meaning a request that had already lost the
-# primary would fail on BOTH legs and surface as "Streaming interrupted." Sending
-# the flag to a model that forbids it turns the safety net into a second failure.
-# A slower fallback that answers beats a fast one that 400s.
 fallback_model = ChatOpenAI(
     model=FALLBACK_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0.3,
-    max_tokens=2048,
+    extra_body={
+        "reasoning": {
+            # 1. Base State Control
+            "enabled": True,             # Explicitly force reasoning on or off
+            
+            # 2. Effort Allocation (OpenAI-Style / Normalized)
+            # Accepted values: "max", "xhigh", "high", "medium", "low", "minimal", "none"
+            "effort": "minimal"
+        }
+    },
     timeout=30
 )
 
@@ -686,7 +674,7 @@ summarizer = ChatOpenAI(
     model=SUMMARIZER_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
-    temperature=0.1,
+    temperature=0,
     extra_body={
         "reasoning": {"enabled": False}
     },
