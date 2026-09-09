@@ -103,6 +103,18 @@ _FOLLOWUP_MARKERS = (
     "that one", "those ones", "it instead", "instead of that",
 )
 
+# Conversational affirmations and negations that begin a reply to the AI.
+# When the student says "yes do the programs offered" they are accepting the
+# AI's own suggestion from the previous turn — the real search intent lives in
+# that turn, not in these words. Searching the literal text retrieves the wrong
+# subject (or nothing). Waiting for a rewrite with the full history fixes this.
+#
+# Kept as a frozenset so the membership test is O(1) regardless of list length.
+_AFFIRMATION_STARTERS = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "fine",
+    "no", "nope", "nah", "got", "great",
+})
+
 # Pronouns and deictics that need an antecedent. Checked as whole words so
 # "their" in "their programs" counts but "that" inside "thatch" does not.
 _ANAPHORA = (
@@ -164,7 +176,17 @@ def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> b
 
     lowered = q.lower()
 
-    # (2) An explicit continuation, or a reference with no antecedent in the
+    # (2a) Message starts with an affirmation/negation directed at the AI.
+    # "yes do the programs offered", "sure what are the fees", "ok tell me more"
+    # — the first word is a reply to the previous turn, not a search term.
+    # The real intent is carried by what the AI said, so we must resolve against
+    # history. Checked before the follow-up-marker scan because it is the more
+    # specific signal.
+    first_word = re.split(r"[\s,!.?]+", lowered)[0] if lowered else ""
+    if first_word in _AFFIRMATION_STARTERS:
+        return True
+
+    # (2b) An explicit continuation, or a reference with no antecedent in the
     # sentence itself.
     if any(marker in lowered for marker in _FOLLOWUP_MARKERS):
         return True

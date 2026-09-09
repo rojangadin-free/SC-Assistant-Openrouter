@@ -764,6 +764,7 @@ def get_vision_client() -> ChatOpenAI:
             openai_api_key=OPENROUTER_API_KEY,
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.1,
+            reasoning_effort="low",
             max_tokens=2048
         )
     return _VISION_CLIENT

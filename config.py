@@ -44,7 +44,14 @@ os.environ["STORE_TABLE_NAME"] = STORE_TABLE_NAME
 
 
 # LLM Configuration
-CHAT_MODEL_NAME = "deepseek/deepseek-v4-flash-0731"
+#
+# deepseek-v4-flash-vision-exp is the primary: it accepts reasoning:{enabled:false}
+# so streaming begins immediately with the first answer token. GLM-5.3-flash mandates
+# reasoning and rejects the disable flag with HTTP 400, which makes every request
+# pay the full thinking-phase latency before the first visible token — the "stuck in
+# generating response" symptom. It is kept as a fallback so content-blocked requests
+# still have a second attempt.
+CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
 
 # The fallback must be reachable through a DIFFERENT provider than the primary.
 # AgentRouter fronts requests with a content filter that rejects some perfectly
@@ -53,9 +60,9 @@ CHAT_MODEL_NAME = "deepseek/deepseek-v4-flash-0731"
 # that rejected the first attempt, so the student sees "Streaming interrupted."
 # with no answer at all. This model is served by OpenRouter, so a provider-side
 # block on one is not a block on the other.
-FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
+FALLBACK_MODEL_NAME = "z-ai/glm-5.3-flash"
 
-SUMMARIZER_MODEL_NAME = "nvidia/nemotron-3-nano-30b-a3b"
+SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it"
 
 
 if not PINECONE_API_KEY:
