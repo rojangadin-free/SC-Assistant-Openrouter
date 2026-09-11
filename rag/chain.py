@@ -68,7 +68,7 @@ else:
 
 # Deeper candidate pools: institutional docs repeat the same vocabulary on many
 # pages, so a shallow pool silently drops the one page that actually answers.
-RETRIEVER_TOP_K = 15
+RETRIEVER_TOP_K = 30
 
 sparse_retriever = PineconeHybridSearchRetriever(
     embeddings=embeddings,
@@ -96,7 +96,7 @@ retriever = EnsembleRetriever(
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
-RERANK_CANDIDATES = 25  # how many candidates the cross-encoder scores
+RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
 FINAL_TOP_K = 12        # documents actually sent to the LLM
 
 
