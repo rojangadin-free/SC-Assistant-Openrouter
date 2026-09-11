@@ -94,6 +94,41 @@ logger = logging.getLogger(__name__)
 DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
 
+
+# ---------------------------------------------------------------------------
+# The off switch
+# ---------------------------------------------------------------------------
+# Reranking is the only CPU-bound phase of a request (see docs/CAPACITY.md), and
+# on a 2-vCPU box it is what caps concurrency at a handful of simultaneous
+# questions. Turning it off trades ranking quality for roughly an order of
+# magnitude more throughput and ~1 GB less RSS per worker, because torch is then
+# never imported at all.
+#
+# Default ON, deliberately. `tools/eval_retrieval.py` passes with the reranker
+# off — every gold marker still reaches the top-12 — which establishes that off
+# is a SUPPORTED configuration, not that it is the better one. What that eval
+# measures is whether the evidence is *present* in the pool, not what order it
+# sits in, and the LLM reads position. Two things are still lost:
+#
+#   * ordering within the top-K, including the +8.711 / -9.842 window case below
+#   * `rerank_multi()`'s round-robin, which is what stopped a three-part question
+#     from starving its third ask (CITAS landed at rank 13, just past the cutoff)
+#
+# So this is an escape hatch for a busy box, not a recommendation. Flip the
+# default only with evidence about ANSWERS, not about recall.
+#
+# The value is parsed permissively because the failure mode is asymmetric: an env
+# var typed as "0" or "off" that silently means "on" would leave someone
+# convinced they had disabled ranking while paying for it on every question. Any
+# other value (including nonsense) leaves ranking ON, which is the safe side.
+RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").strip().lower() not in (
+    "false",
+    "0",
+    "no",
+    "off",
+)
+
+
 # 512, even though this model's tokenizer advertises model_max_length 7999.
 #
 # The number that matters is not what the model CAN take, it is what it is fed:
@@ -144,11 +179,69 @@ MAX_WINDOWS_PER_DOC = int(os.getenv("RERANKER_MAX_WINDOWS", "8"))
 MAX_TOTAL_WINDOWS = int(os.getenv("RERANKER_MAX_TOTAL_WINDOWS", "220"))
 
 
+# ---------------------------------------------------------------------------
+# Concurrency: how many requests may be inside the model at once
+# ---------------------------------------------------------------------------
+# The deployment target is a 2-vCPU box (see the Dockerfile's `--workers 2
+# --threads 4`), and this is the only phase of a request that is genuinely
+# CPU-bound — everything else is a network wait on Pinecone, DynamoDB or the
+# LLM gateway. That asymmetry is what makes an unbounded number of concurrent
+# reranks the wrong default:
+#
+#   2 questions arrive  -> 2 threads x ~3.5 s of CPU on 2 cores -> both ~4 s
+#   8 questions arrive  -> 8 threads fighting over 2 cores      -> ALL ~14 s
+#
+# Nobody is served faster by the second case; the work is the same and the only
+# thing that changed is that every student now waits for the slowest. A
+# semaphore converts that into a queue: the first few run at full speed and the
+# rest wait *briefly* for a slot, which is strictly better for the median
+# student and is honestly reported — `rag/progress.py` is already showing
+# "Reading the most relevant pages" while this blocks.
+#
+# 4 threads per worker (the Dockerfile's `--threads 4`) can each hold a slot, so
+# the default is deliberately smaller than that: the point is to leave the box
+# with headroom for the SSE generators, the heartbeats and the retrieval
+# fan-out, none of which should be starved by a queue of cross-encoder batches.
+#
+# Waiting is bounded. A slot that never arrives would turn a slow answer into no
+# answer, so on timeout the request proceeds WITHOUT reranking — the same
+# graceful degradation as a missing model, which `rerank()` already handles by
+# returning retrieval order untouched.
+RERANK_CONCURRENCY = max(1, int(os.getenv("RERANKER_CONCURRENCY", "2")))
+RERANK_QUEUE_TIMEOUT = float(os.getenv("RERANKER_QUEUE_TIMEOUT", "20"))
+
+_slots = threading.BoundedSemaphore(RERANK_CONCURRENCY)
+
+
+# ---------------------------------------------------------------------------
+# Thread pinning: why fewer torch threads makes the box faster
+# ---------------------------------------------------------------------------
+# torch defaults to one compute thread per core. With gunicorn running 2 worker
+# PROCESSES on a 2-vCPU instance, each worker's torch believes it owns both
+# cores, so two concurrent reranks spawn 4 threads for 2 cores and spend a
+# measurable slice of every batch context-switching instead of computing.
+#
+# Setting this to 1 makes a single rerank slightly slower in isolation and the
+# machine meaningfully faster under the concurrency it was sized for, which is
+# the trade that matters for a shared campus assistant. The env vars must be set
+# BEFORE torch is imported to take effect, hence module scope here rather than
+# inside `_load_model()`; `torch.set_num_threads()` is called as well because a
+# torch imported by some other module first would already have read the env.
+#
+# `setdefault`, not assignment: a deployment that has deliberately tuned these
+# (a bigger box, a dedicated reranker host) must keep its own values.
+RERANK_TORCH_THREADS = max(1, int(os.getenv("RERANKER_TORCH_THREADS", "1")))
+
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, str(RERANK_TORCH_THREADS))
+
+
 _model = None                      # cached CrossEncoder instance
 _load_error = ""                   # why the last load attempt failed, for callers
 
 _load_failed = False               # set True after a failed attempt (don't retry)
 _load_lock = threading.Lock()      # guard concurrent first-use from threads
+
 
 
 def _load_model():
@@ -161,6 +254,20 @@ def _load_model():
     if _load_failed:
         return None
 
+    # Switched off deliberately. This is the right seam for the check — both
+    # `rerank()` and `rerank_multi()` already route through here and already
+    # treat None as "answer in retrieval order", so the whole degradation path
+    # is the one that is exercised by a missing model and covered by tests.
+    #
+    # Returning before the CrossEncoder import is the point, not an accident:
+    # importing sentence_transformers pulls in torch, which is ~1 GB of RSS per
+    # gunicorn worker. A guard placed lower down (in `_predict()`, say) would
+    # skip the computation but still pay the memory, which is most of what
+    # turning this off is meant to reclaim.
+    if not RERANKER_ENABLED:
+        return None
+
+
     with _load_lock:
         # Re-check inside the lock (another thread may have finished loading).
         if _model is not None:
@@ -171,6 +278,20 @@ def _load_model():
         try:
             from sentence_transformers import CrossEncoder
 
+            # Belt and braces on the env vars set at module scope. Those only
+            # bind if this module is imported before torch; `sc_assistant`
+            # imports a lot, in an order that is not this file's to guarantee,
+            # and a torch that has already read OMP_NUM_THREADS ignores a later
+            # change. This call does not.
+            try:
+                import torch
+
+                torch.set_num_threads(RERANK_TORCH_THREADS)
+            except Exception as e:
+                # Purely a throughput tuning. A torch that will not accept a
+                # thread count still scores documents perfectly well.
+                logger.debug("Could not pin torch threads: %s", e)
+
             logger.info("Loading reranker model: %s", RERANKER_MODEL_NAME)
             print(f"  Loading reranker: {RERANKER_MODEL_NAME} ...")
             _model = CrossEncoder(
@@ -179,8 +300,13 @@ def _load_model():
                 device="cpu",
             )
 
-            print("  Reranker ready.")  
+            print(
+                f"  Reranker ready "
+                f"(threads={RERANK_TORCH_THREADS}, "
+                f"concurrency={RERANK_CONCURRENCY})."
+            )
             return _model
+
         except Exception as e:  # ImportError, network/download failure, OOM...
             _load_failed = True
             _load_error = f"{type(e).__name__}: {e}"
@@ -215,12 +341,31 @@ def unavailable_reason() -> str:
     This exists because the failure is silent by design: `rerank()` returns the
     documents untouched, so the only visible symptom is that every document
     lacks a score. Whoever reads that log needs the cause, not a guess.
+
+    "Switched off on purpose" and "your machine is broken" must not read the
+    same. They produce identical behaviour — retrieval order, no scores — so
+    without this distinction the only way to tell a deliberate
+    RERANKER_ENABLED=false from missing weights is to go and read the config.
     """
     if _model is not None:
         return ""
+    if not RERANKER_ENABLED:
+        return "disabled by RERANKER_ENABLED"
     if _load_failed:
         return _load_error or "load failed"
     return "not loaded yet"
+
+
+def disabled() -> bool:
+    """
+    True when ranking is off *by configuration* rather than by failure.
+
+    Callers use this to phrase their own logging: `sc_assistant/__init__.py`
+    reports a chosen configuration as information and an unavailable model as a
+    WARNING with a fix, and those are genuinely different events.
+    """
+    return not RERANKER_ENABLED
+
 
 
 
@@ -265,6 +410,48 @@ def _passage_of(doc) -> str:
     """First window only — kept for callers/tests that want a single passage."""
     wins = _windows_of(doc)
     return wins[0] if wins else ""
+
+
+def _predict(model, pairs):
+    """
+    Score `pairs`, holding one of RERANK_CONCURRENCY slots for the duration.
+
+    Returns the scores, or **None** when no slot became free within
+    RERANK_QUEUE_TIMEOUT. None means "too busy", which is different from an
+    exception ("broken") and is why this does not simply raise: the caller
+    answers from retrieval order, which is a worse ANSWER but still an answer,
+    and that is the right trade against making a student wait indefinitely
+    behind a queue during an enrollment-day rush.
+
+    The waiting time is real time the student spends on the typing indicator, so
+    the timeout is generous rather than aggressive — a slot usually frees within
+    one batch (~3-4 s), and giving up too early would discard good ranking for a
+    queue that was about to clear.
+    """
+    acquired = _slots.acquire(timeout=RERANK_QUEUE_TIMEOUT)
+    if not acquired:
+        logger.warning(
+            "Reranker busy: no slot within %.0fs (concurrency=%d), "
+            "answering from retrieval order",
+            RERANK_QUEUE_TIMEOUT,
+            RERANK_CONCURRENCY,
+        )
+        print(
+            f"  Reranker busy (>{RERANK_QUEUE_TIMEOUT:.0f}s queue), "
+            f"keeping retrieval order"
+        )
+        return None
+
+    try:
+        return model.predict(pairs, show_progress_bar=False)
+    finally:
+        # `finally`, not a plain call after predict(): an exception here is
+        # caught by the caller and degrades to retrieval order, and a leaked
+        # slot would permanently shrink capacity — after
+        # RERANK_CONCURRENCY failures the reranker would be off for the life of
+        # the process, with no log line saying so.
+        _slots.release()
+
 
 
 
@@ -365,13 +552,17 @@ def rerank(
             owners.append(d_i)
 
     try:
-        scores = model.predict(pairs, show_progress_bar=False)
+        scores = _predict(model, pairs)
     except Exception as e:
         logger.warning("Rerank scoring failed, keeping retrieval order: %s", e)
         print(f"  Rerank scoring failed (non-fatal): {e}")
         return list(docs)[:top_k] if top_k else list(docs)
 
+    if scores is None:  # queue timed out — see _predict()
+        return list(docs)[:top_k] if top_k else list(docs)
+
     best = [float("-inf")] * len(head)
+
     for d_i, score in zip(owners, scores):
         s = float(score)
         if s > best[d_i]:
@@ -508,11 +699,17 @@ def rerank_multi(
             tags.append((a_i, d_i))
 
     try:
-        scores = model.predict(pairs, show_progress_bar=False)
+        scores = _predict(model, pairs)
     except Exception as e:
         logger.warning("Multi-aspect rerank failed, falling back: %s", e)
         print(f"  Multi-aspect rerank failed (non-fatal): {e}")
         return rerank(clean[0], docs, top_k=top_k, max_pairs=max_pairs)
+
+    if scores is None:
+        # Busy, not broken. Falling back to rerank() here would re-queue for a
+        # slot that is by definition unavailable, so return retrieval order.
+        return list(docs)[:top_k] if top_k else list(docs)
+
 
     # best_per_aspect[a][d] = best window score of doc d for aspect a
     n_a, n_d = len(clean), len(head)

@@ -32,6 +32,8 @@ and each one has its own document under [`docs/`](docs/).
 | Retrieval silently missed whole programs (e.g. SCTI) | **Indexing fixes.** Chunking that respects document structure, inspectable before you index | [INDEXING_FIXES.md](docs/INDEXING_FIXES.md) |
 | Admin decisions vanish for half the traffic once there are two containers | **Shared storage.** One seam behind every admin store, file or DynamoDB | [SHARED_STORAGE.md](docs/SHARED_STORAGE.md) |
 | A fake progress bar, a hidden Analytics screen, an Overview listing five arbitrary rows as "recent", two screens printing the same satisfaction figure differently, and a reload that always threw you back to the landing screen | **Admin dashboard.** Real per-file indexing progress, the analytics UI wired up, a triage queue that answers "what needs me", one screen stating each figure once, and a reload that keeps you where you were | [ADMIN_DASHBOARD.md](docs/ADMIN_DASHBOARD.md) |
+| One developer asking one question is not enrollment week: the CPU-bound reranker had no limit, so eight simultaneous questions made *all eight* slow rather than a few wait | **Capacity.** A bounded queue in front of the model, pinned compute threads, and the concurrency figures the box actually supports | [CAPACITY.md](docs/CAPACITY.md) |
+
 
 
 
@@ -51,7 +53,9 @@ src/                    PDF loading, chunking, prompt text
 aws/                    Cognito / DynamoDB / S3 wrappers
 data/                   the source PDFs
 
-tests/                  23 suites, 1,280+ assertions   -> python run_tests.py
+tests/                  25 suites, 1,300+ assertions   -> python run_tests.py
+
+
 
 
 tools/                  dev & ops scripts              -> python tools/<name>.py
@@ -130,6 +134,14 @@ against every document in the retrieval log and noticeably worse answers. Startu
 now says so explicitly (`[startup] WARNING: reranker OFF ...`), so check the boot
 output on a new machine before assuming the models are there.
 
+Reranking can also be turned off *deliberately* with `RERANKER_ENABLED=false`,
+which removes the only CPU-bound phase of a request and trades ranking quality
+for roughly ten times the concurrency. The startup line is different in that case
+(`Reranker DISABLED`, no "fix" suggestion) precisely because the two situations
+otherwise look identical. See [CAPACITY.md](docs/CAPACITY.md) for the numbers on
+both sides of that trade.
+
+
 
 ### Testing on a phone
 
@@ -149,7 +161,9 @@ python run.py --https     # https://<your-lan-ip>:8443, self-signed
 python run_tests.py
 ```
 
-23 suites, 1,280+ assertions, **no AWS credentials and no network required** — each
+25 suites, 1,300+ assertions, **no AWS credentials and no network required** — each
+
+
 
 
 

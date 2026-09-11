@@ -140,11 +140,33 @@ def create_app():
 
     def _warm_reranker():
         try:
-            from rag.reranker import RERANKER_MODEL_NAME, unavailable_reason, warmup
+            from rag.reranker import (
+                RERANKER_MODEL_NAME,
+                disabled,
+                unavailable_reason,
+                warmup,
+            )
+
+            # Off on purpose. Reported as information, not as a warning with a
+            # fix, because there is nothing to fix — and reported at all because
+            # a deliberate RERANKER_ENABLED=false and a broken model produce
+            # byte-identical behaviour (retrieval order, no scores). Anyone
+            # debugging "why are the answers worse than the demo" needs to be
+            # able to tell those two apart from the boot output alone.
+            if disabled():
+                print(
+                    "[startup] Reranker DISABLED (RERANKER_ENABLED=false) — answers "
+                    "keep hybrid retrieval order and carry no score.\n"
+                    "           capacity : higher (no CPU-bound phase, torch not loaded)\n"
+                    "           quality  : ordering within the top-K is unranked\n"
+                    "           re-enable: unset RERANKER_ENABLED, see docs/CAPACITY.md"
+                )
+                return
 
             if warmup():
                 print(f"[startup] Reranker ready: {RERANKER_MODEL_NAME}")
                 return
+
 
             # warmup()'s return value used to be discarded, which is how a
             # deployment could run for weeks with the reranker off: the only

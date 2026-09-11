@@ -59,11 +59,41 @@ COPY . /app
 RUN python3 -c "import flask, gunicorn, langchain, langchain_core, langchain_community, langchain_classic, langchain_openai, langchain_pinecone, langchain_huggingface, langgraph, pinecone, pinecone_text, nltk, sentence_transformers, lxml, fitz, pdfplumber, docx, PIL, boto3, jose, cryptography, dotenv; print('all declared dependencies import OK')"
 
 
+# Thread pinning for the cross-encoder. torch otherwise starts one compute
+# thread per core in EVERY worker, so on the 2-vCPU target box two workers ask
+# for 4 threads on 2 cores and lose time to context switching. Set here as well
+# as in rag/reranker.py because these must be read before torch is imported, and
+# an env var in the image is the only place guaranteed to precede that.
+#
+# See docs/CAPACITY.md for the measurements behind this and the numbers below.
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    TOKENIZERS_PARALLELISM=false
+
 EXPOSE 8080
 
-# 2 workers x 4 threads on a small EC2 box. Each worker loads its own copy of
-# the reranker model, so raising this trades memory for concurrency.
+# 2 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB). Each
+# worker loads its own copy of the reranker model — ~1.3-1.6 GB resident — so
+# this is a MEMORY ceiling as much as a CPU one: 2 workers fit comfortably in
+# 8 GB, 4 would risk the OOM killer taking a worker mid-answer.
+#
+# The threads are not there to add CPU capacity (there is none to add on 2 cores)
+# but because most of a request is spent WAITING — on Pinecone, on DynamoDB, and
+# above all on the LLM gateway streaming tokens back. A thread parked on a socket
+# costs nothing, and without them a handful of slow answers would occupy both
+# workers and queue everyone else at the front door. The genuinely CPU-bound
+# phase is bounded separately by RERANKER_CONCURRENCY.
+#
 # --timeout 120 covers a slow first LLM response.
+#
+# --worker-tmp-dir /dev/shm: gunicorn heartbeats through a temp file, and on an
+# EBS-backed instance /tmp can stall long enough under load for the arbiter to
+# decide a busy-but-healthy worker has hung and kill it mid-answer. /dev/shm is
+# memory, so the heartbeat cannot be delayed by disk.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", \
+     "--worker-tmp-dir", "/dev/shm", \
      "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
      "run:app"]
+
+

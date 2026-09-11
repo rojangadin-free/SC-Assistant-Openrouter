@@ -100,6 +100,14 @@ SUITES = [
     # one whose HuggingFace cache happens to hold the right weights.
     ("Reranker model wiring (one id)",   "test_reranker_model.py"),
 
+    # Straight after it: same component, but the question is what happens when
+    # SEVERAL students ask at once. Nothing else in this list exercises that —
+    # every other suite is one request at a time, which is also how development
+    # happens, which is why unbounded concurrent scoring on a 2-vCPU box was
+    # invisible until it was deployed. See docs/CAPACITY.md.
+    ("Reranker concurrency (load)",      "test_capacity.py"),
+
+
     # Last of the query-path unit suites, and deliberately after them: it decides
     # WHEN the optimizer runs, while the three above decide WHAT is searched. If
     # the language/dictation suites are failing, a latency failure is downstream
