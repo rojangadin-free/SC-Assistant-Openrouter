@@ -237,39 +237,49 @@ check(
 
 print("\n=== 7. The RERANKER_ENABLED off switch ===")
 
-# Default ON. This is the assertion that matters most in this section: an absent
-# env var must never mean "silently answer without ranking". The eval showing
-# that off is viable measured RECALL (gold evidence reaching the top-12), not
-# ordering within it, so off stays opt-in until there is evidence about answers.
+# Default OFF, matching the Dockerfile's `ENV RERANKER_ENABLED=false` and the
+# capacity table in docs/CAPACITY.md. This assertion exists because those three
+# places disagreed once: the default was flipped in code while the module's own
+# comment and this test still said ON, so the suite failed and the docs lied
+# about a number the instance was sized from. Whoever changes the default must
+# change all three, and this is what stops them being changed one at a time.
+#
+# What the default costs is real and is recorded in docs/CAPACITY.md: the eval
+# that cleared "off" measured RECALL (gold evidence reaching the top-12), not
+# ordering within it. `RERANKER_ENABLED=true` restores ordering at ~3.5 s of CPU
+# per question, which is the trade the 2 vCPU box could not afford.
 check(
-    "reranking is enabled when RERANKER_ENABLED is unset",
-    reranker.RERANKER_ENABLED is True,
+    "reranking is disabled when RERANKER_ENABLED is unset",
+    reranker.RERANKER_ENABLED is False,
     f"got {reranker.RERANKER_ENABLED!r} for {os.environ.get('RERANKER_ENABLED')!r}",
 )
 check(
     "disabled() agrees with the flag",
-    reranker.disabled() is False,
+    reranker.disabled() is True,
 )
+
 
 
 def enabled_for(value):
     """Re-evaluate the flag exactly as the module does at import time."""
-    return (value or "true").strip().lower() not in ("false", "0", "no", "off")
+    return (value or "false").strip().lower() not in ("false", "0", "no", "off")
 
 
-# Parsed permissively on purpose. "0" or "off" that silently meant ON would
-# leave someone certain they had disabled ranking while still paying ~3.5 s of
-# CPU per question — which is the whole reason the switch exists.
-for falsey in ("false", "False", "FALSE", "0", "no", "off", " off "):
+# Parsed permissively on purpose, and the direction matters now that the default
+# is off: a deployment that explicitly asks for ranking back must get it, so
+# anything unrecognised resolves to ON rather than being quietly swallowed. An
+# empty string is the one case that follows the default instead.
+for falsey in ("false", "False", "FALSE", "0", "no", "off", " off ", ""):
     check(
-        f"{falsey!r} disables reranking",
+        f"{falsey!r} leaves reranking disabled",
         enabled_for(falsey) is False,
     )
-for truthy in ("true", "1", "yes", "", "banana"):
+for truthy in ("true", "1", "yes", "banana"):
     check(
-        f"{truthy!r} leaves reranking ON (unknown values fail safe)",
+        f"{truthy!r} enables reranking (unknown values resolve to ON)",
         enabled_for(truthy) is True,
     )
+
 
 # The behaviour, not just the parsing: disabled must take the same degradation
 # path a missing model takes — documents back, in retrieval order, no crash.
@@ -355,13 +365,65 @@ check(
     "OMP_NUM_THREADS=1" in dockerfile,
 )
 check(
-    "gunicorn still runs 2 workers (memory ceiling on an 8 GB box)",
-    '"--workers", "2"' in dockerfile,
+    "gunicorn runs 3 workers (memory ceiling on an 8 GB box)",
+    '"--workers", "3"' in dockerfile,
+)
+# The worker count is a memory budget, and the budget only holds because every
+# worker is ~1.3 GB. If reranking is ever switched back on in the image, the
+# 3.5 s CPU phase returns and 3 processes on 2 cores start fighting — so these
+# two lines must move together. Asserting both here is what couples them.
+check(
+    "the image ships with reranking off, which is what 3 workers assumes",
+    "ENV RERANKER_ENABLED=false" in dockerfile,
+)
+# torch's allocator never returns freed memory to the OS, so a long-lived
+# worker's RSS only drifts upward. With 3 workers there is less headroom to
+# absorb that than there was with 2.
+check(
+    "workers are recycled, so torch's RSS drift cannot reach the OOM killer",
+    '"--max-requests", "400"' in dockerfile,
+)
+# Without jitter all three workers hit the limit at nearly the same request
+# count and restart together: a brief total outage instead of a rolling one.
+check(
+    "recycling is jittered, so the workers do not all restart at once",
+    "--max-requests-jitter" in dockerfile,
 )
 check(
     "gunicorn heartbeats through /dev/shm, not EBS-backed /tmp",
     "/dev/shm" in dockerfile,
 )
+
+print("\n=== 9. The memory claim in docs/CAPACITY.md is true ===")
+
+# This section exists because docs/CAPACITY.md once claimed ~350 MB per worker
+# with reranking off, "because torch is never imported", and a worker count was
+# sized from that number. The reranker's own guard is genuinely correct — it
+# returns before constructing the CrossEncoder — but rag/chain.py builds
+# HuggingFaceEmbeddings at MODULE scope, and that is sentence-transformers,
+# which is torch. The ~1 GB runtime is resident either way.
+#
+# Asserted against the source rather than by importing chain.py, which needs
+# Pinecone credentials and network. The property that matters is structural: the
+# embeddings are built at import time, not lazily per request.
+with open("rag/chain.py", encoding="utf-8") as fh:
+    chain_src = fh.read()
+
+module_level_embeddings = any(
+    line.startswith("embeddings = ") for line in chain_src.splitlines()
+)
+check(
+    "rag/chain.py still builds embeddings at module scope",
+    module_level_embeddings,
+    "if this moved behind a lazy loader, the per-worker RSS figures in "
+    "docs/CAPACITY.md need revisiting — downward, for once",
+)
+check(
+    "docs/CAPACITY.md does not repeat the retracted ~350 MB figure",
+    "~350 MB** (torch is never imported)" not in
+    open("docs/CAPACITY.md", encoding="utf-8").read(),
+)
+
 
 print(f"\n{'=' * 60}")
 print(f"  {passed} passed, {failed} failed")

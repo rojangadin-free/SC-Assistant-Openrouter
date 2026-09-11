@@ -59,11 +59,15 @@ COPY . /app
 RUN python3 -c "import flask, gunicorn, langchain, langchain_core, langchain_community, langchain_classic, langchain_openai, langchain_pinecone, langchain_huggingface, langgraph, pinecone, pinecone_text, nltk, sentence_transformers, lxml, fitz, pdfplumber, docx, PIL, boto3, jose, cryptography, dotenv; print('all declared dependencies import OK')"
 
 
-# Thread pinning for the cross-encoder. torch otherwise starts one compute
-# thread per core in EVERY worker, so on the 2-vCPU target box two workers ask
-# for 4 threads on 2 cores and lose time to context switching. Set here as well
-# as in rag/reranker.py because these must be read before torch is imported, and
-# an env var in the image is the only place guaranteed to precede that.
+# Thread pinning. torch otherwise starts one compute thread per core in EVERY
+# worker, so on the 2-vCPU target box three workers ask for 6 threads on 2 cores
+# and lose time to context switching. Set here as well as in rag/reranker.py
+# because these must be read before torch is imported, and an env var in the
+# image is the only place guaranteed to precede that.
+#
+# This matters even with RERANKER_ENABLED=false: the MiniLM embeddings in
+# rag/chain.py are sentence-transformers too, and the retrieval fan-out embeds
+# the query once per probe. Pinning is not a reranker-only concern.
 #
 # See docs/CAPACITY.md for the measurements behind this and the numbers below.
 ENV OMP_NUM_THREADS=1 \
@@ -71,29 +75,54 @@ ENV OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     TOKENIZERS_PARALLELISM=false
 
+# Reranking off by default — the single biggest capacity lever on this box. It
+# is the only CPU-bound phase of a request (~3.5 s), and removing it takes the
+# ceiling from 2-4 simultaneous questions to roughly 20-40. rag/reranker.py
+# carries the full argument and what is given up; docs/CAPACITY.md has the
+# numbers. Set RERANKER_ENABLED=true at `docker run` to put it back with no
+# rebuild — the startup banner reports which mode is live either way.
+ENV RERANKER_ENABLED=false
+
 EXPOSE 8080
 
-# 2 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB). Each
-# worker loads its own copy of the reranker model — ~1.3-1.6 GB resident — so
-# this is a MEMORY ceiling as much as a CPU one: 2 workers fit comfortably in
-# 8 GB, 4 would risk the OOM killer taking a worker mid-answer.
+# 3 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB).
+#
+# The worker count is a MEMORY budget, not a CPU one. Every worker imports
+# torch — via the MiniLM embeddings in rag/chain.py, which load at module scope
+# and are NOT affected by RERANKER_ENABLED — so each one is ~1.1-1.4 GB resident
+# even with the cross-encoder switched off. 3 x ~1.3 GB leaves ~4 GB of headroom
+# on 8 GB; 4 workers would spend most of that and put an OOM kill mid-answer
+# within reach of a bad afternoon.
+#
+# It was 2 while reranking was on, because a third process competing for the
+# same 2 cores during a 3.5 s cross-encoder batch made every answer slower. With
+# that phase gone the remaining work is nearly all socket wait, so the third
+# worker buys queueing headroom instead of contention.
 #
 # The threads are not there to add CPU capacity (there is none to add on 2 cores)
 # but because most of a request is spent WAITING — on Pinecone, on DynamoDB, and
 # above all on the LLM gateway streaming tokens back. A thread parked on a socket
-# costs nothing, and without them a handful of slow answers would occupy both
-# workers and queue everyone else at the front door. The genuinely CPU-bound
-# phase is bounded separately by RERANKER_CONCURRENCY.
+# costs nothing, and without them a handful of slow answers would occupy every
+# worker and queue everyone else at the front door.
 #
 # --timeout 120 covers a slow first LLM response.
+#
+# --max-requests 400 with jitter: torch's allocator does not return freed memory
+# to the OS, so a long-lived worker's RSS drifts upward and never comes back
+# down. Recycling turns that slow drift into a non-event. The jitter matters as
+# much as the limit — without it all three workers hit 400 at roughly the same
+# moment and restart together, which is a brief total outage rather than a
+# rolling one.
 #
 # --worker-tmp-dir /dev/shm: gunicorn heartbeats through a temp file, and on an
 # EBS-backed instance /tmp can stall long enough under load for the arbiter to
 # decide a busy-but-healthy worker has hung and kill it mid-answer. /dev/shm is
 # memory, so the heartbeat cannot be delayed by disk.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", \
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "4", \
      "--worker-tmp-dir", "/dev/shm", \
+     "--max-requests", "400", "--max-requests-jitter", "50", \
      "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
      "run:app"]
+
 
 

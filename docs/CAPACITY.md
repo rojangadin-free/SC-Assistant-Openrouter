@@ -11,17 +11,26 @@ derived from that shape and from the code in `rag/chain.py` and
 
 ## The answer
 
-| Question | Figure |
-|---|---|
-| Questions being *processed* at the same instant, without degradation | **2–4** |
-| Students actively chatting (asking, then reading for 20–40 s) | **30–60** |
-| Questions per hour | **~1,000–1,400** |
-| Sessions merely open on the page | **hundreds** |
-| Point where waits pass ~20 s and it feels broken | **~8–10 simultaneous questions** |
+Reranking is **off by default** in this deployment (`ENV RERANKER_ENABLED=false`
+in the `Dockerfile`), which removes the only CPU-bound phase of a request. The
+numbers below are for the shipped configuration; the reranked figures are kept
+alongside because they are what the trade is measured against.
 
-For a single campus assistant, 30–60 students mid-conversation is a busy day.
-The number that should worry anyone is the last row, and the whole of the rest of
-this document is about pushing it further away.
+| Question | Shipped (reranker off) | With reranker on |
+|---|---|---|
+| Questions being *processed* at the same instant | **20–40** | 2–4 |
+| Students actively chatting (asking, then reading for 20–40 s) | **60–100** | 30–60 |
+| Answer latency | **~3–8 s** | ~6–12 s |
+| Sessions merely open on the page | **hundreds** | hundreds |
+| Point where it starts to feel slow | **~40+ simultaneous questions** | ~8–10 |
+
+For a single campus assistant, 60–100 students mid-conversation is a busy day.
+
+The binding constraint has moved. With the cross-encoder gone the box is no
+longer CPU-starved, so the ceiling is now **memory** — every worker holds a torch
+runtime whatever the flag says, and that is what fixes the worker count at 3.
+The next two sections are the two halves of that.
+
 
 ---
 
@@ -29,27 +38,36 @@ this document is about pushing it further away.
 
 One question, traced through `rag/chain.py`:
 
-| Phase | Wall clock | Resource |
-|---|---|---|
-| Optimizer LLM rewrite | 0 s, or ≤2.5 s | network |
-| Pinecone hybrid fan-out (parallel probes) | ~0.5–1 s | network |
-| **Cross-encoder rerank** | **~3–4 s** (up to ~16 s multi-part) | **CPU** |
-| Prompt assembly, DynamoDB reads | ~0.2 s | network |
-| LLM streaming, first token to last | ~2–8 s | network |
-| **Total** | **~6–12 s** | |
+| Phase | Wall clock | Resource | Still there with reranking off? |
+|---|---|---|---|
+| Optimizer LLM rewrite | 0 s, or ≤2.5 s | network | yes |
+| Query embedding (MiniLM, once per probe) | ~20–60 ms × probes | **CPU** | **yes** |
+| Pinecone hybrid fan-out (parallel probes) | ~0.5–1 s | network | yes |
+| **Cross-encoder rerank** | **~3–4 s** (up to ~16 s multi-part) | **CPU** | **no — removed** |
+| Prompt assembly, DynamoDB reads | ~0.2 s | network | yes |
+| LLM streaming, first token to last | ~2–8 s | network | yes |
+| **Total** | **~3–8 s off / ~6–12 s on** | | |
 
 The optimizer row is 0 s for a self-contained question because `rag/latency.py`
 skips it — see the "Answer speed" section of the README.
 
-Only **one** row of that table consumes the instance. Every other phase is a
-socket wait, which is why the `Dockerfile` runs `--threads 4`: a thread parked on
-a Pinecone read costs nothing, and without threads a few slow answers would
-occupy both workers and queue everyone else at the front door.
+Almost every row is a socket wait, which is why the `Dockerfile` runs
+`--threads 4`: a thread parked on a Pinecone read costs nothing, and without
+threads a few slow answers would occupy every worker and queue everyone else at
+the front door.
 
-So the shape of the problem is: **~6–12 s of latency per answer, of which ~3.5 s
-is contended CPU.** 2 vCPU ÷ 3.5 s ≈ 0.55 questions/second in theory, ~0.3–0.4 in
-practice. At one question per student per ~30 s of reading, that is the 30–60
-figure above.
+**The embedding row is easy to miss.** It survives `RERANKER_ENABLED=false`,
+because the dense half of hybrid retrieval has to turn the query into a vector
+locally, and `multi_query_retrieve()` fans out up to 8 probes concurrently
+(`max_workers=min(len(queries), 8)`) across the dictation repair, the
+Tagalog/Waray variants and the paraphrase. Tens of milliseconds each is
+negligible against an LLM stream, but it is not zero, and it is the reason the
+torch thread pinning below still matters in the shipped configuration.
+
+With the cross-encoder gone, the per-question CPU cost falls from ~3.5 s to
+well under 0.5 s, and throughput stops being a function of core count. That is
+the whole of the 2–4 → 20–40 change.
+
 
 ---
 
@@ -57,30 +75,69 @@ figure above.
 
 Each gunicorn worker loads its own copy of every model:
 
-| Component | Approx RSS |
-|---|---|
-| PyTorch + transformers runtime | ~700 MB–1 GB |
-| MiniLM-L6 embeddings (384-d) | ~120 MB |
-| `ettin-reranker-32m` cross-encoder | ~180 MB |
-| Flask, LangChain, boto3, Pinecone client | ~250 MB |
-| **Per worker** | **~1.3–1.6 GB** |
+| Component | Reranker ON | Reranker OFF (shipped) |
+|---|---|---|
+| PyTorch + transformers runtime | ~700 MB–1 GB | **~700 MB–1 GB — unchanged** |
+| MiniLM-L6 embeddings (384-d) | ~120 MB | ~120 MB |
+| `ettin-reranker-32m` cross-encoder | ~180 MB | **0 — skipped** |
+| Flask, LangChain, boto3, Pinecone client | ~250 MB | ~250 MB |
+| **Per worker** | **~1.3–1.6 GB** | **~1.1–1.4 GB** |
 
-8 GB holds 2 workers comfortably, 3 tightly, 4 with a real chance of the OOM
-killer taking a worker mid-answer. **More workers cannot buy more CPU here**, so
-`--workers 2` is not a conservative guess — it is the ceiling, and it happens to
-match the core count anyway.
+### Turning the reranker off does *not* give the torch memory back
+
+This is worth stating plainly, because the opposite was written in this document
+once and a worker count was sized from it.
+
+`rag/reranker.py` genuinely returns from `_load_model()` before constructing the
+`CrossEncoder`, so the 180 MB of cross-encoder weights are never allocated. But
+`rag/chain.py` does this at **module scope**, in every worker, before any of that
+runs:
+
+```python
+embeddings = get_local_embeddings()   # HuggingFaceEmbeddings(all-MiniLM-L6-v2)
+```
+
+`HuggingFaceEmbeddings` *is* sentence-transformers, which *is* torch. The ~1 GB
+runtime is resident whether the flag is on or off. What the flag saves is the
+~3.5 s of CPU per question — which is the thing that actually mattered — plus
+180 MB, not 1 GB.
+
+So the worker budget: **3 × ~1.3 GB ≈ 3.9 GB**, leaving ~4 GB of headroom on an
+8 GB box for page cache, the SSE buffers and ordinary drift. 4 workers (~5.2 GB)
+is survivable on a quiet day and puts an OOM kill mid-answer within reach on a
+busy one, which is the single worst failure mode available here — the student
+sees a dead connection, not a slow answer.
+
+**Why 3 and not 2.** While reranking was on, a third process was actively
+harmful: it competed for the same 2 cores during a 3.5 s cross-encoder batch and
+made every concurrent answer slower. With that phase gone the remaining work is
+nearly all socket wait, so the third worker buys queue headroom instead of
+contention. That is why this number moved when the flag flipped, and why it
+should move back to 2 if the flag is ever flipped back.
+
+**`--max-requests 400 --max-requests-jitter 50`** rides along with the third
+worker. torch's allocator does not return freed memory to the OS, so a
+long-lived worker's RSS drifts upward and never comes back down; with less
+headroom than before, periodic recycling turns that drift into a non-event. The
+jitter matters as much as the limit — without it all three workers reach 400 at
+roughly the same moment and restart together, turning a rolling refresh into a
+brief total outage.
 
 ---
 
-## The three fixes applied
+## The fixes applied
 
 ### 1. torch threads pinned to 1
 
-`torch` starts one compute thread per core, per process. Two workers on two cores
-therefore ask for **four** compute threads, and a measurable slice of every batch
-goes to context switching rather than arithmetic. Worse, it is
+`torch` starts one compute thread per core, per process. Three workers on two
+cores therefore ask for **six** compute threads, and a measurable slice of every
+batch goes to context switching rather than arithmetic. Worse, it is
 *load-dependent* — invisible with one developer asking one question, and at its
 worst exactly when the system is busiest.
+
+This applies in the shipped, reranker-off configuration too: the MiniLM
+embeddings are torch, and the retrieval fan-out embeds once per probe.
+
 
 Set in two places, deliberately:
 
@@ -130,23 +187,29 @@ cannot be delayed by disk.
 
 ---
 
-## The `flex` caveat
+## The `flex` caveat — and why it stopped mattering
 
 `m7i-flex` is not a fixed-performance instance. It is sized for workloads that
-average **up to ~40% CPU**, bursting to 100% when needed. This app's reranker
-pins both vCPUs at 100% for seconds at a time.
+average **up to ~40% CPU**, bursting to 100% when needed.
 
-On a normal day that is fine: the average across an hour is low, and bursting is
-exactly what the profile is for. During an enrollment-week rush, sustained demand
-can run above the intended average and be pulled back toward baseline — at which
-point **every figure in the first table roughly halves.**
+With reranking **on**, this app violated that profile: the cross-encoder pinned
+both vCPUs at 100% for seconds at a time, and during an enrollment-week rush
+sustained demand could be pulled back toward baseline — at which point every
+figure in the first table roughly halved.
 
-Two ways out, in order of preference:
+With reranking **off**, which is how this ships, the remaining CPU work is query
+embedding measured in tens of milliseconds. The box now sits comfortably inside
+the burst profile, so **`m7i-flex.large` is the right instance for this workload
+rather than something to migrate off.** That is a real benefit of the switch and
+not an incidental one.
+
+If reranking is ever switched back on, the caveat returns with it, and the way
+out is in order of preference:
 
 1. `m7i.large` — same 2 vCPU / 8 GB, fixed performance, no burst profile to
-   exceed. The natural home for this workload.
-2. `m7i.xlarge` — 4 vCPU / 16 GB. Roughly doubles the capacity table and allows
-   `--workers 3`, which the memory budget above currently forbids.
+   exceed.
+2. `m7i.xlarge` — 4 vCPU / 16 GB. Roughly doubles the capacity table and leaves
+   room for a fourth worker, which the 8 GB budget above does not.
 
 ---
 
@@ -157,8 +220,9 @@ rebuild.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `RERANKER_ENABLED` | `true` | `false` turns ranking off entirely. See below — this is the big one. |
-| `RERANKER_CONCURRENCY` | `2` | Requests allowed inside the model at once. Raise on a bigger box. |
+| `RERANKER_ENABLED` | `false` | Off in the shipped image. `true` restores ranking quality at ~3.5 s CPU per question — see below. |
+| `RERANKER_CONCURRENCY` | `2` | Requests allowed inside the model at once. Only applies when ranking is on. |
+
 | `RERANKER_QUEUE_TIMEOUT` | `20` | Seconds to wait for a slot before answering from retrieval order. |
 | `RERANKER_TORCH_THREADS` | `1` | Per-process compute threads. Raise only with fewer workers. |
 | `RERANKER_MAX_TOTAL_WINDOWS` | `220` | **The biggest lever.** Total (query, window) pairs scored per request. |
@@ -180,25 +244,35 @@ per request, not per ask.
 
 ---
 
-## Turning reranking off entirely
+## Reranking off: what it bought, and what it did not
 
 `RERANKER_ENABLED=false` removes the only CPU-bound phase in the table above.
-Every figure in **The answer** changes, and it is the single largest lever in
-this document:
+This is the configuration the image ships with, and it is the single largest
+lever in this document:
 
-| | Reranker ON | Reranker OFF |
+| | Reranker ON | Reranker OFF (shipped) |
 |---|---|---|
 | Simultaneous questions | 2–4 | **20–40** |
-| RSS per worker | ~1.3–1.6 GB | **~350 MB** (torch is never imported) |
-| Workers that fit in 8 GB | 2 | **4–6** |
+| CPU per question | ~3.5 s | **< 0.5 s** |
+| RSS per worker | ~1.3–1.6 GB | ~1.1–1.4 GB (**not** 350 MB — see below) |
+| Workers that fit in 8 GB | 2 | **3** |
 | Answer latency | ~6–12 s | **~3–8 s** |
 | `m7i-flex` burst profile | exceeded during a rush | comfortably inside |
 
-The implementation returns `None` from `_load_model()` before the
-`sentence_transformers` import, which is why the memory is genuinely reclaimed
-rather than merely idle. `rerank()` and `rerank_multi()` then take the same
-degradation path they already take for a missing model: documents come back in
-hybrid-retrieval order, unscored, and nothing raises.
+`_load_model()` returns `None` before constructing the `CrossEncoder`, so
+`rerank()` and `rerank_multi()` take the same degradation path they already take
+for a missing model: documents come back in hybrid-retrieval order, unscored,
+and nothing raises.
+
+**The memory row deserves its correction in writing.** An earlier version of
+this document claimed ~350 MB per worker "because torch is never imported", and
+a worker count was sized from that claim. It is wrong: `rag/chain.py` builds
+`HuggingFaceEmbeddings` at module scope, which imports sentence-transformers and
+therefore torch, in every worker, regardless of this flag. What is saved is the
+cross-encoder's ~180 MB and — the part that actually matters — its CPU time. The
+per-worker footprint stays north of 1 GB, which is why the worker count went to
+3 rather than the 4–6 that the false figure would have allowed.
+
 
 ### What the evidence says
 
@@ -276,15 +350,20 @@ with a fake model, so it needs no weights, no network and no AWS:
 - a queued request is served, not dropped
 - a full queue returns retrieval order after the timeout instead of hanging
 - slots survive repeated inference failures, so capacity cannot bleed away
-- `RERANKER_ENABLED` defaults to **on**, so a missing env var can never silently
-  ship unranked answers
+- `RERANKER_ENABLED` defaults to **off**, matching the `Dockerfile` and this
+  document — the three drifted apart once and the test is what catches it
 - every accepted false spelling (`false`/`0`/`no`/`off`) disables it and every
-  unrecognised value does not, because failing safe here means "still ranking"
+  unrecognised value does not, so an explicit `RERANKER_ENABLED=true` cannot be
+  defeated by a typo
+- torch is imported even when reranking is disabled, pinning the memory claim
+  above to something executable rather than to a comment
+
 - disabled returns retrieval order, reaches no model, takes no semaphore slot and
   leaves no `rerank_score` behind — `n/a` in the log is true, `0.0` would not be
 - the startup banner distinguishes a deliberate switch-off from broken weights
-- the `Dockerfile` still agrees with the code about threads, workers and
-  `/dev/shm`
+- the `Dockerfile` still agrees with the code about threads, workers,
+  `--max-requests` and `/dev/shm`
+
 
 That last one exists because this class of bug is a disagreement between a
 config file and an assumption in code, and nothing else in the suite would

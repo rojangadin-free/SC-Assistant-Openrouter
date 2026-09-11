@@ -174,11 +174,25 @@ check(
     callable(getattr(rr, "unavailable_reason", None)),
 )
 check("available() is False before any load", rr.available() is False)
-check(
-    "unavailable_reason() explains an unattempted load",
-    rr.unavailable_reason() == "not loaded yet",
-    repr(rr.unavailable_reason()),
+
+# The reason must name the CAUSE, not merely the state. "off because someone
+# chose that" and "off because the weights are missing" look identical from the
+# outside — same retrieval order, same absent scores — so the string is the only
+# thing standing between an operator and an afternoon spent debugging a working
+# configuration.
+#
+# Which cause applies here depends on RERANKER_ENABLED, and this test inherits
+# whatever the environment has: the shipped default is off, but a developer with
+# RERANKER_ENABLED=true set locally must not see a spurious failure.
+expected_reason = (
+    "disabled by RERANKER_ENABLED" if rr.disabled() else "not loaded yet"
 )
+check(
+    "unavailable_reason() explains why, not just that",
+    rr.unavailable_reason() == expected_reason,
+    f"{rr.unavailable_reason()!r}, expected {expected_reason!r}",
+)
+
 check(
     "importing rag.reranker does not pull sentence_transformers",
     "sentence_transformers" not in sys.modules,

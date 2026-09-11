@@ -101,22 +101,35 @@ RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
 # Reranking is the only CPU-bound phase of a request (see docs/CAPACITY.md), and
 # on a 2-vCPU box it is what caps concurrency at a handful of simultaneous
 # questions. Turning it off trades ranking quality for roughly an order of
-# magnitude more throughput and ~1 GB less RSS per worker, because torch is then
-# never imported at all.
+# magnitude more throughput and ~180 MB less RSS per worker.
 #
-# Default ON, deliberately. `tools/eval_retrieval.py` passes with the reranker
-# off — every gold marker still reaches the top-12 — which establishes that off
-# is a SUPPORTED configuration, not that it is the better one. What that eval
-# measures is whether the evidence is *present* in the pool, not what order it
-# sits in, and the LLM reads position. Two things are still lost:
+# Default OFF, deliberately — this deployment targets a single m7i-flex.large
+# (2 vCPU, 8 GB) serving a whole campus, and the ~3.5 s of contended CPU this
+# adds to every question is what capped it at 2-4 simultaneous askers. Capacity
+# for everyone beat ordering quality for a few; docs/CAPACITY.md has the numbers
+# behind that trade.
+#
+# What makes OFF a supported configuration rather than a shrug:
+# `tools/eval_retrieval.py` passes with the reranker off — every gold marker
+# still reaches the top-12 on every phrasing. But note what that eval measures:
+# whether the evidence is *present* in the pool, not what order it sits in, and
+# the LLM reads position. Two things are genuinely given up:
 #
 #   * ordering within the top-K, including the +8.711 / -9.842 window case below
 #   * `rerank_multi()`'s round-robin, which is what stopped a three-part question
 #     from starving its third ask (CITAS landed at rank 13, just past the cutoff)
 #
-# So this is an escape hatch for a busy box, not a recommendation. Flip the
-# default only with evidence about ANSWERS, not about recall.
+# So if answers start reading vaguer or a multi-part question starts dropping
+# one of its parts, `RERANKER_ENABLED=true` is the first thing to try — it needs
+# no rebuild, and the startup banner will confirm which mode is live.
 #
+# NOTE for anyone reading this expecting the memory to come back: it does not.
+# `rag/chain.py` loads MiniLM embeddings at module scope, and those are
+# sentence-transformers, which is torch. The ~1 GB runtime is resident whatever
+# this flag says; only the 32M cross-encoder on top of it is skipped. The saving
+# here is CPU time per question, not the torch import.
+#
+
 # The value is parsed permissively because the failure mode is asymmetric: an env
 # var typed as "0" or "off" that silently means "on" would leave someone
 # convinced they had disabled ranking while paying for it on every question. Any
@@ -182,8 +195,9 @@ MAX_TOTAL_WINDOWS = int(os.getenv("RERANKER_MAX_TOTAL_WINDOWS", "220"))
 # ---------------------------------------------------------------------------
 # Concurrency: how many requests may be inside the model at once
 # ---------------------------------------------------------------------------
-# The deployment target is a 2-vCPU box (see the Dockerfile's `--workers 2
+# The deployment target is a 2-vCPU box (see the Dockerfile's `--workers 3
 # --threads 4`), and this is the only phase of a request that is genuinely
+
 # CPU-bound — everything else is a network wait on Pinecone, DynamoDB or the
 # LLM gateway. That asymmetry is what makes an unbounded number of concurrent
 # reranks the wrong default:
@@ -216,10 +230,15 @@ _slots = threading.BoundedSemaphore(RERANK_CONCURRENCY)
 # ---------------------------------------------------------------------------
 # Thread pinning: why fewer torch threads makes the box faster
 # ---------------------------------------------------------------------------
-# torch defaults to one compute thread per core. With gunicorn running 2 worker
-# PROCESSES on a 2-vCPU instance, each worker's torch believes it owns both
-# cores, so two concurrent reranks spawn 4 threads for 2 cores and spend a
+# torch defaults to one compute thread per core. With gunicorn running several
+# worker PROCESSES on a 2-vCPU instance, each worker's torch believes it owns
+# both cores, so N concurrent workers spawn 2N threads for 2 cores and spend a
 # measurable slice of every batch context-switching instead of computing.
+#
+# This applies whether or not the cross-encoder is enabled: the MiniLM
+# embeddings in `rag/chain.py` are torch too, and the retrieval fan-out embeds
+# once per probe. Pinning is not a reranker-only concern.
+
 #
 # Setting this to 1 makes a single rerank slightly slower in isolation and the
 # machine meaningfully faster under the concurrency it was sized for, which is
@@ -259,13 +278,16 @@ def _load_model():
     # treat None as "answer in retrieval order", so the whole degradation path
     # is the one that is exercised by a missing model and covered by tests.
     #
-    # Returning before the CrossEncoder import is the point, not an accident:
-    # importing sentence_transformers pulls in torch, which is ~1 GB of RSS per
-    # gunicorn worker. A guard placed lower down (in `_predict()`, say) would
-    # skip the computation but still pay the memory, which is most of what
-    # turning this off is meant to reclaim.
+    # Returning before the CrossEncoder construction still saves the ~180 MB of
+    # cross-encoder weights and, far more importantly, the ~3.5 s of CPU per
+    # question. It does NOT save the torch runtime: `rag/chain.py` builds
+    # HuggingFaceEmbeddings (MiniLM) at module scope, and that import has
+    # already pulled torch into every worker before this function is ever
+    # called. Said plainly here because the opposite was written down once and
+    # a worker count was sized from it.
     if not RERANKER_ENABLED:
         return None
+
 
 
     with _load_lock:

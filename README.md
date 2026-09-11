@@ -134,12 +134,18 @@ against every document in the retrieval log and noticeably worse answers. Startu
 now says so explicitly (`[startup] WARNING: reranker OFF ...`), so check the boot
 output on a new machine before assuming the models are there.
 
-Reranking can also be turned off *deliberately* with `RERANKER_ENABLED=false`,
+**The deployed image ships with reranking off** (`ENV RERANKER_ENABLED=false`),
 which removes the only CPU-bound phase of a request and trades ranking quality
-for roughly ten times the concurrency. The startup line is different in that case
-(`Reranker DISABLED`, no "fix" suggestion) precisely because the two situations
-otherwise look identical. See [CAPACITY.md](docs/CAPACITY.md) for the numbers on
-both sides of that trade.
+for roughly ten times the concurrency on a 2-vCPU box. The startup line is
+different in that case (`Reranker DISABLED`, no "fix" suggestion) precisely
+because a deliberate switch-off and missing weights otherwise look identical.
+
+Set `RERANKER_ENABLED=true` to trade it back: better ordering within the
+retrieved set, at ~3.5 s of CPU per question. Retrieval recall is unaffected
+either way — `tools/eval_retrieval.py` passes every variant with it off. See
+[CAPACITY.md](docs/CAPACITY.md) for both sides of that trade, including what
+ordering actually buys and why the worker count moves with this flag.
+
 
 
 
