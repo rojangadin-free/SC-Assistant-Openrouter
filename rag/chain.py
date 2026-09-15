@@ -590,7 +590,8 @@ primary_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=30
+    timeout=15,
+    max_retries=2
 )
 
 fallback_model = ChatOpenAI(
@@ -608,7 +609,8 @@ fallback_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=30
+    timeout=15,
+    max_retries=2
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -678,7 +680,8 @@ summarizer = ChatOpenAI(
     extra_body={
         "reasoning": {"enabled": False}
     },
-    timeout=30
+    timeout=15,
+    max_retries=2
 )
 
 # ====== Chat State ======
