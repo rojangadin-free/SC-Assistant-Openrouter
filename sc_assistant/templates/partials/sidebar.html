@@ -197,6 +197,26 @@
         <span>User Management</span>
       </div>
 
+      {# Under Administration rather than Knowledge base, and last within it.
+         Every other item in this menu is about WHAT the assistant knows or who
+         is waiting on a person; this one changes HOW an answer is assembled —
+         which of the two rerankers orders the retrieved passages. It is the
+         rarest thing an admin touches (you switch it when the free quota runs
+         out, or when this box is pegged), so it sits below the account screen
+         and carries no badge: there is no count here that should pull anyone
+         over. #}
+      <div class="menu-item" id="rerankerMenuItem" title="Reranker — choose the local model or the OpenRouter API">
+        <i class="fas fa-sliders"></i>
+        <span>Reranker</span>
+        {# Appears ONLY when the chosen backend is not the one actually running.
+           Amber, not red: answers are still being ranked, just not by the
+           backend the switch claims. Filled in by the dashboard's reranker
+           wiring; hidden by default so a healthy system shows nothing. #}
+        <span id="sidebarRerankerBadge" class="sc-count sc-count--amber"
+              style="display:none;" title="The selected reranker is not the one in use">!</span>
+      </div>
+
+
       {# Below a divider because this is not a dashboard section — it opens the
          student chat in a new tab. Flush in the list it read as an eleventh
          screen, and losing the dashboard to a mis-click is a poor reward for

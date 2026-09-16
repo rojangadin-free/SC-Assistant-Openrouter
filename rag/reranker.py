@@ -134,7 +134,7 @@ RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
 # var typed as "0" or "off" that silently means "on" would leave someone
 # convinced they had disabled ranking while paying for it on every question. Any
 # other value (including nonsense) leaves ranking ON, which is the safe side.
-RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").strip().lower() not in (
+RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").strip().lower() not in (
     "false",
     "0",
     "no",

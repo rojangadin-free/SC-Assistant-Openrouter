@@ -814,10 +814,15 @@
       </div>
     </div>
 
-
+    {# The reranker switch. In its own partial because it is the only section on
+       this screen that changes HOW answers are produced rather than WHAT they
+       are produced from, and the reasoning behind offering the choice at all is
+       long enough that inlining it would bury the announcements section. #}
+    {% include "partials/reranker_panel.html" %}
 
 
     <div class="confirm-dialog" id="reportDetailModal">
+
       <div class="confirm-box" id="reportDetailBox" style="max-width: 700px; width: 95%; transition: all 0.2s ease;">
         <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
           <span>Report Detail</span>
@@ -2853,7 +2858,223 @@
       }
     });
 
+    // ══════════════════════════════════════════════════════════════
+    //  RERANKER SWITCH
+    //
+    //  Two backends, one setting, and the honest reporting of the gap between
+    //  them. Every other screen here edits WHAT the assistant knows; this one
+    //  changes how the retrieved passages are ordered before the model sees
+    //  them, which is why the panel leads with what is running rather than with
+    //  the control.
+    //
+    //  The state has TWO fields and the whole design follows from that:
+    //
+    //      backend   what an admin chose
+    //      active    what a question asked right now would actually use
+    //
+    //  They differ whenever the choice cannot be honoured — `api` with no key,
+    //  `local` with no weights on disk — and rag/rerank_router.py silently uses
+    //  the other backend so students keep getting ranked answers. Rendering
+    //  only `backend` would show a confident "API" while every answer was
+    //  ranked locally, which is the failure mode this project has already been
+    //  bitten by: RERANKER_ENABLED=false and a missing model produce identical
+    //  behaviour and no visible symptom. So when they disagree, the panel says
+    //  so in words, and the sidebar grows a "!".
+    // ══════════════════════════════════════════════════════════════
+    let rrState = null;
+    let rrLoaded = false;
+
+    $('#rerankerMenuItem').on('click', function() {
+      $('.dashboard-section').removeClass('active');
+      $('.menu-item').removeClass('active');
+      $('#rerankerSection').addClass('active');
+      $('#rerankerMenuItem').addClass('active');
+      $('.header-left span').text('Reranker');
+      if (!rrLoaded) loadReranker();
+    });
+
+    $(document).on('click', '#rerankerRefreshBtn', function() { loadReranker(); });
+
+    const RR_LABEL = { local: 'Local model', api: 'OpenRouter API' };
+
+    function rrSaveMsg(text, ok) {
+      $('#rerankerSaveMsg')
+        .text(text || '')
+        .removeClass('rr-savemsg--ok rr-savemsg--bad')
+        .addClass(ok ? 'rr-savemsg--ok' : 'rr-savemsg--bad');
+    }
+
+    // Readiness, per backend. Three states and not two: "in use" is not the
+    // same claim as "would work", and an admin deciding whether it is safe to
+    // switch needs the second one.
+    function rrReadyBadge($el, ready, isActive) {
+      $el.removeClass('sc-badge--ok sc-badge--warn sc-badge--muted');
+      if (isActive)     $el.addClass('sc-badge--ok').text('IN USE');
+      else if (ready)   $el.addClass('sc-badge--muted').text('READY');
+      else              $el.addClass('sc-badge--warn').text('UNAVAILABLE');
+    }
+
+    function loadReranker() {
+      const $btn = $('#rerankerRefreshBtn').prop('disabled', true);
+      $('#rerankerActivePill').removeClass('sc-badge--ok sc-badge--warn')
+        .addClass('sc-badge--muted').text('Loading…');
+
+      $.getJSON('/admin/reranker/api/state')
+        .done(function(res) {
+          rrLoaded = true;
+          if (!res.success) { rrSaveMsg(res.message || 'Could not read the setting.', false); return; }
+          rrState = res;
+          renderReranker();
+        })
+        .fail(function(xhr) {
+          // A panel that cannot read its own state must not render an empty
+          // card: that looks like "nothing configured", which is a different
+          // and much less alarming thing than "we cannot tell".
+          $('#rerankerActivePill').removeClass('sc-badge--muted')
+            .addClass('sc-badge--warn').text('UNKNOWN');
+          $('#rerankerActiveModel').text('—');
+          rrSaveMsg((xhr.responseJSON && xhr.responseJSON.message) ||
+            (xhr.status === 403 ? 'Admin access required.' : 'Could not reach the server.'), false);
+        })
+        .always(function() { $btn.prop('disabled', false); });
+    }
+
+    function renderReranker() {
+      if (!rrState) return;
+      const s = rrState;
+      const local = s.local || {};
+      const api = s.api || {};
+
+      // ── What is actually ranking answers right now ──────────────
+      const $pill = $('#rerankerActivePill')
+        .removeClass('sc-badge--ok sc-badge--warn sc-badge--muted');
+      if (!s.active) {
+        // Neither backend can rank, so answers are coming back in retrieval
+        // order. Not fatal, but it is a quality regression nobody would notice.
+        $pill.addClass('sc-badge--warn').text('NONE');
+        $('#rerankerActiveModel').text('Answers keep retrieval order');
+      } else {
+        $pill.addClass('sc-badge--ok').text(RR_LABEL[s.active] || s.active);
+        $('#rerankerActiveModel').text(
+          (s.active === 'api' ? api.model : local.model) || '—');
+      }
+
+      // ── The saved choice vs. the effective one ───────────────────
+      // Only rendered when they disagree. A note that is always on screen is a
+      // note nobody reads, and this one has to be believed the day it appears.
+      const $note = $('#rerankerFallbackNote');
+      if (s.falling_back) {
+        const why = ((s[s.backend] || {}).reason) || 'it is not available';
+        $('#rerankerFallbackText').text(
+          'Set to ' + (RR_LABEL[s.backend] || s.backend) + ', but ' + why +
+          ' — questions are being ranked by ' + (RR_LABEL[s.active] || s.active) + ' instead.');
+        $note.removeClass('sc-hidden');
+        $('#sidebarRerankerBadge').show();
+      } else {
+        $note.addClass('sc-hidden');
+        $('#sidebarRerankerBadge').hide();
+      }
+
+      // ── The two options ─────────────────────────────────────────
+      $('#rerankerLocalModel').text(local.model || '—');
+      $('#rerankerApiModel').text(api.model || '—');
+      rrReadyBadge($('#rerankerLocalStatus'), !!local.ready, s.active === 'local');
+      rrReadyBadge($('#rerankerApiStatus'), !!api.ready, s.active === 'api');
+
+      // The reason an option cannot be used, shown on the option itself. A
+      // switch that will not take must explain itself where the click happens,
+      // not in a log.
+      [['local', local], ['api', api]].forEach(function(pair) {
+        const id = pair[0] === 'local' ? '#rerankerLocalReason' : '#rerankerApiReason';
+        const $r = $(id);
+        if (!pair[1].ready && pair[1].reason) {
+          $r.text(pair[1].reason).removeClass('sc-hidden');
+        } else {
+          $r.text('').addClass('sc-hidden');
+        }
+      });
+
+      // Reflect the SAVED value, not the active one: this control's job is to
+      // show what was chosen. The gap is the note's job.
+      $('input[name="rerankerBackend"][value="' + s.backend + '"]').prop('checked', true);
+      rrPaintSelection();
+      $('#rerankerSaveBtn').prop('disabled', true);
+      rrSaveMsg('', true);
+
+      $('#rerankerUpdatedAt').text(
+        s.updated_at
+          ? 'Last changed ' + new Date(s.updated_at).toLocaleString('en-PH') +
+            (s.updated_by ? ' by ' + s.updated_by : '')
+          : 'Never changed — using the deployment default (' +
+            (RR_LABEL[s.default] || s.default) + ').');
+    }
+
+    // The selected-card styling has a CSS :has() rule, but :has() is not
+    // universal and a control whose selected state is invisible is worse than
+    // no control. This class is the fallback, and it is cheap.
+    function rrPaintSelection() {
+      $('.rr-option').each(function() {
+        $(this).toggleClass('rr-option--on',
+          $(this).find('.rr-radio').prop('checked'));
+      });
+    }
+
+    // Save stays disabled until the selection actually differs from what is
+    // stored: a Save button that is always live invites a pointless write, and
+    // every write here is a change to how all answers are ordered.
+    $(document).on('change', 'input[name="rerankerBackend"]', function() {
+      rrPaintSelection();
+      const picked = $('input[name="rerankerBackend"]:checked').val();
+      const changed = !!rrState && picked !== rrState.backend;
+      $('#rerankerSaveBtn').prop('disabled', !changed);
+      rrSaveMsg(changed ? 'Not saved yet.' : '', changed ? false : true);
+    });
+
+    $(document).on('click', '#rerankerSaveBtn', function() {
+      const picked = $('input[name="rerankerBackend"]:checked').val();
+      if (!picked) { rrSaveMsg('Choose a backend first.', false); return; }
+
+      const $btn = $(this).prop('disabled', true);
+      rrSaveMsg('Saving…', true);
+
+      $.ajax({
+        url: '/admin/reranker/api/set',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ backend: picked })
+      }).done(function(res) {
+        if (!res.success) { rrSaveMsg(res.message || 'Could not save.', false); return; }
+        // The response IS the re-read state, so the panel updates from the
+        // stored truth rather than from what was requested. An admin who picks
+        // `api` without a key sees backend=api, active=local immediately —
+        // "saved" and "working" are different claims and both are reported.
+        rrState = res;
+        renderReranker();
+        rrSaveMsg(res.message || 'Saved.', !res.falling_back);
+        window.showNotification(res.message || 'Reranker updated.',
+                                res.falling_back ? 'error' : 'success');
+      }).fail(function(xhr) {
+        rrSaveMsg((xhr.responseJSON && xhr.responseJSON.message) || 'Could not save.', false);
+      }).always(function() {
+        // Re-enabled by renderReranker() only when a difference remains, so a
+        // successful save leaves it correctly disabled.
+        $btn.prop('disabled', true);
+      });
+    });
+
+    // Read the state on page load, not on first visit to the section. The
+    // sidebar "!" is the whole reason: a fallback that only becomes visible
+    // after someone happens to open this screen is a fallback nobody sees.
+    $.getJSON('/admin/reranker/api/state', function(res) {
+      if (res && res.success) {
+        rrState = res;
+        rrLoaded = true;
+        renderReranker();
+      }
+    });
+
     // ── Open the screen the admin should be looking at ───────────
+
     // #analyticsSection is rendered with .active, so the user arrives already
     // on it and NO CLICK EVER FIRES. Every loader above hangs off a click
     // handler, so on a fresh page load nothing ran: the header still read

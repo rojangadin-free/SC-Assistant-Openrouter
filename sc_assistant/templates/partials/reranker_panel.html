@@ -1,0 +1,140 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   THE RERANKER SWITCH
+
+   Two backends rank the documents behind every answer, and neither is correct
+   in every situation:
+
+     Local   a 32M cross-encoder on this server's CPU. No network, no quota,
+             but it is the only CPU-bound phase of a request and it is what
+             caps concurrency (docs/CAPACITY.md).
+     API     nvidia/llama-nemotron-rerank-vl-1b-v2:free over OpenRouter. ~30x
+             the parameters for the cost of one HTTPS call, but it needs egress
+             and a free-tier quota that can run out.
+
+   Why radio cards and not a toggle switch
+   ---------------------------------------
+   A toggle has an implied off state and no room for a label, so the question
+   "which one is it on?" would be answered by remembering which side means what.
+   These are two NAMED alternatives with real trade-offs, so both names, both
+   models and both consequences are on screen at once. It is still one click.
+
+   Why a `fieldset` of real radios
+   -------------------------------
+   Keyboard and screen-reader users get arrow-key selection, a group name and a
+   spoken "2 of 2" for free. The visible card is the `<label>`; the input itself
+   is positioned off-screen rather than `display:none`, because a hidden input
+   is not focusable and would drop the entire control out of the tab order.
+   ═══════════════════════════════════════════════════════════════════════════ #}
+
+<div id="rerankerSection" class="dashboard-section">
+  <div class="section-header">
+    <h2>Reranker</h2>
+  </div>
+
+  {# The live state, before the options — an admin arriving here is usually
+     asking "what is it doing right now", not "what can I change it to". #}
+  <div class="sc-card sc-mb sc-accent-violet">
+    <div class="sc-row sc-row--lg rr-statusbar">
+      <div class="sc-min0">
+        <div class="sc-stat-cap">Currently ranking with</div>
+        <div class="sc-row rr-statusline">
+          <span id="rerankerActivePill" class="sc-badge sc-badge--muted">Loading…</span>
+          <span id="rerankerActiveModel" class="rr-model">—</span>
+        </div>
+      </div>
+
+      <div class="sc-push">
+        <button id="rerankerRefreshBtn" type="button"
+                class="sc-btn sc-btn--ghost sc-btn--sm">
+          <i class="fas fa-sync-alt" aria-hidden="true"></i> Refresh
+        </button>
+      </div>
+    </div>
+
+    {# Shown ONLY when the saved choice is not the one being used. This is the
+       state that is otherwise invisible: the switch says API, the answers are
+       being ranked locally, and nothing on screen would say so. `role="status"`
+       so a screen reader hears it when it appears after a save. #}
+    <div id="rerankerFallbackNote" class="sc-note rr-warn sc-hidden" role="status">
+      <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+      <span id="rerankerFallbackText"></span>
+    </div>
+  </div>
+
+  <div class="sc-card sc-mb">
+    <h3 class="sc-h3">Choose a backend</h3>
+    <p class="sc-lead">
+      Applies to the next question — no restart. Changing this affects every
+      instance, not just this one.
+    </p>
+
+    <fieldset class="rr-fieldset">
+      <legend class="sc-hidden">Reranker backend</legend>
+
+      <div class="rr-options">
+        {# ── LOCAL ────────────────────────────────────────────────────────── #}
+        <label class="rr-option" for="rerankerLocal" data-backend="local">
+          <input class="rr-radio" type="radio" name="rerankerBackend"
+                 id="rerankerLocal" value="local">
+          <span class="rr-check" aria-hidden="true"></span>
+
+          <span class="rr-body">
+            <span class="rr-head">
+              <span class="rr-name">
+                <i class="fas fa-microchip" aria-hidden="true"></i> Local
+              </span>
+              {# Readiness, filled in by JS. An option you cannot actually use
+                 must say so BEFORE it is clicked, not after. #}
+              <span id="rerankerLocalStatus" class="sc-badge sc-badge--muted">…</span>
+            </span>
+
+            <span id="rerankerLocalModel" class="rr-model">—</span>
+
+            <span class="rr-why">
+              Runs on this server. No network and no quota, but it is the
+              slowest phase of a question and limits how many students can ask
+              at once.
+            </span>
+            <span id="rerankerLocalReason" class="rr-reason sc-hidden"></span>
+          </span>
+        </label>
+
+        {# ── API ──────────────────────────────────────────────────────────── #}
+        <label class="rr-option" for="rerankerApi" data-backend="api">
+          <input class="rr-radio" type="radio" name="rerankerBackend"
+                 id="rerankerApi" value="api">
+          <span class="rr-check" aria-hidden="true"></span>
+
+          <span class="rr-body">
+            <span class="rr-head">
+              <span class="rr-name">
+                <i class="fas fa-cloud" aria-hidden="true"></i> OpenRouter API
+              </span>
+              <span id="rerankerApiStatus" class="sc-badge sc-badge--muted">…</span>
+            </span>
+
+            <span id="rerankerApiModel" class="rr-model">—</span>
+
+            <span class="rr-why">
+              A much larger model, and no CPU cost here — more students can ask
+              at once. Needs internet access and is subject to the free tier's
+              rate limit.
+            </span>
+            <span id="rerankerApiReason" class="rr-reason sc-hidden"></span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="sc-row sc-mt85 rr-actions">
+      <button id="rerankerSaveBtn" type="button" class="sc-btn sc-btn--primary" disabled>
+        <i class="fas fa-check" aria-hidden="true"></i> Save
+      </button>
+      {# aria-live so the outcome is announced. A save whose only feedback is a
+         colour change is a save a screen-reader user cannot confirm. #}
+      <span id="rerankerSaveMsg" class="rr-savemsg" role="status" aria-live="polite"></span>
+    </div>
+
+    <p id="rerankerUpdatedAt" class="rr-meta"></p>
+  </div>
+</div>

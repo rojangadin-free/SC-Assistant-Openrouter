@@ -114,6 +114,14 @@ def create_app():
         from .admin_freshness import bp_freshness
         app.register_blueprint(bp_freshness)
 
+        # The local-vs-API reranker switch. Its own blueprint rather than two
+        # more routes on admin.py, matching every other admin surface here, so
+        # the retrieval setting is not tangled with file upload and user
+        # management.
+        from .admin_reranker import bp_reranker
+        app.register_blueprint(bp_reranker)
+
+
         # Installable-app plumbing: /manifest.webmanifest, /sw.js, /offline.
         # No url_prefix, deliberately — a service worker's scope is its own
         # directory, so anything but the root path would leave it unable to
@@ -140,12 +148,54 @@ def create_app():
 
     def _warm_reranker():
         try:
+            from rag import rerank_settings
             from rag.reranker import (
                 RERANKER_MODEL_NAME,
                 disabled,
                 unavailable_reason,
                 warmup,
             )
+
+            # Which of the two backends this deployment is set to. Printed
+            # before anything else, because every line below is about the LOCAL
+            # cross-encoder and reading them while the app is set to `api` would
+            # send an operator to download weights that will never be used.
+            backend = rerank_settings.current()
+            if backend == rerank_settings.API:
+                from rag.api_reranker import (
+                    API_RERANKER_MODEL,
+                    configured as api_configured,
+                    unavailable_reason as api_reason,
+                )
+
+                if api_configured():
+                    print(
+                        f"[startup] Reranker backend: API — {API_RERANKER_MODEL}\n"
+
+                        "           no local model is loaded; ranking is one HTTPS "
+                        "call per question\n"
+                        "           switch  : Admin -> Settings -> Reranker"
+                    )
+                else:
+                    # Worth a warning rather than a note: the setting says API,
+                    # so nobody is expecting the local path, and the fallback to
+                    # it is silent.
+                    print(
+                        "[startup] WARNING: reranker set to API but it cannot be "
+                        f"used — {api_reason()}\n"
+
+                        f"           model : {API_RERANKER_MODEL}\n"
+                        "           fix   : set OPENROUTER_API_KEY, or switch to "
+                        "Local in Admin -> Settings\n"
+                        "           until then: falling back to the local "
+                        "cross-encoder, warming it now"
+                    )
+                    # Fall through to the local warmup: the router will use the
+                    # local model while the key is missing, so it had better be
+                    # loaded rather than loading inside a student's request.
+                if api_configured():
+                    return
+
 
             # Off on purpose. Reported as information, not as a warning with a
             # fix, because there is nothing to fix — and reported at all because

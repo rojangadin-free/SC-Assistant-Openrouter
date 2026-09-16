@@ -182,6 +182,92 @@
 .sc-hidden{display:none}
 .sc-select--mid-pad{padding:.5rem .6rem}
 
+/* ── Reranker switch ──────────────────────────────────────────────
+
+   Two named alternatives, both fully described, one click to change. Written
+   as radio CARDS rather than a toggle because the choice is not on/off: the
+   local cross-encoder and the OpenRouter model are each correct in different
+   situations, and a toggle would force the admin to remember which side means
+   what.
+
+   The real <input> stays in the DOM and stays focusable — it is moved
+   off-screen, not display:none — so arrow keys, the tab order and the screen
+   reader's "radio, 2 of 2" all keep working. Everything visible is the
+   <label>, and the selected state is driven by :checked on the sibling input.
+   ─────────────────────────────────────────────────────────────── */
+.rr-fieldset{border:0;margin:0;padding:0;min-width:0}
+
+/* auto-fit, not two fixed columns: at ≥560px of card the two options sit side
+   by side for comparison, and below that they stack without a media query. */
+.rr-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:.75rem}
+
+.rr-option{position:relative;display:flex;gap:.7rem;align-items:flex-start;
+  border:1.5px solid var(--border);border-radius:12px;padding:.9rem 1rem;
+  background:var(--bg-main);cursor:pointer;
+  transition:border-color .15s,background .15s,box-shadow .15s}
+.rr-option:hover{border-color:var(--sc-green)}
+
+/* Off-screen rather than hidden. A `display:none` radio is not focusable, and
+   the whole group would silently leave the tab order. */
+.rr-radio{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
+
+/* The drawn radio. Its own element so the tick can animate independently of
+   the card, and so a forced-colors user still sees a real shape. */
+.rr-check{flex:0 0 auto;width:1.15rem;height:1.15rem;margin-top:.15rem;border-radius:50%;
+  border:2px solid var(--border);background:var(--bg-surface);
+  display:inline-block;position:relative;transition:border-color .15s}
+.rr-radio:checked + .rr-check{border-color:var(--sc-green)}
+.rr-radio:checked + .rr-check::after{content:"";position:absolute;inset:3px;
+  border-radius:50%;background:var(--sc-green)}
+
+/* Selected card. A tint rather than a flat fill so it composites correctly over
+   both themes' surfaces — the same reasoning as the badges above. */
+.rr-radio:checked ~ .rr-body{color:var(--text-primary)}
+.rr-option:has(.rr-radio:checked){border-color:var(--sc-green);
+  background:color-mix(in srgb,var(--sc-green) 8%,var(--bg-main))}
+
+/* :has() is not universal. Without a fallback the selected card would look
+   identical to the unselected one on an older engine, which is the one thing
+   this control cannot afford, so JS also sets .rr-option--on. */
+.rr-option--on{border-color:var(--sc-green);
+  background:color-mix(in srgb,var(--sc-green) 8%,var(--bg-main))}
+
+/* Focus lives on the CARD, not the invisible input: the input has no box to
+   draw a ring around. Keyboard-only (:focus-visible) so a mouse click does not
+   leave a ring behind. */
+.rr-option:focus-within{box-shadow:0 0 0 3px color-mix(in srgb,var(--sc-green) 35%,transparent)}
+
+.rr-body{display:flex;flex-direction:column;gap:.3rem;min-width:0}
+.rr-head{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.rr-name{font-weight:700;font-size:.92rem;color:var(--text-primary)}
+
+/* Model ids are long, unbreakable and not the point — they are the evidence,
+   not the headline, so they are small, monospaced and allowed to wrap. */
+.rr-model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.74rem;color:var(--text-secondary);word-break:break-all}
+
+.rr-why{font-size:.8rem;color:var(--text-secondary);line-height:1.5}
+/* Why an option cannot be used. Danger ink, because this is the sentence that
+   explains a switch that will not take. */
+.rr-reason{font-size:.78rem;color:var(--ui-danger-ink);line-height:1.45}
+
+.rr-statusbar{align-items:flex-start}
+.rr-statusline{gap:.6rem;margin-top:.3rem;flex-wrap:wrap;align-items:baseline}
+.rr-actions{align-items:center}
+.rr-savemsg{font-size:.82rem;color:var(--text-secondary)}
+.rr-savemsg--ok{color:var(--ui-success-ink)}
+.rr-savemsg--bad{color:var(--ui-danger-ink)}
+.rr-meta{margin:.6rem 0 0;font-size:.76rem;color:var(--text-tertiary)}
+.rr-warn{color:var(--ui-warn-ink);background:color-mix(in srgb,#f59e0b 10%,var(--bg-main));
+  border-color:color-mix(in srgb,#f59e0b 35%,var(--border))}
+
+/* Reduced motion: the only transitions here are colour changes, but a user who
+   asked for no motion gets none. */
+@media (prefers-reduced-motion:reduce){
+  .rr-option,.rr-check{transition:none}
+}
+
+
 /* ── Analytics: the triage queue ──────────────────────────────────
 
    One row per thing waiting for a human. The count leads and is the only
@@ -287,6 +373,14 @@
         line, which is the whole point of a stat row. */
   .sc-statrow{gap:1rem}
   .sc-stat-num{font-size:1.35rem}
+
+  /* 7. The reranker cards. The grid already stacks on its own (auto-fit), so
+        only the tap target needs attention: each card is a radio, and the whole
+        card is the hit area rather than the 18px circle. 56px because these two
+        sit adjacent — an over-tap here silently changes how every answer on the
+        system is ranked. */
+  .rr-option{min-height:56px;padding:.85rem .9rem}
 }
+
 
 

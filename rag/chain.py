@@ -17,7 +17,14 @@ from pinecone_text.sparse import BM25Encoder
 
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
-from rag.reranker import rerank, rerank_multi
+# Not `from rag.reranker import ...`. That binds ONE backend at import time, and
+# the reranker is now a runtime choice (local cross-encoder vs the hosted
+# OpenRouter one) that an admin can change without a restart — see
+# rag/rerank_router.py. Importing the router's functions keeps the dispatch on
+# every call, which is the only way the switch can take effect in a process that
+# is already serving.
+from rag.rerank_router import rerank, rerank_multi
+
 from rag.conflicts import authority_block
 from rag.freshness import freshness_block, source_priority, doc_key
 
@@ -547,15 +554,29 @@ def retrieve_documents(
         # of the two you are looking at: an unexplained column of `score=n/a`
         # reads like missing data, and the real cause (no model in the local
         # cache — see download_model.py) is nowhere near this log.
-        from rag.reranker import available as _rr_available, unavailable_reason as _rr_reason
+        #
+        # Asked of the ROUTER, not of one backend: with two rerankers the honest
+        # question is "did anything rank this, and which one" — reading
+        # rag.reranker here would report the local model as off while the API
+        # backend had just ranked the list, which is the most confusing possible
+        # log line to leave for whoever is debugging the toggle.
+        from rag.rerank_router import (
+            last_used as _rr_used,
+            unavailable_reason as _rr_reason,
+        )
 
-        if _rr_available():
-            print(f"\n=== STEP 2: Reranked to top {len(final_docs)} ===")
+        _backend = _rr_used()
+        if _backend:
+            print(
+                f"\n=== STEP 2: Reranked ({_backend}) to top {len(final_docs)} ==="
+            )
         else:
             print(
-                f"\n=== STEP 2: NOT reranked — reranker off ({_rr_reason()}); "
-                f"keeping retrieval order, top {len(final_docs)} ==="
+                f"\n=== STEP 2: NOT reranked — no reranker available "
+                f"({_rr_reason()}); keeping retrieval order, "
+                f"top {len(final_docs)} ==="
             )
+
         for i, doc in enumerate(final_docs):
             src = doc.metadata.get("source", "Unknown")
             pg = doc.metadata.get("page", "?")
@@ -590,7 +611,7 @@ primary_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=15,
+    timeout=10,
     max_retries=2
 )
 
@@ -609,7 +630,7 @@ fallback_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=15,
+    timeout=10,
     max_retries=2
 )
 
@@ -680,7 +701,7 @@ summarizer = ChatOpenAI(
     extra_body={
         "reasoning": {"enabled": False}
     },
-    timeout=15,
+    timeout=10,
     max_retries=2
 )
 
