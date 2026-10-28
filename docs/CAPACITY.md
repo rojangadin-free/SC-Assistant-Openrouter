@@ -86,9 +86,11 @@ pick up the generation on subsequent requests after the refresh interval.
 
 ## Deployment
 
-The GitHub workflow runs offline tests, publishes an image tagged with the commit
-SHA, then calls `tools/deploy.sh`. It no longer stops every container or prunes
-other services' images, volumes, networks or system files.
+The GitHub workflow runs offline tests and publishes a CPU image tagged with the
+commit SHA. On the hosted build runner it measures that image's unpacked size.
+Only the byte count and content digest cross jobs; the private image URI is
+reconstructed in the deploy job, avoiding secret-filtered job outputs. The EC2
+host pulls by that digest so the measured image and the deployed image agree.
 
 The runtime image installs CPU-only PyTorch, matching CI, and asserts that CUDA
 was not pulled in by dependency resolution. Hosted builds reuse dependency/model
@@ -96,19 +98,57 @@ layers via BuildKit's GitHub Actions cache. New containers use bounded local
 Docker logs (10 MB per file, three files); existing containers keep their prior
 logging settings until recreated.
 
-Before downloading an image, `tools/deploy_storage.py --apply` removes only
-unreferenced images belonging exclusively to this app's repository, or untagged
-images labelled `sc.project=sc-assistant`. Every running or stopped container's
-image is protected, including rollback containers. Shared tags and unknown
-untagged images are retained. Removal is by image ID without force; it never
-stops/removes containers, prunes volumes or deletes raw Docker/containerd files.
+### Short rollback retention
 
-The preflight then checks both Docker and `/var/lib/containerd` filesystem free
-space and inode availability. The default reserve is 6144 MiB per filesystem,
-configurable with the `SC_DEPLOY_MIN_DISK_MB` GitHub variable. This is headroom,
-not an exact prediction of extraction size. Larger images can need more. Set
-`SC_CONTAINERD_ROOT` on the runner if containerd uses another data directory.
-Preflight/pull failures exit before any service changes or proxy rewrites.
+The default is `SC_KEEP_ROLLBACK=false`. While holding the deployment lock, the
+script verifies that the active labelled web backend is running and ready. It
+then removes only the stopped inactive blue/green backend and stopped
+indexer-backup from older rollouts. Those containers must carry the project
+label and match the image repository. The stopped legacy `rag-app-container`
+may also be retired without a label, but only when its repository matches the
+verified healthy replacement; a foreign label still prevents removal. The active
+web backend and active indexer are never retired by this step. Running containers,
+unknown names, foreign labels and other repositories are preserved.
+
+The image cleanup then removes only unreferenced images belonging exclusively to
+this app's repository, or untagged images labelled `sc.project=sc-assistant`.
+Every remaining container's image is protected. Shared tags and unknown untagged
+images are retained. No force or volume-removal options are used.
+
+The currently working version remains available throughout the rollout. Only
+after the new web workers, proxy and indexing worker pass their checks are the
+stopped previous backend and indexer-backup retired. This leaves the current
+version on disk instead of retaining old versions indefinitely. Set the GitHub
+variable `SC_KEEP_ROLLBACK=true` to retain the previous version after success,
+at the cost of more storage.
+
+**Tradeoff:** failure during rollout can still restore the current version, but
+after a successful rollout an older version may need to be pulled again from ECR
+for rollback. No ECR images or AWS resources are deleted. This is shorter
+retention, not an unsafe stop/delete-live-image-before-download strategy.
+
+### Measured disk allowance
+
+There is no fixed 6 GiB requirement by default. The pre-pull check uses:
+
+`2 * ceil(measured unpacked image bytes / MiB) + reserve MiB`
+
+The default reserve is 1024 MiB (`SC_DEPLOY_RESERVE_MB`). One image-sized allowance
+covers unpacking and the other conservatively covers downloaded content; this is
+not a measured compression ratio and does not assume layer reuse. For example,
+a 600 MiB unpacked image has a 2224 MiB allowance, not 6144 MiB. An already
+materialized matching digest of the measured size needs only the reserve.
+
+Both Docker and `/var/lib/containerd` filesystem free space and inodes are still
+checked. `SC_DEPLOY_MIN_DISK_MB` is now an optional additional floor, not a default.
+Remove a previously set `6144` GitHub variable if you want the computed allowance
+without that extra floor. Set `SC_CONTAINERD_ROOT` on the runner for a custom
+containerd data directory. A missing/invalid measurement fails closed.
+
+The temporary deployment credentials file is created with restricted permissions
+in `/dev/shm`, then removed on exit, so the root disk does not need space for that
+file before guarded cleanup can begin. Pre-pull failure can retire stopped older
+versions, but cannot stop the active service or rewrite its proxy configuration.
 
 On the EC2 host, inspect disk pressure without deleting anything:
 
@@ -118,24 +158,26 @@ df -i / /var/lib/docker /var/lib/containerd
 docker system df
 ```
 
-With the updated checkout, preview eligible cleanup using
-`python3 tools/deploy_storage.py --image REGISTRY/REPOSITORY:TAG`; adding `--apply`
-performs the scoped cleanup and enforces headroom. Do not blindly run a global
-prune or delete `/var/lib/containerd`. If protected images or failed-ingest data
-still leave insufficient space, expand the backing EBS volume and then its actual
-partition/filesystem (check `lsblk -f` first). Volume expansion changes AWS cost
-and is not performed by the workflow. Keep capacity for the live image, rollback,
-and a new image being downloaded/unpacked simultaneously. Merely re-running a
-failed pull on a full filesystem does not solve the capacity problem.
+With the updated checkout, preview image cleanup using
+`python3 tools/deploy_storage.py --image REGISTRY/REPOSITORY@sha256:DIGEST --image-bytes MEASURED_BYTES`.
+The workflow supplies these values automatically. `--apply` performs the scoped
+cleanup. `--retire-stopped --active-container sc-assistant-web-blue` additionally
+permits stopped-version retirement after verifying that specific active backend;
+the rollout script handles this under its lock. Do not blindly run a global prune
+or delete `/var/lib/containerd`. If the current service plus the measured new image
+still cannot fit after safe cleanup, storage capacity or an explicitly planned
+maintenance-window replacement is still needed. The workflow does not expand EBS.
 
 The single-host rollout uses a stable streaming-aware Nginx proxy on port 8080:
 
-1. Stop the old index worker gracefully to release memory.
-2. Start the candidate backend with **one** web worker and check `/ready`.
-3. Switch the proxy and drain the old backend with a bounded graceful timeout.
-4. Add workers one at a time, checking their ready markers. A mounted count file
+1. Retire eligible stopped older versions and check the measured disk allowance.
+2. Pull the measured digest while the active service keeps running.
+3. Stop the active index worker gracefully to release memory.
+4. Start the candidate backend with **one** web worker and check `/ready`.
+5. Switch the proxy and drain the previous backend with a bounded graceful timeout.
+6. Add workers one at a time, checking their ready markers. A mounted count file
    preserves the desired count across container restarts.
-5. Start the durable index worker and retain the old backend for rollback.
+7. Start the durable index worker, then retire stopped previous versions after success.
 
 This avoids overlapping two full sets of embedding workers on 8 GB. Capacity is
 temporarily lower during the one-worker drain interval. Normal existing streams
@@ -212,6 +254,9 @@ matter. Both configured answer models currently use the same OpenRouter account.
 | `GUNICORN_WORKERS` | 3 | Embedding-loaded web processes |
 | `GUNICORN_THREADS` | 12 | HTTP handlers per worker |
 | `GUNICORN_GRACEFUL_TIMEOUT` | 120 | Drain deadline in seconds |
+| `SC_KEEP_ROLLBACK` | false | Keep previous stopped version after successful rollout |
+| `SC_DEPLOY_RESERVE_MB` | 1024 | Safety reserve above the measured image allowance |
+| `SC_DEPLOY_MIN_DISK_MB` | unset | Optional extra disk floor, not a fixed 6 GiB requirement |
 | `RAG_RETRIEVAL_WORKERS` | 4 | Shared retrieval workers per process |
 | `RAG_PREPARATION_WORKERS` | 4 | Shared preparation workers per process |
 | `RAG_PIPELINE_WORKERS` | 12 | Context-building workers per process |

@@ -75,12 +75,17 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn("id: ecr", job)
             self.assertIn("REGISTRY: ${{ steps.ecr.outputs.registry }}", job)
             self.assertIn("REPOSITORY: ${{ secrets.ECR_REPO }}", job)
-            self.assertIn('IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"', job)
             self.assertIn('${REPOSITORY:?Set the ECR_REPO GitHub secret}', job)
-        self.assertNotIn("needs.build.outputs.image", workflow)
-        self.assertNotIn("$GITHUB_OUTPUT", workflow)
+        self.assertIn('IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"', build)
+        self.assertIn('IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"', deploy)
+        self.assertNotIn("needs.build.outputs.image }}", workflow)
+        self.assertNotIn("steps.image.outputs.image", workflow)
+        self.assertIn("image_bytes: ${{ steps.image_size.outputs.bytes }}", build)
+        self.assertIn("image_digest: ${{ steps.build_image.outputs.digest }}", build)
+        self.assertIn("printf 'bytes=%s", build)
+        self.assertNotIn("printf 'image=%s", build)
         self.assertIn("needs: build", deploy)
-        self.assertLess(deploy.index('IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"'),
+        self.assertLess(deploy.index('IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"'),
                         deploy.index('bash tools/deploy.sh --apply "$IMAGE" "$ENV_FILE"'))
 
 

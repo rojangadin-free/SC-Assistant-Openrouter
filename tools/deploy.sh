@@ -2,12 +2,16 @@
 # One-host rollout. No action without --apply; only named project containers change.
 set -Eeuo pipefail
 if [[ "${1:-}" != "--apply" ]]; then
-    printf '%s\n' 'Dry run: --apply IMAGE ENV_FILE starts one candidate worker, probes readiness, switches the proxy, drains the old backend, then adds workers.'
+    printf '%s\n' 'Dry run: --apply IMAGE ENV_FILE retires stopped older versions, checks the measured image allowance, and keeps the live version until its replacement is healthy.'
     exit 0
 fi
 image="${2:?Supply an immutable image tag}"
+image_repository="${image%@*}"
+[[ "${image_repository##*/}" == *:* ]] && image_repository="${image_repository%:*}"
 env_file="$(realpath "${3:?Supply an environment file}")"
 target="${GUNICORN_WORKERS:-3}"
+keep_rollback="${SC_KEEP_ROLLBACK:-false}"
+[[ "$keep_rollback" == true || "$keep_rollback" == false ]] || { echo 'SC_KEEP_ROLLBACK must be true or false'; exit 1; }
 [[ "$target" =~ ^[1-8]$ ]] || { echo 'GUNICORN_WORKERS must be 1-8'; exit 1; }
 state="${SC_DEPLOY_DIR:-$HOME/.sc-assistant-deploy}"
 mkdir -p "$state/proxy"
@@ -103,15 +107,23 @@ for name in "$proxy" "$indexer" "$candidate"; do
     fi
 done
 if [[ -n "$old" ]] && ! owned "$old"; then echo 'Active backend is not project-owned'; exit 1; fi
+if running "$candidate"; then echo 'The inactive backend is still running; refusing to remove it'; exit 1; fi
 # Pull/preflight failures must not enter rollback: no service has changed yet.
-# Keep every image referenced by any container, including the rollback backend.
-python3 "$root/tools/deploy_storage.py" --image "$image" --apply
+# Retire only older STOPPED versions. The live backend and indexer still protect
+# the current image, which remains available for rollback throughout this run.
+storage_args=(--image "$image" --apply)
+if [[ "$keep_rollback" == false && -n "$old" ]] && running "$old"; then
+    storage_args+=(--retire-stopped --active-container "$old")
+fi
+python3 "$root/tools/deploy_storage.py" "${storage_args[@]}"
 docker pull "$image"
 docker pull "$proxy_image"
 docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
 if [[ -z "$old" ]] && running "$legacy"; then
     legacy_image="$(docker inspect -f '{{.Config.Image}}' "$legacy")"
-    [[ "${legacy_image%:*}" == "${image%:*}" ]] || { echo 'Legacy name belongs to another image; refusing to stop it'; exit 1; }
+    legacy_repository="${legacy_image%@*}"
+    [[ "${legacy_repository##*/}" == *:* ]] && legacy_repository="${legacy_repository%:*}"
+    [[ "$legacy_repository" == "$image_repository" ]] || { echo 'Legacy name belongs to another image; refusing to stop it'; exit 1; }
     docker exec "$legacy" python -c "import config; from rag import jobs; import sys; active=[j for j in jobs._store().load().get('jobs',{}).values() if j.get('status')=='running' and jobs._age_seconds(j.get('updated_at',''))<jobs.STALE_AFTER_SECONDS]; sys.exit(bool(active))" || { echo 'Wait for legacy uploads to finish before migration'; exit 1; }
 fi
 trap restore ERR
@@ -124,7 +136,7 @@ available="$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 [[ "$available" -ge "${SC_DEPLOY_MIN_FREE_MB:-1800}" ]] || { echo 'Insufficient free memory for one candidate worker'; false; }
 if docker inspect "$candidate" >/dev/null 2>&1; then
     owned "$candidate" || { echo 'Candidate name is not project-owned'; exit 1; }
-    docker rm -f "$candidate" >/dev/null
+    docker rm "$candidate" >/dev/null
 fi
 rm -f "$runtime"/ready-*
 printf '1\n' > "$runtime/workers"
@@ -181,3 +193,9 @@ sleep 1
 running "$indexer"
 trap - ERR
 echo "Deployed $candidate with $target web workers; durable index worker active."
+if [[ "$keep_rollback" == false ]]; then
+    if ! python3 "$root/tools/deploy_storage.py" --image "$image" --apply \
+            --retire-stopped --active-container "$candidate" --cleanup-only; then
+        echo 'Deployment is healthy; stopped-version cleanup was incomplete and can be retried.'
+    fi
+fi

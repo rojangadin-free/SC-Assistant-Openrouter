@@ -15,6 +15,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      image_bytes: ${{ steps.image_size.outputs.bytes }}
+      image_digest: ${{ steps.build_image.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,14 +60,28 @@ jobs:
           IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
           printf 'SC_BUILD_IMAGE=%s\n' "$IMAGE" >> "$GITHUB_ENV"
       - name: Build and publish immutable image
+        id: build_image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64
           tags: ${{ env.SC_BUILD_IMAGE }}
           cache-from: type=gha,scope=sc-assistant-runtime
           cache-to: type=gha,scope=sc-assistant-runtime,mode=max,ignore-error=true
           labels: org.opencontainers.image.revision=${{ github.sha }}
+      - name: Measure the published CPU image
+        id: image_size
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPO }}
+          IMAGE_DIGEST: ${{ steps.build_image.outputs.digest }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Missing published image digest'; exit 1; }
+          IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"
+          docker pull --platform linux/amd64 "$IMAGE"
+          SIZE="$(python3 tools/deploy_storage.py --image "$IMAGE" --measure)"
+          printf 'bytes=%s\n' "$SIZE" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: build
@@ -97,15 +114,21 @@ jobs:
           STORE_TABLE_NAME: ${{ vars.STORE_TABLE_NAME || 'SCAssistantStores' }}
           S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'sc-assistant-bucket2' }}
           RERANKER_ENABLED: 'false'
-          SC_DEPLOY_MIN_DISK_MB: ${{ vars.SC_DEPLOY_MIN_DISK_MB || '6144' }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+          SC_DEPLOY_IMAGE_BYTES: ${{ needs.build.outputs.image_bytes }}
+          SC_DEPLOY_RESERVE_MB: ${{ vars.SC_DEPLOY_RESERVE_MB || '1024' }}
+          SC_DEPLOY_MIN_DISK_MB: ${{ vars.SC_DEPLOY_MIN_DISK_MB }}
+          SC_KEEP_ROLLBACK: ${{ vars.SC_KEEP_ROLLBACK || 'false' }}
         run: |
           # Reconstruct locally: GitHub can discard secret-containing job outputs.
           : "${REGISTRY:?ECR login did not return a registry}"
           : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
-          : "${GITHUB_SHA:?Missing commit SHA}"
-          IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
-          python3 tools/deploy_storage.py --image "$IMAGE" --apply
-          ENV_FILE="$(mktemp "$RUNNER_TEMP/sc-assistant-env.XXXXXX")"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Missing published image digest'; exit 1; }
+          [[ "$SC_DEPLOY_IMAGE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo 'Missing measured image size'; exit 1; }
+          IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"
+          # Small credentials file in RAM, so a full root disk cannot prevent
+          # the deployment script from performing its guarded retirement.
+          ENV_FILE="$(mktemp /dev/shm/sc-assistant-env.XXXXXX)"
           export ENV_FILE
           trap 'rm -f "$ENV_FILE"' EXIT
           python3 - <<'PY'

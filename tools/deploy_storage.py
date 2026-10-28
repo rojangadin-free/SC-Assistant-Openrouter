@@ -1,4 +1,4 @@
-"""Preview or remove unused project images; never stop containers or prune volumes."""
+"""Measured disk checks and retirement of stopped, labelled project containers."""
 
 import argparse
 import json
@@ -6,6 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+
+WEB_CONTAINERS = {"sc-assistant-web-blue", "sc-assistant-web-green"}
+RETIRABLE_CONTAINERS = WEB_CONTAINERS | {"sc-assistant-indexer-backup", "rag-app-container"}
 
 
 def docker(*args):
@@ -26,6 +29,81 @@ def repository(reference):
     if ":" in reference.rsplit("/", 1)[-1]:
         reference = reference.rsplit(":", 1)[0]
     return reference
+
+
+def image_size(image):
+    records = json.loads(docker("image", "inspect", image))
+    if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        raise ValueError("Cannot measure the pulled image")
+    size = records[0].get("Size")
+    if type(size) is not int or size <= 0:
+        raise ValueError("Docker did not report a positive unpacked image size")
+    return size
+
+
+def required_free_mb(size_bytes, reserve_mb, floor_mb=None):
+    if size_bytes <= 0:
+        raise ValueError("A measured image size is required before pulling")
+    if reserve_mb < 512 or (floor_mb is not None and floor_mb < 1024):
+        raise ValueError("Keep at least 512 MiB reserve; an optional disk floor must be at least 1024 MiB")
+    # Budget both download storage and unpacked layers without guessing a gzip
+    # ratio or assuming the host already has reusable layers. This is an upper
+    # allowance based on the actual image, not a fixed 6 GiB requirement.
+    unpacked_mb = (size_bytes + 1024 * 1024 - 1) // (1024 * 1024)
+    return max(floor_mb or 0, 2 * unpacked_mb + reserve_mb)
+
+
+def container_info(name):
+    records = json.loads(docker("container", "inspect", name))
+    if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        raise ValueError("Cannot establish container ownership")
+    record = records[0]
+    config, state = record.get("Config") or {}, record.get("State") or {}
+    if not isinstance(config, dict) or not isinstance(state, dict):
+        raise ValueError("Invalid container metadata")
+    if (not isinstance(config.get("Labels") or {}, dict)
+            or not isinstance(config.get("Image") or "", str)
+            or not isinstance(record.get("Name") or "", str)):
+        raise ValueError("Invalid container ownership metadata")
+    return {"id": record.get("Id"), "name": (record.get("Name") or "").lstrip("/"),
+            "image": config.get("Image") or "", "labels": config.get("Labels") or {},
+            "status": state.get("Status"), "running": state.get("Running", False)}
+
+
+def retire_stopped(active, target, apply=False):
+    if active not in WEB_CONTAINERS:
+        raise ValueError("Retirement requires a known active web container")
+    current = container_info(active)
+    if (current["name"] != active or not current["running"] or current["status"] != "running"
+            or current["labels"].get("sc.project") != "sc-assistant"
+            or repository(current["image"]) != repository(target)):
+        raise RuntimeError("Active project ownership/health is uncertain; keeping stopped versions")
+    docker("exec", active, "python", "-c",
+           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5).read()")
+    existing = set(docker("container", "ls", "--all", "--format", "{{.Names}}").splitlines())
+    retired = []
+    for name in sorted(RETIRABLE_CONTAINERS - {active}):
+        if name not in existing:
+            continue
+        record = container_info(name)
+        label = record["labels"].get("sc.project")
+        # The pre-proxy deployment used this exact name without a project label.
+        # Its matching repository and healthy replacement establish ownership.
+        ours = label == "sc-assistant" or (name == "rag-app-container" and label is None)
+        if (record["name"] != name or not record["id"] or record["running"]
+                or record["status"] not in ("exited", "created", "dead")
+                or not ours
+                or repository(record["image"]) != repository(target)):
+            continue
+        if apply:
+            # Recheck the active backend before each deletion. Removal is by
+            # the inspected container ID, never force, never with volume flags.
+            latest = container_info(active)
+            if latest["id"] != current["id"] or not latest["running"]:
+                raise RuntimeError("The active backend changed; stopping retirement")
+            docker("container", "rm", record["id"])
+        retired.append(name)
+    return retired
 
 
 def protected_images():
@@ -63,7 +141,11 @@ def images():
                     or not isinstance(labels, dict)):
                 raise ValueError("Incomplete image ownership metadata")
             result.append({"id": identity, "tags": tags, "digests": digests,
-                           "labels": labels, "size": record.get("Size") or 0})
+                           "labels": labels, "size": record.get("Size") or 0,
+                           "materialized": (isinstance(record.get("Config"), dict)
+                                            and isinstance(record.get("RootFS"), dict)
+                                            and isinstance(record["RootFS"].get("Layers"), list)
+                                            and bool(record["RootFS"].get("Layers")))})
         except subprocess.CalledProcessError as error:
             print(f"Preserving uninspectable image {image_id}: {docker_error(error)}", file=sys.stderr)
         except ValueError:
@@ -113,15 +195,43 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="Target image including its registry/repository and tag")
     parser.add_argument("--apply", action="store_true", help="Delete eligible unused images, then enforce disk headroom")
-    parser.add_argument("--min-free-mb", type=int, default=int(os.getenv("SC_DEPLOY_MIN_DISK_MB", "6144")))
+    parser.add_argument("--measure", action="store_true", help="Print only the unpacked size of an already-pulled image")
+    parser.add_argument("--image-bytes", type=int, default=os.getenv("SC_DEPLOY_IMAGE_BYTES") or None)
+    parser.add_argument("--reserve-mb", type=int, default=os.getenv("SC_DEPLOY_RESERVE_MB") or "1024")
+    parser.add_argument("--min-free-mb", type=int, default=os.getenv("SC_DEPLOY_MIN_DISK_MB") or None)
+    parser.add_argument("--retire-stopped", action="store_true", help="Retire only stopped named versions after checking the active backend")
+    parser.add_argument("--active-container", choices=sorted(WEB_CONTAINERS))
+    parser.add_argument("--cleanup-only", action="store_true", help="Post-success cleanup; no new image pull will follow")
     args = parser.parse_args(argv)
     if not args.image or args.image.startswith("-") or "/" not in args.image or any(c.isspace() for c in args.image):
         parser.error("Use a fully qualified registry/repository image reference")
-    if args.min_free_mb < 1024:
-        parser.error("Reserve at least 1024 MiB of free space")
-    candidates = cleanup_candidates(images(), protected_images(), args.image)
+    if args.measure:
+        if args.apply or args.retire_stopped or args.cleanup_only:
+            parser.error("Image measurement cannot perform cleanup")
+        print(image_size(args.image))
+        return 0
+    if args.cleanup_only:
+        if not args.retire_stopped:
+            parser.error("Post-success cleanup requires a verified active backend")
+        minimum_mb = args.reserve_mb
+        if minimum_mb < 512:
+            parser.error("Keep at least 512 MiB reserve")
+    else:
+        minimum_mb = required_free_mb(args.image_bytes or 0, args.reserve_mb, args.min_free_mb)
+    if args.retire_stopped:
+        retired = retire_stopped(args.active_container, args.image, args.apply)
+        print(json.dumps({"retired_stopped_containers" if args.apply else "retirable_stopped_containers": retired}))
+    inventory = images()
+    cached = not args.cleanup_only and "@sha256:" in args.image and any(
+        args.image in row["tags"] + row["digests"] and row.get("materialized")
+        and row["size"] == args.image_bytes for row in inventory
+    )
+    if cached:
+        minimum_mb = max(args.min_free_mb or 0, args.reserve_mb)
+    candidates = cleanup_candidates(inventory, protected_images(), args.image)
     print(json.dumps({"apply": args.apply, "unused_project_image_ids": [item["id"] for item in candidates],
-                      "note": "Active and stopped-container images are protected; shared layers may limit reclaimed space."}))
+                      "image_bytes": args.image_bytes, "required_mb": minimum_mb, "cached_target": cached,
+                      "note": "Every remaining container's image is protected. Download/unpack allowance is conservative."}))
     if args.apply:
         for item in candidates:
             if not cleanup_candidates([item], protected_images(), args.image):
@@ -132,11 +242,11 @@ def main(argv=None):
                 docker("image", "rm", item["id"])
             except subprocess.CalledProcessError as error:
                 print(f"Image preserved {item['id']}: {docker_error(error)}", file=sys.stderr)
-    report = filesystem_report(args.min_free_mb)
+    report = filesystem_report(minimum_mb)
     print(json.dumps({"storage": report}, indent=2))
-    if args.apply and not all(row["sufficient"] for row in report):
+    if args.apply and not args.cleanup_only and not all(row["sufficient"] for row in report):
         print("Insufficient Docker/containerd space or inodes. No services were stopped. "
-              "Expand the backing EBS volume/filesystem or inspect retained images; "
+              "The measured image allowance still exceeds available storage. Inspect retained data or add capacity; "
               "do not delete /var/lib/containerd or Docker volumes.")
         return 2
     return 0
