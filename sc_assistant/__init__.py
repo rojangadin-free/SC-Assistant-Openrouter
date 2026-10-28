@@ -1,7 +1,7 @@
 import os
 
-from flask import Flask, jsonify
-from config import FLASK_SECRET_KEY, MAX_CONTENT_LENGTH
+from flask import Flask
+from config import FLASK_SECRET_KEY
 
 def create_app():
     """
@@ -9,7 +9,6 @@ def create_app():
     """
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app.secret_key = FLASK_SECRET_KEY
-    app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
     # ----------------------------------------------------------------------- #
     # Static asset cache-busting
@@ -44,12 +43,6 @@ def create_app():
     @app.route('/health')
     def health_check():
         return "OK", 200
-
-    @app.route('/ready')
-    def readiness_check():
-        from .readiness import probe
-        ready = probe()
-        return jsonify({"ready": ready}), 200 if ready else 503
 
     # ----------------------------------------------------------------------- #
     # Say where admin state is going, at boot
@@ -164,9 +157,9 @@ def create_app():
                 print(
                     "[startup] Reranker DISABLED (RERANKER_ENABLED=false) — answers "
                     "keep hybrid retrieval order and carry no score.\n"
-                    "           capacity : no cross-encoder; embeddings still use CPU\n"
+                    "           capacity : higher (no CPU-bound phase, torch not loaded)\n"
                     "           quality  : ordering within the top-K is unranked\n"
-                    "           re-enable: set RERANKER_ENABLED=true, see docs/CAPACITY.md"
+                    "           re-enable: unset RERANKER_ENABLED, see docs/CAPACITY.md"
                 )
                 return
 

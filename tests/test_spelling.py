@@ -88,7 +88,6 @@ from rag.latency import Deadline, Timings, pick_search_query, should_optimize  #
 from rag.dictation import dictation_variants  # noqa: E402
 from rag.language import language_variants  # noqa: E402
 from rag import reranker  # noqa: E402
-from rag.runtime import CapacityError, shared_pool, model_slot, retrieval_cache, query_rewrite_cache, env_float  # noqa: E402
 
 reload_vocabulary()
 
@@ -444,11 +443,11 @@ check("chat imports the shared correction function", any(
 ))
 functions = {
     "_content_terms", "expand_queries", "split_question", "multi_query_retrieve",
-    "retrieve_documents", "docs_to_context", "safe_prompt", "create_graph", "_invoke_aux", "_query_rewrite",
+    "retrieve_documents", "docs_to_context", "safe_prompt", "create_graph",
 }
 constants = {
     "_STOPWORDS", "THIN_QUERY_TERMS", "_QUESTION_WORDS", "_DETERMINERS",
-    "MIN_PART_TERMS", "MAX_PARTS", "RERANK_CANDIDATES", "FINAL_TOP_K", "_retrieval_generation",
+    "MIN_PART_TERMS", "MAX_PARTS", "RERANK_CANDIDATES", "FINAL_TOP_K",
 }
 selected = [node for node in tree.body if (
     isinstance(node, ast.FunctionDef) and node.name in functions
@@ -534,11 +533,6 @@ namespace = {
     "system_prompt": "Documents:\n{retrieved_docs}\nHistory:\n{chat_history}",
     "build_citations": lambda docs: [doc.metadata["chunk_id"] for doc in docs],
     "print": lambda *args, **kwargs: None,
-    "refresh_artifacts": lambda: "bundled", "_refresh_retrieval": lambda: None,
-    "_retrieval_lock": __import__("threading").Lock(),
-    "CapacityError": CapacityError, "shared_pool": shared_pool,
-    "model_slot": model_slot, "retrieval_cache": retrieval_cache, "env_float": env_float,
-    "query_rewrite_cache": query_rewrite_cache,
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), "rag/chain.py", "exec"), namespace)
 # A single answer slot makes primary-query contamination impossible to hide
@@ -548,8 +542,6 @@ node = namespace["create_graph"]()
 
 
 def chat_snapshot(question, history=None, image=None):
-    retrieval_cache.clear()
-    query_rewrite_cache.clear()
     probes.clear()
     optimizer_prompts.clear()
     scored_queries.clear()

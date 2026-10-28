@@ -16,10 +16,6 @@ escalations.json.tmp
 # that finished on someone else's machine.
 index_jobs.json
 index_jobs.json.tmp
-retrieval_artifacts.json
-*.json.lock
-*.json.refresh.lock
-*.json.*.tmp
 
 # Admin-entered academic-calendar periods (real dates differ per deployment,
 

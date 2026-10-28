@@ -359,7 +359,6 @@ print("\n=== 8. Deployment config matches the code's assumptions ===")
 
 
 dockerfile = open("Dockerfile", encoding="utf-8").read()
-gunicorn_config = open("gunicorn.conf.py", encoding="utf-8").read()
 
 check(
     "Dockerfile pins OMP_NUM_THREADS (must precede the torch import)",
@@ -367,7 +366,7 @@ check(
 )
 check(
     "gunicorn runs 3 workers (memory ceiling on an 8 GB box)",
-    'integer("GUNICORN_WORKERS", 3)' in gunicorn_config and '"gunicorn.conf.py"' in dockerfile,
+    '"--workers", "3"' in dockerfile,
 )
 # The worker count is a memory budget, and the budget only holds because every
 # worker is ~1.3 GB. If reranking is ever switched back on in the image, the
@@ -382,13 +381,13 @@ check(
 # absorb that than there was with 2.
 check(
     "workers are recycled, so torch's RSS drift cannot reach the OOM killer",
-    'integer("GUNICORN_MAX_REQUESTS", 400)' in gunicorn_config,
+    '"--max-requests", "400"' in dockerfile,
 )
 # Without jitter all three workers hit the limit at nearly the same request
 # count and restart together: a brief total outage instead of a rolling one.
 check(
     "recycling is jittered, so the workers do not all restart at once",
-    'integer("GUNICORN_MAX_REQUESTS_JITTER", 50' in gunicorn_config,
+    "--max-requests-jitter" in dockerfile,
 )
 check(
     "gunicorn heartbeats through /dev/shm, not EBS-backed /tmp",

@@ -68,8 +68,6 @@ from __future__ import annotations
 
 import json
 import os
-import hashlib
-import threading
 import re
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -77,9 +75,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # Where the corpus vocabulary lives. Next to bm25_values.json, because it is the
 # same kind of artefact: derived from the indexed documents, rebuilt when they
 # change, and useless without them.
-from rag.artifacts import artifact_path
-from rag.store import _file_lock
-SPELL_VOCAB_FILE = artifact_path("spell_vocab.json")
+SPELL_VOCAB_FILE = os.getenv("SC_SPELL_VOCAB", "spell_vocab.json")
 
 # --------------------------------------------------------------------------- #
 # Thresholds
@@ -386,21 +382,10 @@ class _Vocabulary:
 
 
 _vocab: Optional[_Vocabulary] = None
-_vocab_signature = None
-_vocab_lock = threading.RLock()
 
 
 def _vocabulary() -> _Vocabulary:
-    global _vocab, _vocab_signature
-    try:
-        stat = os.stat(SPELL_VOCAB_FILE)
-        signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-    except OSError:
-        signature = None
-    if signature != _vocab_signature:
-        _vocab = None
-        _vocab_signature = signature
-        _suggest.cache_clear()
+    global _vocab
     if _vocab is None:
         terms = {w: SEED_FREQ for w in _SEED_TERMS}
         for word, count in _read_vocab_file(SPELL_VOCAB_FILE).items():
@@ -420,10 +405,9 @@ def reload_vocabulary() -> int:
     by a running process takes effect without a restart.
     """
     global _vocab
-    with _vocab_lock:
-        _vocab = None
-        _suggest.cache_clear()
-        return len(_vocabulary().freq)
+    _vocab = None
+    _suggest.cache_clear()
+    return len(_vocabulary().freq)
 
 
 def vocabulary_size() -> int:
@@ -715,12 +699,6 @@ def _real_word_repair(
 
 
 def misspellings(text: str) -> List[Tuple[str, str]]:
-    with _vocab_lock:
-        _vocabulary()
-        return _misspellings(text)
-
-
-def _misspellings(text: str) -> List[Tuple[str, str]]:
     """
     The repairs this text needs, as `(typed, meant)` pairs, in order.
 
@@ -808,7 +786,7 @@ def spelling_variants(text: str) -> List[str]:
 # Growing the vocabulary
 # --------------------------------------------------------------------------- #
 
-def learn_terms(texts: Iterable[str], path: str = None, *, source: str = "") -> int:
+def learn_terms(texts: Iterable[str], path: str = None) -> int:
     """
     Fold the words of freshly indexed documents into `spell_vocab.json`.
 
@@ -821,34 +799,24 @@ def learn_terms(texts: Iterable[str], path: str = None, *, source: str = "") -> 
     existed. Losing an indexed document over it would be far worse.
     """
     target = path or SPELL_VOCAB_FILE
-    additions = {}
+    counts = _read_vocab_file(target)
+
     for text in texts:
         for match in _WORD_RE.finditer(text or ""):
             word = match.group(0).strip("'-").lower()
             if _indexable(word):
-                additions[word] = additions.get(word, 0) + 1
+                counts[word] = counts.get(word, 0) + 1
 
     try:
-        with _file_lock(target):
-            counts = _read_vocab_file(target)
-            try:
-                with open(target, encoding="utf-8") as fh:
-                    sources = json.load(fh).get("sources", {})
-            except FileNotFoundError:
-                sources = {}
-            signature = hashlib.sha256(json.dumps(sorted(additions.items())).encode("utf-8")).hexdigest()
-            # A worker can be restarted after publishing but before completing
-            # the job. Replaying the same source must not inflate term counts.
-            if not source or sources.get(source) != signature:
-                for word, count in additions.items():
-                    counts[word] = counts.get(word, 0) + count
-                if source:
-                    sources[source] = signature
-                tmp = f"{target}.tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump({"terms": dict(sorted(counts.items())), "sources": sources}, fh, ensure_ascii=False)
-                os.replace(tmp, target)
-    except (OSError, ValueError, AttributeError) as e:
+        tmp = f"{target}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"terms": dict(sorted(counts.items()))},
+                fh,
+                ensure_ascii=False,
+            )
+        os.replace(tmp, target)
+    except OSError as e:
         print(f"  Spelling vocabulary not updated (non-fatal): {e}")
         return vocabulary_size()
 

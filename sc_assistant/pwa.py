@@ -67,8 +67,7 @@ bp_pwa = Blueprint("pwa", __name__)
 # toggle server-side from the session, so a stale-while-revalidated /settings
 # showed the toggle in its previous position until the user reloaded — the same
 # class of bug as the '/files' one below, with the same fix.
-# v6 refreshes the waiting caption and prevents stale readiness responses.
-CACHE_VERSION = "sc-assistant-v6"
+CACHE_VERSION = "sc-assistant-v5"
 
 
 
@@ -194,7 +193,7 @@ const SHELL = %(shell)s;
    visit cached until the user manually reloaded. Privacy settings are the one
    page where "what I just changed" must be what I see. */
 const NEVER_CACHE = [
-  '/chat', '/api/', '/admin', '/auth', '/logout', '/health', '/ready',
+  '/chat', '/api/', '/admin', '/auth', '/logout', '/health',
   '/files', '/upload', '/dashboard', '/delete', '/settings'
 ];
 

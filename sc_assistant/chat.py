@@ -21,8 +21,6 @@ from rag.gaps import looks_unanswered, record_gap
 from rag.feedback import record_vote, get_vote, get_votes
 from rag.roles import resolve_role
 from rag.progress import ProgressChannel
-from rag.runtime import CapacityError, shared_pool, env_int, env_float
-from rag.guest_history import guest_history
 
 
 
@@ -65,8 +63,6 @@ def chat():
         return jsonify({"error": "Please log in to use the chatbot."}), 401
     try:
         msg = request.form.get("msg", "")
-        if len(msg) > env_int("CHAT_MAX_MESSAGE_CHARS", 8000):
-            return jsonify({"error": "Message too long. Please attach a document or shorten the question."}), 413
         guest = _is_guest()
 
         # Image handling
@@ -76,8 +72,6 @@ def chat():
             try:
                 uploaded = request.files['image']
                 img = Image.open(uploaded)
-                if img.width * img.height > env_int("CHAT_MAX_IMAGE_PIXELS", 12000000):
-                    return jsonify({"error": "Image too large. Please resize it before sending."}), 413
                 fmt = (img.format or "JPEG").upper()
                 image_mime = "image/png" if fmt == "PNG" else "image/jpeg"
                 if img.mode in ("RGBA", "P"):
@@ -97,8 +91,15 @@ def chat():
             conversation = get_conversation(session.get("uid"), conv_id)
             if conversation and "messages" in conversation:
                 current_db_history = conversation["messages"]
+                app_graph.update_state(config, values={"chat_history": current_db_history})
         elif guest:
-            current_db_history = guest_history.load(session_id)
+            # 🚀 NEW: Retrieve temporary session memory for the guest
+            state = app_graph.get_state(config)
+            if state and hasattr(state, 'values'):
+                current_db_history = state.values.get("chat_history", [])
+            
+            if current_db_history:
+                app_graph.update_state(config, values={"chat_history": current_db_history})
 
         # 🚀 FIX: Handle Conversation ID & Session updates BEFORE the streaming generator starts
         is_new_conversation = False
@@ -118,7 +119,6 @@ def chat():
 
         input_payload = {
             "input":      msg,
-            "chat_history": current_db_history,
             "image_data": image_data if image_data else None,
             "image_mime": image_mime  if image_data else None,
             "uid":        None if guest else session.get("uid"),
@@ -207,11 +207,9 @@ def chat():
                 finally:
                     finished.set()
 
-            try:
-                pipeline_future = shared_pool("pipeline").submit(run_pipeline, queue_timeout=0)
-            except CapacityError as busy:
-                yield f"data: {json.dumps({'type': 'error', 'text': str(busy), 'retryable': True})}\n\n"
-                return
+            threading.Thread(
+                target=run_pipeline, name="answer-pipeline", daemon=True
+            ).start()
 
             # Forward captions the moment they are published, and emit a comment
             # every few seconds while the CPU-bound phases run. The heartbeat is
@@ -223,21 +221,12 @@ def chat():
             HEARTBEAT_SECONDS = 5.0
             last_beat = time.monotonic()
 
-            deadline = last_beat + env_float("RAG_PIPELINE_TIMEOUT", 90, 1)
-            try:
-                while not finished.wait(POLL_SECONDS):
-                    if time.monotonic() >= deadline:
-                        yield f"data: {json.dumps({'type': 'error', 'text': 'Preparing this answer took too long. Please try again shortly.', 'retryable': True})}\n\n"
-                        return
-                    for event in progress.drain():
-                        yield f"data: {json.dumps(event)}\n\n"
-                    if time.monotonic() - last_beat >= HEARTBEAT_SECONDS:
-                        last_beat = time.monotonic()
-                        yield ": keep-alive\n\n"
-            finally:
-                # Running tasks retain their bounded pool slot until finished;
-                # queued work should not outlive a disconnected browser.
-                pipeline_future.cancel()
+            while not finished.wait(POLL_SECONDS):
+                for event in progress.drain():
+                    yield f"data: {json.dumps(event)}\n\n"
+                if time.monotonic() - last_beat >= HEARTBEAT_SECONDS:
+                    last_beat = time.monotonic()
+                    yield ": keep-alive\n\n"
 
             # Anything published between the last poll and the thread finishing.
             for event in progress.drain():
@@ -245,9 +234,7 @@ def chat():
 
             if box.get("error") is not None:
                 print(f"Graph invocation failed: {box['error']}")
-                error = box["error"]
-                text = str(error) if isinstance(error, CapacityError) else "Sorry, something went wrong while preparing that answer. Please try again."
-                yield f"data: {json.dumps({'type': 'error', 'text': text, 'retryable': isinstance(error, CapacityError)})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Sorry, something went wrong while preparing that answer. Please try again.'})}\n\n"
                 return
 
             result = box.get("result") or {}
@@ -285,8 +272,7 @@ def chat():
                     yield f"data: {json.dumps({'type': 'chunk', 'text': chunk_text})}\n\n"
             except Exception as stream_err:
                 print(f"Streaming pipeline breakdown: {stream_err}")
-                text = str(stream_err) if isinstance(stream_err, CapacityError) else "Streaming interrupted."
-                yield f"data: {json.dumps({'type': 'error', 'text': text, 'retryable': isinstance(stream_err, CapacityError)})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Streaming interrupted.'})}\n\n"
                 return
 
             # Every provider answered without raising, yet nothing arrived. This
@@ -317,6 +303,7 @@ def chat():
                 {"role": "user",      "content": msg + (" [Image Uploaded]" if image_data else "")},
                 {"role": "assistant", "content": full_answer, "msg_id": answer_msg_id},
             ]
+            full_history_to_save = current_db_history + new_messages
 
 
             # 🚀 1b. CONTENT GAP LOGGING
@@ -355,23 +342,20 @@ def chat():
             # Stored on the turn as well, so the footer can be rebuilt when the
             # conversation is reopened instead of only existing for as long as the
             # tab stays open.
-            new_messages[-1]["citations"] = shown_citations
+            full_history_to_save[-1]["citations"] = shown_citations
 
-            # Guest history expires and contains no student record or image bytes.
+            # 🚀 2. ALWAYS update the LangGraph state so both logged-in users and guests have temporary memory for the next turn
+            app_graph.update_state(config, values={"chat_history": full_history_to_save})
+
+            # 🚀 3. If guest, yield done and exit WITHOUT saving to the DynamoDB database
             if guest:
-                try:
-                    guest_history.append(session_id, new_messages)
-                except Exception as history_err:
-                    print(f"Guest history save failed: {history_err}")
-                    yield f"data: {json.dumps({'type': 'error', 'text': 'The answer arrived, but conversation history could not be saved. Please start a new chat.'})}\n\n"
-                    return
                 yield f"data: {json.dumps({'type': 'done', 'conv_id': None, 'new_conversation_created': False, 'new_conv_title': None, 'unanswered': unanswered, 'citations': shown_citations, 'msg_id': answer_msg_id})}\n\n"
                 return
 
 
             # 🚀 4. DB Save strictly for Logged-In Users
             if session.get("uid"):
-                upsert_conversation(session.get("uid"), conv_id, new_messages, created_at)
+                upsert_conversation(session.get("uid"), conv_id, full_history_to_save, created_at)
 
             # `msg_id` travels with 'done' so the element the browser just built
             # adopts the id the answer was SAVED under. Without that handshake the
@@ -382,19 +366,8 @@ def chat():
 
 
 
-        stream = generate()
-
-        def safe_stream():
-            try:
-                yield from stream
-            except GeneratorExit:
-                raise
-            except Exception as stream_error:
-                print(f"Chat stream could not complete: {stream_error}")
-                yield f"data: {json.dumps({'type': 'error', 'text': 'The answer could not be completed or saved. Please try again.'})}\n\n"
-
         return Response(
-            safe_stream(),
+            generate(),
             mimetype='text/event-stream',
             headers={
                 # Never cache a stream, and — `no-transform` — never let an
@@ -412,7 +385,7 @@ def chat():
 
     except Exception as e:
         print(f"Error in /get endpoint: {e}")
-        return jsonify({"error": "The assistant is temporarily unavailable. Please try again."}), 503
+        return jsonify({"answer": f"Sorry, an error occurred: {str(e)}"}), 500
 
 
 @bp.route("/report", methods=["POST"])
@@ -726,8 +699,6 @@ def serve_document(filename):
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
-    if _is_guest() and session.get("session_id"):
-        guest_history.clear(session["session_id"])
     session.pop("session_id",       None)
     session.pop("current_conv_id",  None)
     session.pop("created_at",       None)
@@ -759,7 +730,11 @@ def restore_conversation(conv_id):
     if not conv or "messages" not in conv:
         return jsonify({"error": "Conversation not found"}), 404
 
-    # The next request reloads this conversation from DynamoDB on any worker.
+    session_id = get_session_id()
+    app_graph.update_state(
+        config={"configurable": {"thread_id": session_id}},
+        values={"chat_history": conv["messages"]},
+    )
     session["current_conv_id"] = conv_id
     session["created_at"]      = conv.get(
         "created_at",

@@ -69,12 +69,6 @@ SUITES = [
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
     ("Storage backend (file/DynamoDB)",  "test_store.py"),
-    ("Shared-state concurrency and guest expiry", "test_storage_scaling.py"),
-    ("Durable indexing and shared artifacts", "test_jobs_artifacts.py"),
-    ("Deployment configuration and readiness", "test_deployment.py"),
-    ("Deployment disk and image-retention safety", "test_deploy_storage.py"),
-    ("SSE load-test tooling (fake HTTP)", "test_loadtest_chat.py"),
-    ("Chat shared-history and timeout integration", "test_chat_scaling.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
     ("Calendar awareness (dates)",      "test_calendar.py"),
@@ -119,7 +113,6 @@ SUITES = [
     # happens, which is why unbounded concurrent scoring on a 2-vCPU box was
     # invisible until it was deployed. See docs/CAPACITY.md.
     ("Reranker concurrency (load)",      "test_capacity.py"),
-    ("Bounded runtime and retrieval caches", "test_runtime.py"),
 
 
     # Last of the query-path unit suites, and deliberately after them: it decides

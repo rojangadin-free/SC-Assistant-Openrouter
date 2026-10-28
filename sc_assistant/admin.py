@@ -2,6 +2,8 @@ from flask import (
     Blueprint, render_template, jsonify, request, session, redirect, url_for
 )
 import os
+import tempfile
+import threading
 import datetime
 from botocore.exceptions import ClientError
 from pinecone import Pinecone
@@ -10,16 +12,15 @@ from pinecone import Pinecone
 from config import INDEX_NAME, PINECONE_API_KEY, COGNITO_USER_POOL_ID
 from aws.cognito import cognito_client
 from aws.dynamodb import (
-    delete_file_from_db, files_table,
+    save_file_metadata, delete_file_from_db, files_table,
     list_conversations, delete_conversation_from_db
 )
 
-from aws.s3 import delete_file_from_s3, get_s3_presigned_url
+from aws.s3 import upload_file_to_s3, delete_file_from_s3, get_s3_presigned_url
+from rag.chain import embeddings
 from rag import jobs
 from rag import activity
-from rag.indexing import stage_uploads
-from rag.artifacts import mark_index_changed
-from rag.runtime import CapacityError
+from store_index import append_file_to_index
 from .utils import is_admin, get_cognito_username
 
 
@@ -43,6 +44,51 @@ def dashboard():
         "username": session.get("username", session.get("user", "").split("@")[0])
     }
     return render_template("dashboard.html", user=user_obj)
+
+
+def _index_uploaded_files(job_id, staged, uid):
+    """
+    The indexing worker. Runs off the request thread.
+
+    Each file is independent: one corrupt PDF must not abandon the files queued
+    behind it, so failures are recorded per file and the loop continues. That is
+    also why the job's final status is derived from its files rather than from
+    the first exception.
+    """
+    for temp_path, filename in staged:
+        try:
+            def _progress(phase, done, total, _f=filename):
+                jobs.set_phase(job_id, _f, phase, units_done=done, units_total=total)
+
+            chunks = append_file_to_index(
+                temp_path,
+                index_name=INDEX_NAME,
+                real_name=filename,
+                embeddings=embeddings,
+                progress=_progress,
+            )
+
+            # S3 and the metadata row come after a successful index. Ordered this
+            # way so a file that cannot be indexed never appears in the file list
+            # as though it were searchable — the list is the admin's evidence that
+            # the assistant can actually use a document.
+            jobs.set_phase(job_id, filename, "storing")
+            save_file_metadata(filename, uid)
+            if not upload_file_to_s3(temp_path, filename):
+                raise Exception("Failed to upload file to S3.")
+
+            jobs.finish_file(job_id, filename, chunks)
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
+            jobs.fail_file(job_id, filename, str(e))
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    jobs.finish_job(job_id)
 
 
 @bp.route("/upload", methods=["POST"])
@@ -69,22 +115,40 @@ def upload_file():
     if not files:
         return jsonify({"success": False, "message": "No files uploaded"}), 400
 
-    try:
-        job_id = stage_uploads(files, session.get("uid"))
-    except ValueError as exc:
-        return jsonify({"success": False, "message": str(exc)}), 400
-    except CapacityError as exc:
-        return jsonify({"success": False, "message": str(exc)}), 429
-    except Exception as exc:
-        print(f"Durable upload staging failed: {type(exc).__name__}")
-        return jsonify({"success": False, "message": "The files could not be durably queued. Please retry."}), 503
+    # Staged inside the request because `request.files` is only readable here —
+    # the stream is tied to the request and would be closed by the time a worker
+    # thread got to it.
+    staged = []
+    for file in files:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=os.path.splitext(file.filename)[1]
+        ) as tmp:
+            file.save(tmp.name)
+            staged.append((tmp.name, file.filename))
+
+    job_id = jobs.create_job([name for _, name in staged])
+
+    # `session` is not available inside the thread, so the uid is read now and
+    # passed in. Reading it in the worker would raise "working outside of request
+    # context" — and only for uploads slow enough to matter, which is the worst
+    # kind of bug to ship.
+    uid = session.get("uid")
+
+    # daemon=True so a shutdown is not blocked by an in-flight index. A killed
+    # index is recoverable (the job goes stale and says so); a container that
+    # refuses to stop is not.
+    threading.Thread(
+        target=_index_uploaded_files,
+        args=(job_id, staged, uid),
+        daemon=True,
+    ).start()
 
     # 202: accepted, not complete. The client must poll.
     return jsonify({
         "success": True,
         "job_id": job_id,
-        "files": [os.path.basename(f.filename.replace("\\", "/")) for f in files],
-        "message": "Upload stored safely and queued for indexing.",
+        "files": [name for _, name in staged],
+        "message": "Upload received — indexing started.",
     }), 202
 
 
@@ -138,7 +202,6 @@ def delete_file(filename):
         index.delete(filter={"source": {"$eq": filename}})
         delete_file_from_db(filename)
         delete_file_from_s3(filename)
-        mark_index_changed()
         return jsonify({"success": True, "message": f"Deleted {filename} and its vectors"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500

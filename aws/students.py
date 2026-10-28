@@ -1,18 +1,15 @@
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from botocore.config import Config
 from config import AWS_REGION
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION, config=Config(
-    connect_timeout=3, read_timeout=10, retries={"max_attempts": 2}, max_pool_connections=32
-))
+dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 students_table = dynamodb.Table("StudentRecords")
 
 
 def get_student_by_uid(uid):
     try:
-        resp = students_table.get_item(Key={"student_id": uid}, ConsistentRead=True)
+        resp = students_table.get_item(Key={"student_id": uid})
         return resp.get("Item")
     except ClientError as e:
         print(f"[students] get_student_by_uid error: {e}")
@@ -27,16 +24,10 @@ def get_student_by_email(email):
         )
         items = resp.get("Items", [])
         return items[0] if items else None
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") not in ("ValidationException", "ResourceNotFoundException"):
-            raise
+    except ClientError:
         try:
             resp = students_table.scan(FilterExpression=Key("email").eq(email))
             items = resp.get("Items", [])
-            while not items and resp.get("LastEvaluatedKey"):
-                resp = students_table.scan(FilterExpression=Key("email").eq(email),
-                                           ExclusiveStartKey=resp["LastEvaluatedKey"])
-                items = resp.get("Items", [])
             return items[0] if items else None
         except ClientError as e2:
             print(f"[students] get_student_by_email error: {e2}")

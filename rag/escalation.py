@@ -55,7 +55,7 @@ import uuid
 from typing import List, Optional
 
 from rag.gaps import normalize_question
-from rag.store import JsonBlobStore, atomic_mutation
+from rag.store import JsonBlobStore
 
 
 ESCALATIONS_FILE = os.getenv("ESCALATIONS_FILE", "escalations.json")
@@ -153,7 +153,6 @@ def _prune(items: dict) -> dict:
 # PUBLIC API
 # ============================================================
 
-@atomic_mutation(_store, swallow=True)
 def create_escalation(
     question: str,
     *,
@@ -252,7 +251,6 @@ def escalation_stats() -> dict:
     }
 
 
-@atomic_mutation(_store)
 def answer_escalation(esc_id: str, reply: str, *, answered_by: str = "") -> Optional[dict]:
     """
     Record the human reply.
@@ -337,7 +335,6 @@ def my_escalations(*, student_email: str = "", contact: str = "") -> List[dict]:
     return out
 
 
-@atomic_mutation(_store)
 def mark_escalation_read(esc_id: str, *, student_email: str = "", contact: str = "") -> bool:
     """
     Clear the unread badge for one row.
@@ -367,7 +364,6 @@ def mark_escalation_read(esc_id: str, *, student_email: str = "", contact: str =
         return True
 
 
-@atomic_mutation(_store)
 def set_status(esc_id: str, status: str) -> Optional[dict]:
     """Dismiss spam, or push a row back into the queue."""
     if status not in STATUSES:
@@ -387,7 +383,6 @@ def set_status(esc_id: str, status: str) -> Optional[dict]:
         return item
 
 
-@atomic_mutation(_store)
 def delete_escalation(esc_id: str) -> bool:
     with _lock:
         store = _load()

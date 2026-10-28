@@ -38,7 +38,7 @@ $(document).ready(function() {
   const thinkingBubble = () => `
     <div class="typing-indicator" id="typingIndicator">
       <div class="typing-dots"><span></span><span></span><span></span></div>
-      <span class="typing-phase" id="typingPhase" aria-live="polite">Waiting for response</span>
+      <span class="typing-phase" id="typingPhase" aria-live="polite"></span>
     </div>`;
 
   // Captions come from the SSE `phase` events published by rag/progress.py, so
@@ -46,7 +46,7 @@ $(document).ready(function() {
   // cross-encoder starts, not on a timer. A missing indicator is not an error —
   // a phase event can arrive in the same read as the first chunk.
   function setTypingPhase(text) {
-    typingIndicator().find('.typing-phase').text(text || 'Waiting for response');
+    $('#typingPhase').text(text || '');
   }
 
   // Faded, then removed. Removing it matters: it lives inside the answer bubble
@@ -58,7 +58,6 @@ $(document).ready(function() {
     // The id goes first, so a request that finishes while this one is still
     // fading cannot find the outgoing node and re-caption it.
     $ind.removeAttr('id').addClass('fade-out');
-    $ind.find('.typing-phase').removeAttr('id');
     setTimeout(() => $ind.remove(), 220);
     messagesContainer.find('.message.is-thinking').removeClass('is-thinking');
   }

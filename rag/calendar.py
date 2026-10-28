@@ -57,7 +57,7 @@ import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
-from rag.store import JsonBlobStore, atomic_mutation
+from rag.store import JsonBlobStore
 
 # ---------------------------------------------------------------------------
 # Campus time
@@ -256,7 +256,6 @@ def _save(store: dict) -> None:
     _store().save(store)
 
 
-@atomic_mutation(_store)
 def set_period(
     label: str,
     start: str,
@@ -329,7 +328,6 @@ def list_periods() -> List[dict]:
     return items
 
 
-@atomic_mutation(_store)
 def delete_period(key: str) -> bool:
     with _lock:
         store = _load()

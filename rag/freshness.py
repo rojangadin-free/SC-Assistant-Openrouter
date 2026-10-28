@@ -65,7 +65,7 @@ import re
 import threading
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from rag.store import JsonBlobStore, atomic_mutation
+from rag.store import JsonBlobStore
 from rag.conflicts import (
     Fact,
     canonical_role,
@@ -313,7 +313,6 @@ def _parse_iso_date(s: str) -> Optional[datetime.date]:
 # ---------------------------------------------------------------------------
 
 
-@atomic_mutation(_store)
 def set_doc_date(
     filename: str,
     *,
@@ -381,7 +380,6 @@ def list_docs() -> List[dict]:
     return docs
 
 
-@atomic_mutation(_store)
 def delete_doc(filename: str) -> bool:
     key = doc_key(filename)
     with _store_lock:
@@ -400,7 +398,6 @@ def delete_doc(filename: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-@atomic_mutation(_store)
 def ensure_doc_date(
     filename: str,
     text: str = "",
@@ -477,14 +474,13 @@ def source_priority(*sources: str) -> Dict[str, dict]:
     is no evidence, and in both cases no document is labelled authoritative.
     """
     dated: Dict[str, dict] = {}
-    documents = _store().load().get("docs") or {}
     for s in sources:
         if not s:
             continue
         key = doc_key(s)
         if key in dated:
             continue
-        meta = documents.get(key)
+        meta = get_doc_date(s)
         d = _parse_iso_date((meta or {}).get("effective_date") or "")
         if d:
             dated[key] = {"filename": meta.get("filename") or s, "date": d}

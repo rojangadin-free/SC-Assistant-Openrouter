@@ -1,149 +1,93 @@
-name: Test and Deploy SC Assistant
+name: Deploy Application Docker Image to EC2 instance
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: sc-assistant-production
-  cancel-in-progress: false
 
 jobs:
-  build:
+  Continuous-Integration:
     runs-on: ubuntu-latest
-    outputs:
-      image_bytes: ${{ steps.image_size.outputs.bytes }}
-      image_digest: ${{ steps.build_image.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: pip
-      - name: Install CPU runtime dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --only-binary=:all: --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu'
-          python -m pip install -r requirements.txt
-      - name: Run offline regressions
-        env:
-          STORE_BACKEND: file
-          RERANKER_ENABLED: 'false'
-          PINECONE_API_KEY: offline-test
-          OPENROUTER_API_KEY: offline-test
-          AWS_ACCESS_KEY_ID: offline-test
-          AWS_SECRET_ACCESS_KEY: offline-test
-          AWS_EC2_METADATA_DISABLED: 'true'
-          FLASK_SECRET_KEY: offline-test-session-secret
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python run_tests.py
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_DEFAULT_REGION || secrets.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-      - uses: docker/setup-buildx-action@v3
-      - name: Validate immutable image reference
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPOSITORY: ${{ secrets.ECR_REPO }}
-        run: |
-          : "${REGISTRY:?ECR login did not return a registry}"
-          : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
-          : "${GITHUB_SHA:?Missing commit SHA}"
-          IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
-          printf 'SC_BUILD_IMAGE=%s\n' "$IMAGE" >> "$GITHUB_ENV"
-      - name: Build and publish immutable image
-        id: build_image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          tags: ${{ env.SC_BUILD_IMAGE }}
-          cache-from: type=gha,scope=sc-assistant-runtime
-          cache-to: type=gha,scope=sc-assistant-runtime,mode=max,ignore-error=true
-          labels: org.opencontainers.image.revision=${{ github.sha }}
-      - name: Measure the published CPU image
-        id: image_size
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPOSITORY: ${{ secrets.ECR_REPO }}
-          IMAGE_DIGEST: ${{ steps.build_image.outputs.digest }}
-        run: |
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Missing published image digest'; exit 1; }
-          IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"
-          docker pull --platform linux/amd64 "$IMAGE"
-          SIZE="$(python3 tools/deploy_storage.py --image "$IMAGE" --measure)"
-          printf 'bytes=%s\n' "$SIZE" >> "$GITHUB_OUTPUT"
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
 
-  deploy:
-    needs: build
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPO }}
+          IMAGE_TAG: latest
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .  
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+  Continuous-Deployment:
+    needs: Continuous-Integration
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_DEFAULT_REGION || secrets.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-      - name: Readiness-gated, memory-aware rollout
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPOSITORY: ${{ secrets.ECR_REPO }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION || secrets.AWS_DEFAULT_REGION }}
-          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
-          COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
-          COGNITO_CLIENT_SECRET: ${{ secrets.COGNITO_CLIENT_SECRET }}
-          FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
-          GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '3' }}
-          GUNICORN_THREADS: ${{ vars.GUNICORN_THREADS || '12' }}
-          STORE_BACKEND: dynamodb
-          STORE_TABLE_NAME: ${{ vars.STORE_TABLE_NAME || 'SCAssistantStores' }}
-          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'sc-assistant-bucket2' }}
-          RERANKER_ENABLED: 'false'
-          IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
-          SC_DEPLOY_IMAGE_BYTES: ${{ needs.build.outputs.image_bytes }}
-          SC_DEPLOY_RESERVE_MB: ${{ vars.SC_DEPLOY_RESERVE_MB || '1024' }}
-          SC_DEPLOY_MIN_DISK_MB: ${{ vars.SC_DEPLOY_MIN_DISK_MB }}
-          SC_KEEP_ROLLBACK: ${{ vars.SC_KEEP_ROLLBACK || 'false' }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Cleanup Runner Resources
         run: |
-          # Reconstruct locally: GitHub can discard secret-containing job outputs.
-          : "${REGISTRY:?ECR login did not return a registry}"
-          : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Missing published image digest'; exit 1; }
-          [[ "$SC_DEPLOY_IMAGE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo 'Missing measured image size'; exit 1; }
-          IMAGE="$REGISTRY/$REPOSITORY@$IMAGE_DIGEST"
-          # Small credentials file in RAM, so a full root disk cannot prevent
-          # the deployment script from performing its guarded retirement.
-          ENV_FILE="$(mktemp /dev/shm/sc-assistant-env.XXXXXX)"
-          export ENV_FILE
-          trap 'rm -f "$ENV_FILE"' EXIT
-          python3 - <<'PY'
-          import os
-          names = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
-                   "PINECONE_API_KEY", "OPENROUTER_API_KEY", "COGNITO_USER_POOL_ID",
-                   "COGNITO_CLIENT_ID", "COGNITO_CLIENT_SECRET", "FLASK_SECRET_KEY",
-                   "GUNICORN_WORKERS", "GUNICORN_THREADS", "STORE_BACKEND",
-                   "STORE_TABLE_NAME", "S3_BUCKET_NAME", "RERANKER_ENABLED"]
-          with open(os.environ["ENV_FILE"], "w") as handle:
-              for name in names:
-                  value = os.environ.get(name, "")
-                  if "\n" in value or "\r" in value:
-                      raise ValueError("Invalid multiline environment value")
-                  handle.write(name + "=" + value + "\n")
-          os.chmod(os.environ["ENV_FILE"], 0o600)
-          PY
-          bash tools/deploy.sh --apply "$IMAGE" "$ENV_FILE"
+          # Stop all Docker containers (ignore error if none exist)
+          docker stop $(docker ps -aq) || true
+          # Remove all Docker containers (ignore error if none exist)
+          docker rm $(docker ps -aq) || true
+          # Remove all Docker images to force fresh pull
+          docker rmi $(docker images -q) --force || true
+          # Prune unused Docker volumes and networks
+          docker volume prune -f
+          docker network prune -f
+          # Remove all unused Docker data
+          docker system prune -a --volumes -f
+          # Clean apt cache and lists
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          # Vacuum system logs older than 3 days
+          sudo journalctl --vacuum-time=3d
+
+      - name: Run New Docker Container
+        run: |
+          CONTAINER_NAME="rag-app-container"
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest"
+
+          # Pull the latest image and run the new container
+          docker pull $IMAGE_URI
+          docker run -d --name $CONTAINER_NAME --restart always \
+            -p 8080:8080 \
+            -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -e AWS_DEFAULT_REGION="${{ secrets.AWS_DEFAULT_REGION }}" \
+            -e AWS_REGION="${{ secrets.AWS_REGION }}" \
+            -e PINECONE_API_KEY="${{ secrets.PINECONE_API_KEY }}" \
+            -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+            -e COGNITO_USER_POOL_ID="${{ secrets.COGNITO_USER_POOL_ID }}" \
+            -e COGNITO_CLIENT_ID="${{ secrets.COGNITO_CLIENT_ID }}" \
+            -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
+            -e AGENTROUTER_API_KEY="${{ secrets.AGENTROUTER_API_KEY }}" \
+            -e COGNITO_CLIENT_SECRET="${{ secrets.COGNITO_CLIENT_SECRET }}" \
+            $IMAGE_URI

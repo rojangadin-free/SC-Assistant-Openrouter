@@ -11,7 +11,6 @@
 # The real fix is in requirements.txt: every C-extension package is pinned to a
 # version with a cp310 manylinux wheel, so nothing needs a compiler at all.
 FROM python:3.10-slim-bookworm
-LABEL sc.project="sc-assistant"
 
 # Unbuffered output, or the first crash in the container logs nothing useful.
 ENV PYTHONUNBUFFERED=1 \
@@ -29,14 +28,7 @@ COPY requirements.txt .
 # immediate, clearly-named failure instead of a slow build that dies further
 # down in a C compiler error. If this line fails, the message names the package
 # whose pin needs fixing.
-# The default Linux PyPI torch wheel brings CUDA libraries the CPU-only EC2
-# instance cannot use. The +cpu pin selects the CPU wheel; ordinary dependencies
-# such as typing-extensions must still be resolvable from the full PyPI index.
-RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --only-binary=:all: --index-url https://pypi.org/simple \
-       --extra-index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu' \
-    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt \
-    && python3 -c "import torch; assert torch.version.cuda is None, 'CPU deployment must not contain CUDA torch'"
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 
 # BM25 tokenizer data for pinecone-text. nltk is now a declared dependency
 # rather than a transitive accident, so this can be relied on.
@@ -93,7 +85,7 @@ ENV RERANKER_ENABLED=false
 
 EXPOSE 8080
 
-# 3 workers x 12 request threads by default; see gunicorn.conf.py.
+# 3 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB).
 #
 # The worker count is a MEMORY budget, not a CPU one. Every worker imports
 # torch — via the MiniLM embeddings in rag/chain.py, which load at module scope
@@ -126,8 +118,11 @@ EXPOSE 8080
 # EBS-backed instance /tmp can stall long enough under load for the arbiter to
 # decide a busy-but-healthy worker has hung and kill it mid-answer. /dev/shm is
 # memory, so the heartbeat cannot be delayed by disk.
-ENV SC_PRODUCTION=true
-CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "4", \
+     "--worker-tmp-dir", "/dev/shm", \
+     "--max-requests", "400", "--max-requests-jitter", "50", \
+     "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
+     "run:app"]
 
 
 

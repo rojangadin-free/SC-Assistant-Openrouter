@@ -49,8 +49,7 @@ import threading
 from typing import Dict, List, Optional
 
 from rag.gaps import normalize_question
-from rag.store import JsonBlobStore, atomic_mutation
-import json
+from rag.store import JsonBlobStore
 
 
 FEEDBACK_FILE = os.getenv("ANSWER_FEEDBACK_FILE", "answer_feedback.json")
@@ -174,7 +173,6 @@ def _rebuild_topic(topic_key: str, votes: dict) -> dict:
 # PUBLIC API
 # ============================================================
 
-@atomic_mutation(_store, swallow=True)
 def record_vote(
     msg_id: str,
     verdict: str,
@@ -197,10 +195,10 @@ def record_vote(
     """
     msg_id = (msg_id or "").strip()
     verdict = (verdict or "").strip().lower()
-    if not msg_id or len(msg_id) > 128 or verdict not in VALID_VERDICTS:
+    if not msg_id or verdict not in VALID_VERDICTS:
         return None
 
-    topic_key = normalize_question((question or "")[:1000]) or "(unclassified)"
+    topic_key = normalize_question(question) or "(unclassified)"
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     try:
@@ -214,10 +212,10 @@ def record_vote(
                 "question": " ".join((question or "").split())[:200],
                 "topic_key": topic_key,
                 "answer_snippet": " ".join((answer or "").split())[:300],
-                "sources": [s[:512] for s in (sources or []) if isinstance(s, str)][:8],
+                "sources": [s for s in (sources or []) if isinstance(s, str)][:8],
                 "comment": " ".join((comment or "").split())[:300],
-                "voter": (voter or "")[:512],
-                "conv_id": (conv_id or "")[:256],
+                "voter": voter,
+                "conv_id": conv_id,
                 "at": now,
             }
 
@@ -230,13 +228,6 @@ def record_vote(
                 if key:
                     topics[key] = _rebuild_topic(key, store["votes"])
             store["topics"] = topics
-
-            while len(json.dumps(store, ensure_ascii=False).encode("utf-8")) > 320 * 1024:
-                oldest = min(store["votes"], key=lambda k: store["votes"][k].get("at", ""))
-                store["votes"].pop(oldest)
-                keys = {v.get("topic_key", "") for v in store["votes"].values()}
-                topics = {key: _rebuild_topic(key, store["votes"]) for key in keys if key}
-                store["topics"] = topics
 
             _save(store)
             return topics.get(topic_key)
@@ -334,7 +325,6 @@ def regression_questions(min_upvotes: int = 1) -> List[dict]:
     return out
 
 
-@atomic_mutation(_store)
 def delete_topic(key: str) -> bool:
     """Drop a topic and its votes (test traffic, spam)."""
     with _lock:

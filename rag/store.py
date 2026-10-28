@@ -54,27 +54,20 @@ network round-trip instead of a scan, and it preserves the "load the dict, mutat
 save the dict" pattern the callers already use, so aggregate rebuilds
 (`_rebuild_topic()`) keep working untouched.
 
-The cost is the 400 KB item limit. Writes reject oversized payloads; the feedback
-sample is additionally byte-bounded. Mutation callbacks replay after a version
-conflict, so simultaneous writers recompute against current data rather than
-overwrite another key. File mode provides process locks and atomic replacement.
-The low-level save() operation replaces a snapshot and is for fixtures/imports;
-production read-modify-write operations use mutate() or atomic_mutation().
+The cost is the 400 KB item limit and last-writer-wins between two simultaneous
+admins. Both are acceptable here: 400 KB is far beyond the row caps, and two
+admins resolving the *same* key in the same second is a coin flip either way —
+what matters is that neither of them silently loses the *other* key's decision,
+which per-item storage guarantees and a shared file does not.
 """
 
 from __future__ import annotations
 
 import datetime
-import functools
 import json
 import os
-import random
 import threading
-import time
-import uuid
-from contextlib import contextmanager
 from typing import Callable, Optional
-from rag.runtime import env_int
 
 # The switch. Read at call time rather than import time so a test can flip it.
 _BACKEND_ENV = "STORE_BACKEND"
@@ -107,13 +100,10 @@ def _table():
     with _ddb_lock:
         if _ddb_table is None:
             import boto3  # noqa: WPS433 — deliberately deferred, see above
-            from botocore.config import Config
             from config import AWS_REGION
 
             name = os.getenv(_TABLE_ENV) or _DEFAULT_TABLE
-            _ddb_table = boto3.resource("dynamodb", region_name=AWS_REGION, config=Config(
-                connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}
-            )).Table(name)
+            _ddb_table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(name)
         return _ddb_table
 
 
@@ -144,30 +134,22 @@ class JsonBlobStore:
         # Still needed in file mode, and harmless in DynamoDB mode: it keeps a
         # single process's own read-modify-write cycles serialised.
         self.lock = threading.Lock()
-        self._local = threading.local()
 
     # -- reading ----------------------------------------------------------
     def load(self) -> dict:
-        active = getattr(self._local, "data", None)
-        if active is not None:
-            return active
         if _backend() == "dynamodb":
             return self._load_ddb()
         return self._load_file()
 
-    def _load_file(self, strict=False) -> dict:
+    def _load_file(self) -> dict:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
                 if isinstance(data, dict):
                     return data
-                if strict:
-                    raise ValueError("Stored JSON must be an object")
         except FileNotFoundError:
             pass
         except Exception as e:
-            if strict:
-                raise
             # A corrupt or half-written file must not take the app down: the
             # assistant answering questions matters more than an admin's
             # bookkeeping, and returning the default degrades to "no decisions
@@ -175,19 +157,14 @@ class JsonBlobStore:
             print(f"  [store:{self.name}] could not read {self.path}: {e}")
         return self._default()
 
-    def _read_ddb(self):
-        resp = _table().get_item(Key={"store": self.name}, ConsistentRead=True)
-        item = resp.get("Item")
-        if not item:
-            return self._default(), None
-        data = json.loads(item["payload"])
-        if not isinstance(data, dict):
-            raise ValueError("Stored JSON must be an object")
-        return data, item.get("version")
-
     def _load_ddb(self) -> dict:
         try:
-            return self._read_ddb()[0]
+            resp = _table().get_item(Key={"store": self.name})
+            item = resp.get("Item")
+            if item and item.get("payload"):
+                data = json.loads(item["payload"])
+                if isinstance(data, dict):
+                    return data
         except Exception as e:
             # Same reasoning as above, one step more important: a DynamoDB
             # throttle or a dropped connection must not turn into a failed answer.
@@ -196,165 +173,46 @@ class JsonBlobStore:
 
     # -- writing ----------------------------------------------------------
     def save(self, data: dict) -> None:
-        active = getattr(self._local, "data", None)
-        if active is not None:
-            if data is not active:
-                active.clear()
-                active.update(data)
-            self._local.dirty = True
-            return
-        with self.lock:
-            data["updated_at"] = _utcnow()
-            if _backend() == "dynamodb":
-                _, version = self._read_ddb()
-                self._save_ddb(data, version)
-            else:
-                with _file_lock(self.path):
-                    self._save_file(data)
+        data["updated_at"] = _utcnow()
+        if _backend() == "dynamodb":
+            self._save_ddb(data)
+        else:
+            self._save_file(data)
 
     def _save_file(self, data: dict) -> None:
         # Write-then-rename: a crash mid-write leaves the previous good file
         # rather than a truncated one.
-        tmp = f"{self.path}.{uuid.uuid4().hex}.tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2, ensure_ascii=False)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, self.path)
-        finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+        tmp = f"{self.path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, self.path)
 
-    def _save_ddb(self, data: dict, version=None) -> None:
+    def _save_ddb(self, data: dict) -> None:
         # Stored as a JSON string rather than a native map. DynamoDB rejects empty
         # strings in some contexts, coerces numbers to Decimal, and would force
         # every caller to sanitise its dict before saving; a blob round-trips
         # byte-for-byte, which is what "the file used to work like this" requires.
-        payload = json.dumps(data, ensure_ascii=False)
-        if len(payload.encode("utf-8")) + len(self.name.encode("utf-8")) > 380 * 1024:
-            raise ValueError("Shared store exceeds its safe DynamoDB item-size budget")
-        item = {
+        _table().put_item(Item={
             "store": self.name,
-            "payload": payload,
+            "payload": json.dumps(data, ensure_ascii=False),
             "updated_at": data["updated_at"],
-            "version": int(version or 0) + 1,
-        }
-        if isinstance(data.get("expires_at"), int):
-            item["expires_at"] = data["expires_at"]
-        arguments = {
-            "Item": item,
-            "ConditionExpression": "attribute_not_exists(#version)" if version is None else "#version = :expected",
-            "ExpressionAttributeNames": {"#version": "version"},
-        }
-        if version is not None:
-            arguments["ExpressionAttributeValues"] = {":expected": version}
-        _table().put_item(**arguments)
+        })
 
     # -- convenience ------------------------------------------------------
     def mutate(self, fn: Callable[[dict], Optional[bool]]) -> dict:
         """
-        Strict read -> fn(store) -> conditional save, replaying on conflicts.
-        Callbacks must not perform network calls or other irreversible effects.
+        load -> fn(store) -> save, under this process's lock.
 
         `fn` may return False to abort the write, which is how "delete something
         that was not there" avoids an unnecessary round-trip while still being
         idempotent for the caller.
         """
-        active = getattr(self._local, "data", None)
-        if active is not None:
-            if fn(active) is not False:
-                self._local.dirty = True
-            return active
         with self.lock:
-            if _backend() != "dynamodb":
-                with _file_lock(self.path):
-                    data = self._load_file(strict=True)
-                    if self._apply(fn, data) is not False:
-                        data["updated_at"] = _utcnow()
-                        self._save_file(data)
-                    return data
-            for attempt in range(env_int("STORE_CAS_RETRIES", 20)):
-                data, version = self._read_ddb()
-                if self._apply(fn, data) is False:
-                    return data
-                data["updated_at"] = _utcnow()
-                try:
-                    self._save_ddb(data, version)
-                    return data
-                except Exception as exc:
-                    if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                        raise
-                    time.sleep(random.uniform(0, 0.005 * min(attempt + 1, 10)))
-            raise RuntimeError("Shared state is busy; please retry the update")
-
-    def _apply(self, fn, data):
-        self._local.data, self._local.dirty = data, False
-        try:
-            return fn(data)
-        finally:
-            self._local.data = None
-
-
-@contextmanager
-def _file_lock(path):
-    """Lock spans independent objects and processes, not just threads."""
-    with open(path + ".lock", "a+b") as handle:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Local shared store is busy")
-                time.sleep(0.01)
-        try:
-            yield
-        finally:
-            if os.name == "nt":
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-def atomic_mutation(store_factory, swallow=False):
-    """Replay pure domain mutations on refreshed state after CAS conflicts.
-
-    Existing load/save helpers see transaction-local data, so aggregates and
-    return values are recomputed, not merged from an obsolete snapshot.
-    """
-    def decorate(function):
-        @functools.wraps(function)
-        def wrapped(*args, **kwargs):
-            store = store_factory()
-            result = [None]
-
-            def execute(data):
-                result[0] = function(*args, **kwargs)
-                return None if store._local.dirty else False
-
-            try:
-                store.mutate(execute)
-                return result[0]
-            except Exception as exc:
-                if not swallow:
-                    raise
-                print(f"[store:{store.name}] update failed: {exc}")
-                return None
-        return wrapped
-    return decorate
+            data = self.load()
+            if fn(data) is False:
+                return data
+            self.save(data)
+            return data
 
 
 def describe_backend() -> dict:
