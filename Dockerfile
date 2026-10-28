@@ -30,8 +30,11 @@ COPY requirements.txt .
 # down in a C compiler error. If this line fails, the message names the package
 # whose pin needs fixing.
 # The default Linux PyPI torch wheel brings CUDA libraries the CPU-only EC2
-# instance cannot use. Install the same CPU wheel as CI before resolving the rest.
-RUN pip install --no-cache-dir --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 \
+# instance cannot use. The +cpu pin selects the CPU wheel; ordinary dependencies
+# such as typing-extensions must still be resolvable from the full PyPI index.
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --only-binary=:all: --index-url https://pypi.org/simple \
+       --extra-index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu' \
     && pip install --no-cache-dir --only-binary=:all: -r requirements.txt \
     && python3 -c "import torch; assert torch.version.cuda is None, 'CPU deployment must not contain CUDA torch'"
 

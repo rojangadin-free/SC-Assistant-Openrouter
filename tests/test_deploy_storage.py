@@ -116,7 +116,12 @@ class StorageTests(unittest.TestCase):
             requirements = handle.read()
         with open(".github/workflows/cicd.yaml", encoding="utf-8") as handle:
             workflow = handle.read()
-        self.assertIn("--index-url https://download.pytorch.org/whl/cpu torch==2.6.0", dockerfile)
+        for source in (dockerfile, workflow):
+            self.assertIn("--index-url https://pypi.org/simple", source)
+            self.assertIn("--extra-index-url https://download.pytorch.org/whl/cpu", source)
+            self.assertIn("'torch==2.6.0+cpu'", source)
+            self.assertNotIn("--index-url https://download.pytorch.org/whl/cpu", source)
+        self.assertIn("python3 -m pip install --no-cache-dir --upgrade pip", dockerfile)
         self.assertIn("assert torch.version.cuda is None", dockerfile)
         self.assertIn("torch==2.6.0", requirements)
         self.assertIn('LABEL sc.project="sc-assistant"', dockerfile)
