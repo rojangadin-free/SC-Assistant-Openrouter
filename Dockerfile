@@ -85,7 +85,7 @@ ENV RERANKER_ENABLED=false
 
 EXPOSE 8080
 
-# 3 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB).
+# 3 workers x 12 request threads by default; see gunicorn.conf.py.
 #
 # The worker count is a MEMORY budget, not a CPU one. Every worker imports
 # torch — via the MiniLM embeddings in rag/chain.py, which load at module scope
@@ -118,11 +118,8 @@ EXPOSE 8080
 # EBS-backed instance /tmp can stall long enough under load for the arbiter to
 # decide a busy-but-healthy worker has hung and kill it mid-answer. /dev/shm is
 # memory, so the heartbeat cannot be delayed by disk.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "4", \
-     "--worker-tmp-dir", "/dev/shm", \
-     "--max-requests", "400", "--max-requests-jitter", "50", \
-     "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
-     "run:app"]
+ENV SC_PRODUCTION=true
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
 
 
 

@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 import concurrent.futures  # 🚀 Added for parallel processing
 from datetime import datetime
 
@@ -7,7 +8,6 @@ from langchain_openai import ChatOpenAI
 from config import OPENROUTER_API_KEY, CHAT_MODEL_NAME
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
 
@@ -17,14 +17,7 @@ from pinecone_text.sparse import BM25Encoder
 
 from src.helper import get_local_embeddings
 from src.prompt import system_prompt
-# Not `from rag.reranker import ...`. That binds ONE backend at import time, and
-# the reranker is now a runtime choice (local cross-encoder vs the hosted
-# OpenRouter one) that an admin can change without a restart — see
-# rag/rerank_router.py. Importing the router's functions keeps the dispatch on
-# every call, which is the only way the switch can take effect in a process that
-# is already serving.
-from rag.rerank_router import rerank, rerank_multi
-
+from rag.reranker import rerank, rerank_multi
 from rag.conflicts import authority_block
 from rag.freshness import freshness_block, source_priority, doc_key
 
@@ -36,6 +29,8 @@ from rag.roles import resolve_role, announcement_audience, role_block
 
 from rag.language import language_variants
 from rag.dictation import dictation_variants
+from rag.spelling import correct_query, spelling_variants, misspellings
+
 from rag.latency import (
     should_optimize, pick_search_query, Deadline, Timings,
 )
@@ -43,6 +38,10 @@ from rag.latency import (
 # boundaries below rather than on a timer in the browser, so "Searching…" is
 # shown exactly while Pinecone is being searched. See rag/progress.py.
 from rag.progress import emit as emit_phase
+from rag.runtime import CapacityError, shared_pool, model_slot, retrieval_cache, query_rewrite_cache, env_float
+from rag.query_embeddings import CachedQueryEmbeddings
+from rag.index_client import TimedIndex
+from rag.artifacts import refresh_artifacts, artifact_path
 
 
 
@@ -54,19 +53,23 @@ from rag.progress import emit as emit_phase
 
 from config import (
     INDEX_NAME, CHAT_MODEL_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
-    PINECONE_API_KEY, OPENROUTER_API_KEY, AGENTROUTER_API_KEY
+    PINECONE_API_KEY, OPENROUTER_API_KEY, AGENTROUTER_API_KEY,
+    LLM_REQUEST_TIMEOUT, LLM_AUX_TIMEOUT, LLM_MAX_RETRIES,
+    LLM_MAX_TOKENS, LLM_AUX_MAX_TOKENS,
 )
 
 # Student records
 from aws.students import get_student_by_uid, get_student_by_email, format_student_context
 
 # ====== Setup ======
-embeddings = get_local_embeddings()
+embeddings = CachedQueryEmbeddings(get_local_embeddings())
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
-index = pinecone.Index(INDEX_NAME)
+index = TimedIndex(pinecone.Index(INDEX_NAME))
 
 # --- Retrievers ---
-bm25_path = "bm25_values.json"
+_retrieval_generation = refresh_artifacts()
+_retrieval_lock = threading.Lock()
+bm25_path = artifact_path("bm25_values.json")
 if os.path.exists(bm25_path):
     bm25 = BM25Encoder().load(bm25_path)
 else:
@@ -101,10 +104,30 @@ retriever = EnsembleRetriever(
     weights=[0.45, 0.55],
 )
 
+
+def _refresh_retrieval():
+    global bm25, sparse_retriever, dense_retriever, retriever, _retrieval_generation
+    generation = refresh_artifacts()
+    if generation == _retrieval_generation:
+        return
+    with _retrieval_lock:
+        if generation == _retrieval_generation:
+            return
+        encoder = BM25Encoder().load(bm25_path) if os.path.exists(bm25_path) else BM25Encoder().default()
+        sparse_retriever = PineconeHybridSearchRetriever(
+            embeddings=embeddings, sparse_encoder=encoder, index=index, alpha=0.0, top_k=RETRIEVER_TOP_K
+        )
+        dense_retriever = PineconeHybridSearchRetriever(
+            embeddings=embeddings, sparse_encoder=encoder, index=index, alpha=1.0, top_k=RETRIEVER_TOP_K
+        )
+        retriever = EnsembleRetriever(retrievers=[sparse_retriever, dense_retriever], weights=[0.45, 0.55])
+        bm25, _retrieval_generation = encoder, generation
+        retrieval_cache.clear()
+
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
 RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
-FINAL_TOP_K = 12        # documents actually sent to the LLM
+FINAL_TOP_K = 15        # documents actually sent to the LLM
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +203,29 @@ def expand_queries(query: str) -> List[str]:
             queries.append(variant)
             spoken = spoken or variant
 
+    # Typo repair, immediately after the dictation repair and for the same
+    # reason: a token that appears in no document is worth exactly zero to BM25,
+    # and every step below is blind to the difference.
+    #
+    #   "latin honir requirements"  ->  honir scores 0, the query collapses to
+    #                                   "latin ... requirements" and matches
+    #                                   admission / transfer / graduation
+    #                                   requirements equally badly
+    #   "latin honor requirements"  ->  hits the GRADUATION HONORS AND AWARDS
+    #                                   section the student was asking about
+    #
+    # Only words the indexed documents actually contain are ever produced, so
+    # this cannot invent a search term — it can only recover one the student
+    # mistyped. Additive, like the two repairs around it: their exact wording
+    # stays first and is still ranked. See rag/spelling.py.
+    corrected = ""
+    for variant in spelling_variants(query):
+        if variant not in queries:
+            queries.append(variant)
+            corrected = corrected or variant
+
     # Tagalog/Waray first, because the terms it produces are what the rest of
+
 
     # this function has to work with. "Pila an bayad?" carries no English content
     # word at all: BM25 scores it zero (the tokens are in no document) and the
@@ -203,7 +248,13 @@ def expand_queries(query: str) -> List[str]:
     # letter of "b s i t" is dropped as too short, so the original measures as
     # having NO terms at all and the paraphrase branch below has nothing to build
     # from. Both cases want the repaired/translated string, not what arrived.
-    terms = _content_terms(english or spoken or query)
+    # The spelling repair is included for the same reason, one step weaker: a
+    # mistyped word is still counted by `_content_terms()`, so it only changes
+    # WHICH words the paraphrase is built from — and building "complete list of
+    # latin honir" out of a word no document contains is a probe that cannot
+    # match anything.
+    terms = _content_terms(english or spoken or corrected or query)
+
 
 
     # Thin query -> add reformulations that bias toward enumerative passages.
@@ -368,20 +419,34 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None) -> list:
 
     def fetch(i, q):
         try:
-            return i, retriever.invoke(q)
+            with _retrieval_lock:
+                current_retriever, generation = retriever, _retrieval_generation
+            return i, retrieval_cache.get_or_compute(
+                (generation, q), lambda: current_retriever.invoke(q)
+            )
+        except CapacityError:
+            raise
         except Exception as e:
-            print(f"  Retrieval failed for '{q[:48]}...' (non-fatal): {e}")
-            return i, []
+            print(f"Document retrieval failed: {type(e).__name__}")
+            raise CapacityError("Document search is temporarily unavailable. Please try again shortly.") from e
 
-    if len(queries) == 1:
-        result_lists = [fetch(0, queries[0])[1]]
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(queries), 8)
-        ) as pool:
-            for i, docs in pool.map(lambda a: fetch(*a), list(enumerate(queries))):
-                result_lists[i] = docs
-        result_lists = [r for r in result_lists if r]
+    futures = []
+    try:
+        for i, q in enumerate(queries):
+            futures.append(shared_pool("retrieval").submit(fetch, i, q))
+    except CapacityError:
+        for future in futures:
+            future.cancel()
+        raise
+    _, pending = concurrent.futures.wait(futures, timeout=env_float("RAG_RETRIEVAL_TIMEOUT", 40, 1))
+    if pending:
+        for future in pending:
+            future.cancel()
+        raise CapacityError("Document retrieval is busy. Please try again shortly.")
+    for future in futures:
+        i, docs = future.result()
+        result_lists[i] = docs
+    result_lists = [r for r in result_lists if r]
 
 
     merged = []
@@ -517,6 +582,8 @@ def retrieve_documents(
         )
         if verbose:
             print(f"  RRF + expansion returned {len(initial_docs)} candidates")
+    except CapacityError:
+        raise
     except Exception as e:
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
@@ -554,29 +621,15 @@ def retrieve_documents(
         # of the two you are looking at: an unexplained column of `score=n/a`
         # reads like missing data, and the real cause (no model in the local
         # cache — see download_model.py) is nowhere near this log.
-        #
-        # Asked of the ROUTER, not of one backend: with two rerankers the honest
-        # question is "did anything rank this, and which one" — reading
-        # rag.reranker here would report the local model as off while the API
-        # backend had just ranked the list, which is the most confusing possible
-        # log line to leave for whoever is debugging the toggle.
-        from rag.rerank_router import (
-            last_used as _rr_used,
-            unavailable_reason as _rr_reason,
-        )
+        from rag.reranker import available as _rr_available, unavailable_reason as _rr_reason
 
-        _backend = _rr_used()
-        if _backend:
-            print(
-                f"\n=== STEP 2: Reranked ({_backend}) to top {len(final_docs)} ==="
-            )
+        if _rr_available():
+            print(f"\n=== STEP 2: Reranked to top {len(final_docs)} ===")
         else:
             print(
-                f"\n=== STEP 2: NOT reranked — no reranker available "
-                f"({_rr_reason()}); keeping retrieval order, "
-                f"top {len(final_docs)} ==="
+                f"\n=== STEP 2: NOT reranked — reranker off ({_rr_reason()}); "
+                f"keeping retrieval order, top {len(final_docs)} ==="
             )
-
         for i, doc in enumerate(final_docs):
             src = doc.metadata.get("source", "Unknown")
             pg = doc.metadata.get("page", "?")
@@ -611,8 +664,9 @@ primary_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=10,
-    max_retries=2
+    timeout=LLM_REQUEST_TIMEOUT,
+    max_retries=LLM_MAX_RETRIES,
+    max_tokens=LLM_MAX_TOKENS,
 )
 
 fallback_model = ChatOpenAI(
@@ -630,14 +684,20 @@ fallback_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=10,
-    max_retries=2
+    timeout=LLM_REQUEST_TIMEOUT,
+    max_retries=LLM_MAX_RETRIES,
+    max_tokens=LLM_MAX_TOKENS,
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
 
 
 def stream_answer(messages):
+    with model_slot("stream"):
+        yield from _stream_answer(messages)
+
+
+def _stream_answer(messages):
     """
     Stream the answer, trying each provider in turn.
 
@@ -656,7 +716,8 @@ def stream_answer(messages):
     text, restarting on another model would duplicate or contradict the half
     sentence already on screen, which is worse than the error we are fixing.
 
-    Yields text chunks. Raises only if EVERY provider failed at the first token.
+    Partial text remains visible, but failures and token truncation are not
+    committed as completed conversations. Fallback is only before any text.
     """
     attempts = [("primary", primary_model), ("fallback", fallback_model)]
     last_error = None
@@ -665,6 +726,8 @@ def stream_answer(messages):
         produced = False
         try:
             for chunk in model.stream(messages):
+                if getattr(chunk, "response_metadata", {}).get("finish_reason") == "length":
+                    raise RuntimeError("The answer reached its token limit; please ask a narrower question.")
                 text = chunk.content
                 if not text:
                     continue
@@ -678,7 +741,9 @@ def stream_answer(messages):
                     continue
                 produced = True
                 yield text
-            return  # finished cleanly
+            if produced:
+                return
+            raise RuntimeError("The model returned no answer text.")
         except Exception as e:
             last_error = e
             if produced:
@@ -686,7 +751,7 @@ def stream_answer(messages):
                 # swapping models now would splice two different answers
                 # together. Stop and let the caller keep what arrived.
                 print(f"  [{label}] failed mid-stream, keeping partial answer: {e}")
-                return
+                raise
             print(f"  [{label}] refused before the first token, trying next: {e}")
 
     raise last_error if last_error else RuntimeError("No model produced a response.")
@@ -701,9 +766,26 @@ summarizer = ChatOpenAI(
     extra_body={
         "reasoning": {"enabled": False}
     },
-    timeout=10,
-    max_retries=2
+    timeout=LLM_AUX_TIMEOUT,
+    max_retries=LLM_MAX_RETRIES,
+    max_tokens=LLM_AUX_MAX_TOKENS,
 )
+
+
+def _invoke_aux(messages):
+    with model_slot("aux"):
+        return summarizer.invoke(messages)
+
+
+def _query_rewrite(messages, use_cache=False):
+    compute = lambda: _invoke_aux(messages).content
+    if not use_cache:
+        return compute()
+    # Only first-turn prompts: no history, student record, image or personal answer.
+    key = tuple((message["role"], message["content"]) for message in messages)
+    return query_rewrite_cache.get_or_compute(key, compute)
+
+
 
 # ====== Chat State ======
 class ChatState(TypedDict):
@@ -807,12 +889,13 @@ def docs_to_context(docs) -> str:
 def summarize_history(history: List[Dict[str, str]]) -> str:
     if not history:
         return ""
-    transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+    transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history[-18:]])[-16000:]
     prompt = [
         {"role": "system", "content": "Summarize the conversation to retain key context."},
         {"role": "user",   "content": transcript},
     ]
-    return summarizer.invoke(prompt).content
+    with model_slot("aux", queue_timeout=0):
+        return summarizer.invoke(prompt).content
 
 
 def safe_prompt(template: str, **kwargs) -> str:
@@ -828,7 +911,15 @@ def create_graph():
 
     def call_llm(state: ChatState, config=None):
         try:
+            _refresh_retrieval()
             user_text  = state["input"]
+            # Use one repaired question for optimization, retrieval, ranking,
+            # and generation. An extra probe alone leaves the typo in control
+            # of the candidate order and answer intent. Do not mutate state.
+            corrected = correct_query(user_text)
+            if corrected:
+                print(f"  Spelling repair: {user_text!r} -> {corrected!r}")
+                user_text = corrected
             image_data = state.get("image_data")
             history    = state.get("chat_history", [])
             uid        = state.get("uid")
@@ -859,7 +950,7 @@ def create_graph():
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
                 ])
                 try:
-                    desc = summarizer.invoke([vision_msg]).content
+                    desc = _invoke_aux([vision_msg]).content
                     print(f"Image Analysis: {desc}")
                     return desc
                 except Exception as e:
@@ -887,7 +978,7 @@ def create_graph():
                             )
                         
                         # Full context if consent is enabled
-                        print(f"  Student record fetched: {student.get('full_name')} | balance: PHP {student.get('balance', 'N/A')}")
+                        print("  Student record fetched for this request.")
                         return format_student_context(student)
                     else:
                         print("  No student record found for this user.")
@@ -908,6 +999,29 @@ def create_graph():
                 try:
 
                     recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
+
+                    # What the local repair already worked out, handed to the
+                    # model as a hint rather than applied twice.
+                    #
+                    # "latin honir requirements" is the reason the rule below
+                    # exists: rule 1 alone kept a typo verbatim, because
+                    # preserving the student's wording is normally exactly right.
+                    # For a misspelling it is the one case where it is wrong —
+                    # `honir` matches no document at all, so an "optimized"
+                    # query that repeats it optimizes nothing. The pairs come
+                    # from rag/spelling.py, which only ever suggests words the
+                    # indexed documents contain, so the model is being shown
+                    # evidence instead of being asked to guess.
+                    repairs = misspellings(user_text)
+                    spelling_note = (
+                        "\nLIKELY MISSPELLINGS (already checked against the "
+                        "indexed documents; apply them unless the context says "
+                        "otherwise): "
+                        + ", ".join(f"'{typed}' -> '{meant}'"
+                                    for typed, meant in repairs)
+                        if repairs else ""
+                    )
+
                     context_prompt = [
                         {
                             "role": "system", 
@@ -915,13 +1029,15 @@ def create_graph():
                                 "You are a search query optimizer. Understand the user's intent and the provided context first. Formulate the best search query for RAG that uses sparse and dense retrieval. If you cannot understand the user's intent, return the user's original query.\n"
                                 "CRITICAL SEARCH RULES: \n"
                                 "1. CONTEXT AWARENESS: Only check chat history if the user asks and it is not a complete question.\n"
+                                "2. SPELLING: Fix obvious misspellings of school, academic and program terms so the query uses the words a handbook would use (e.g. 'honir' -> 'honor', 'enrolmnet' -> 'enrollment', 'requirments' -> 'requirements'). Keep correctly spelled words, acronyms and proper nouns exactly as typed.\n"
                                 "3. Do NOT answer the question, just output the optimized search query."
                             )
                         },
-                        {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}"}
+                        {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}{spelling_note}"}
                     ]
+
                     
-                    summary_resp = summarizer.invoke(context_prompt).content
+                    summary_resp = _query_rewrite(context_prompt, use_cache=not history)
                     
                     if isinstance(summary_resp, list):
                         summary_resp = "".join([
@@ -945,10 +1061,11 @@ def create_graph():
             # back in front of retrieval — exactly the wait this change removes.
             # The pool is shut down without waiting instead, and the rewrite is
             # collected later (or abandoned) by the callback below.
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+            executor = shared_pool("preparation")
+            future_query = None
             try:
-                future_img     = executor.submit(task_image_analysis)
-                future_student = executor.submit(task_student_fetch)
+                future_img = executor.submit(task_image_analysis) if image_data else None
+                future_student = executor.submit(task_student_fetch) if uid else None
 
                 # The rewrite is only worth waiting for when the question cannot
                 # be searched as typed — a follow-up, or too thin. For a
@@ -956,9 +1073,13 @@ def create_graph():
                 # and the literal words retrieve the same documents. The decision
                 # lives in rag/latency.py so it is testable without a network.
                 wants_rewrite = should_optimize(user_text, history)
-                future_query = (
-                    executor.submit(task_query_optimization) if wants_rewrite else None
-                )
+                try:
+                    future_query = (
+                        executor.submit(task_query_optimization, queue_timeout=0)
+                        if wants_rewrite else None
+                    )
+                except CapacityError:
+                    future_query = None
 
                 # Only claimed when the rewrite is genuinely running. On the
                 # skip path this phase does not exist, and showing it anyway
@@ -973,8 +1094,15 @@ def create_graph():
                 # allowed to say, so proceeding without them would produce a
                 # different (wrong) answer rather than a slower one. Only the
                 # rewrite is optional, because it only affects recall.
-                image_description = future_img.result()
-                student_context   = future_student.result()
+                preparation_timeout = env_float("RAG_PREPARATION_TIMEOUT", 30, 1)
+                required = [f for f in (future_img, future_student) if f is not None]
+                _, pending = concurrent.futures.wait(required, timeout=preparation_timeout)
+                if pending:
+                    for future in pending:
+                        future.cancel()
+                    raise CapacityError("The assistant is busy preparing this answer. Please retry shortly.")
+                image_description = future_img.result() if future_img else None
+                student_context = future_student.result() if future_student else ""
 
                 if future_query is None:
                     timings.note("optimizer", "skipped")
@@ -1035,7 +1163,8 @@ def create_graph():
                 # Non-blocking: a rewrite still in flight is allowed to finish on
                 # its own thread and be discarded. Joining here would reintroduce
                 # the wait for a result nobody is going to read.
-                executor.shutdown(wait=False)
+                if future_query is not None:
+                    future_query.cancel()
 
             # Retrieval is done; everything from here to the answer call is
             # prompt assembly — verified facts, document dates, calendar,
@@ -1193,6 +1322,8 @@ def create_graph():
                 "citations": build_citations(final_docs),
             }
 
+        except CapacityError:
+            raise
         except Exception as e:
             import traceback
             print(f"[chain] Unhandled error: {traceback.format_exc()}")
@@ -1206,6 +1337,7 @@ def create_graph():
     graph.add_node("llm", call_llm)
     graph.set_entry_point("llm")
     graph.add_edge("llm", END)
-    return graph.compile(checkpointer=InMemorySaver())
+    # History is explicitly supplied from shared storage, never worker-local RAM.
+    return graph.compile()
 
 app_graph = create_graph()

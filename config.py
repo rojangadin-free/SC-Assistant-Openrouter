@@ -3,13 +3,14 @@ from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+from rag.runtime import env_int, env_float
 
 # AWS Configuration
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID")
 COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
 COGNITO_CLIENT_SECRET = os.getenv("COGNITO_CLIENT_SECRET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
-S3_BUCKET_NAME = "sc-assistant-bucket2"
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "sc-assistant-bucket2")
 
 # Vector Store Configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -51,7 +52,7 @@ os.environ["STORE_TABLE_NAME"] = STORE_TABLE_NAME
 # pay the full thinking-phase latency before the first visible token — the "stuck in
 # generating response" symptom. It is kept as a fallback so content-blocked requests
 # still have a second attempt.
-CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
+CHAT_MODEL_NAME = os.getenv("CHAT_MODEL_NAME", "z-ai/glm-5.3-flash")
 
 # The fallback must be reachable through a DIFFERENT provider than the primary.
 # AgentRouter fronts requests with a content filter that rejects some perfectly
@@ -60,9 +61,16 @@ CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
 # that rejected the first attempt, so the student sees "Streaming interrupted."
 # with no answer at all. This model is served by OpenRouter, so a provider-side
 # block on one is not a block on the other.
-FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
+FALLBACK_MODEL_NAME = os.getenv("FALLBACK_MODEL_NAME", "deepseek/deepseek-v4-flash-vision-exp")
 
-SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it"
+SUMMARIZER_MODEL_NAME = os.getenv("SUMMARIZER_MODEL_NAME", "google/gemma-3-27b-it")
+
+LLM_REQUEST_TIMEOUT = env_float("LLM_REQUEST_TIMEOUT", 30, 1)
+LLM_AUX_TIMEOUT = env_float("LLM_AUX_TIMEOUT", 20, 1)
+LLM_MAX_RETRIES = env_int("LLM_MAX_RETRIES", 1, 0)
+LLM_MAX_TOKENS = env_int("LLM_MAX_TOKENS", 3072)
+LLM_AUX_MAX_TOKENS = env_int("LLM_AUX_MAX_TOKENS", 2048)
+MAX_CONTENT_LENGTH = env_int("MAX_CONTENT_LENGTH", 64 * 1024 * 1024)
 
 
 if not PINECONE_API_KEY:

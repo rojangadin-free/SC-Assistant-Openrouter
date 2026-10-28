@@ -15,6 +15,8 @@ env vars that redirect storage must be set before their module imports.
     test_announcements.py  live window + audience + prompt block  (unit)
     test_language.py       Taglish/Waray -> English search terms  (unit)
     test_dictation.py      spoken "b s i t" -> a searchable query (unit)
+    test_spelling.py       "latin honir" -> a term the corpus has (unit)
+
     test_roles.py          who is asking -> which side of a process (unit)
     test_freshness.py      document dates + which source is newer (unit)
     test_doc_priority.py   which document supersedes which, by date (unit)
@@ -67,6 +69,11 @@ SUITES = [
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
     ("Storage backend (file/DynamoDB)",  "test_store.py"),
+    ("Shared-state concurrency and guest expiry", "test_storage_scaling.py"),
+    ("Durable indexing and shared artifacts", "test_jobs_artifacts.py"),
+    ("Deployment configuration and readiness", "test_deployment.py"),
+    ("SSE load-test tooling (fake HTTP)", "test_loadtest_chat.py"),
+    ("Chat shared-history and timeout integration", "test_chat_scaling.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
     ("Calendar awareness (dates)",      "test_calendar.py"),
@@ -76,8 +83,13 @@ SUITES = [
     # sees it, and both are additive for input that needs no repair. A failure in
     # one is usually the same mistake as a failure in the other.
     ("Dictated query repair (voice)",   "test_dictation.py"),
+    # Third of the same family, and last because it is the one that can also
+    # make a question SLOWER: a typo now makes `should_optimize()` wait for the
+    # rewrite, so a false positive here costs a round-trip as well as a probe.
+    ("Misspelled query repair (typos)", "test_spelling.py"),
 
     # Who is asking. Sits next to the announcements suite because it owns the
+
     # audience mapping those notices are filtered by.
     ("Role-aware answers (asker)",      "test_roles.py"),
     # Which of two contradicting documents is current. Runs before the API
@@ -106,6 +118,7 @@ SUITES = [
     # happens, which is why unbounded concurrent scoring on a 2-vCPU box was
     # invisible until it was deployed. See docs/CAPACITY.md.
     ("Reranker concurrency (load)",      "test_capacity.py"),
+    ("Bounded runtime and retrieval caches", "test_runtime.py"),
 
 
     # Last of the query-path unit suites, and deliberately after them: it decides

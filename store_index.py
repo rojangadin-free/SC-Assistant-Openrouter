@@ -53,7 +53,10 @@ PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set in environment.")
 
-BM25_VALUES_FILE = "bm25_values.json"
+from rag.artifacts import artifact_path, refresh_artifacts, publish_artifacts
+from rag.index_client import TimedIndex
+import hashlib
+BM25_VALUES_FILE = artifact_path("bm25_values.json")
 
 
 # ============================================================
@@ -986,14 +989,50 @@ def _record_effective_date(filename: str, docs: List[Document]) -> None:
         logger.warning(f"  {filename}: could not record an effective date: {e}")
 
 
+def _learn_spelling_terms(chunks: List[Document]) -> None:
+    """
+    Teach the query spell checker the words this document actually uses.
+
+    `rag/spelling.py` repairs a mistyped question ("latin honir requirements")
+    by mapping the unknown token onto a word THE CORPUS CONTAINS — which means
+    it needs the corpus vocabulary, and `bm25_values.json` cannot provide it:
+    pinecone-text stores hashed token ids, not the tokens. So the vocabulary is
+    collected here, from the chunk text that is about to be indexed, which makes
+    it correct by construction: the checker learns a word at exactly the moment
+    that word becomes searchable.
+
+    Chunks, not raw pages, on purpose — an OCR'd scan only has text at this
+    point in the pipeline, and those pages carry precisely the terms most likely
+    to be mistyped (program names, Latin honors, local proper nouns).
+
+    Never fatal. A vocabulary that fails to update costs some typo tolerance on
+    future questions; raising here would cost the indexed document.
+    """
+    if not chunks:
+        return
+    try:
+        from rag.spelling import learn_terms
+
+        sources = {}
+        for document in chunks:
+            sources.setdefault(document.metadata.get("source", "corpus"), []).append(document.page_content)
+        for source, texts in sources.items():
+            known = learn_terms(texts, source=source)
+        logger.info(f"  Spelling vocabulary now knows {known:,} terms")
+    except Exception as e:
+        logger.warning(f"  Spelling vocabulary not updated (non-fatal): {e}")
+
+
 def build_index(
 
     data_path: str = "data/",
+
     index_name: str = "rag-database-2026",
     embeddings=None,
 ):
     if embeddings is None:
         raise ValueError("Embeddings required")
+    refresh_artifacts(force=True, strict=True)
         
     dim = get_embedding_dimension(embeddings)
     pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -1037,9 +1076,15 @@ def build_index(
     bm25.fit([d.page_content for d in final_chunks])
     bm25.dump(BM25_VALUES_FILE)
     logger.info(f"BM25 saved to {BM25_VALUES_FILE}")
-    
+
+    # Right after BM25, because they answer two halves of the same question:
+    # BM25 learns how to WEIGH the corpus vocabulary, this learns what that
+    # vocabulary IS — which is what lets a mistyped question be repaired into a
+    # term BM25 can actually score. See rag/spelling.py.
+
+
     logger.info(f"Upserting {len(final_chunks)} chunks...")
-    index = pc.Index(index_name)
+    index = TimedIndex(pc.Index(index_name))
     retriever = PineconeHybridSearchRetriever(
         embeddings=embeddings,
         sparse_encoder=bm25,
@@ -1052,6 +1097,9 @@ def build_index(
             metadatas=[d.metadata for d in batch],
         )
     logger.info("Index build complete.")
+    _learn_spelling_terms(final_chunks)
+    publish_artifacts({"bm25_values.json": BM25_VALUES_FILE,
+                       "spell_vocab.json": artifact_path("spell_vocab.json")})
 
 
 def append_file_to_index(
@@ -1060,6 +1108,7 @@ def append_file_to_index(
     real_name: Optional[str] = None,
     embeddings=None,
     progress: Optional[Callable[[str, int, int], None]] = None,
+    publish_shared: bool = True,
 ) -> int:
     """
     Index one file, optionally reporting progress as it goes.
@@ -1073,12 +1122,15 @@ def append_file_to_index(
     """
     if embeddings is None:
         raise ValueError("Embeddings required")
+    from rag.jobs import LeaseLost
 
     def _tick(phase: str, done: int = 0, total: int = 0) -> None:
         if not progress:
             return
         try:
             progress(phase, done, total)
+        except LeaseLost:
+            raise
         except Exception as e:
             # Progress reporting must never be able to fail an upload. A broken
             # status write is a cosmetic problem; losing an indexed document
@@ -1122,14 +1174,24 @@ def append_file_to_index(
     # is what the date patterns were written against. After chunking the front
     # matter has been split, stitched and re-headed, and "Effective August 2025"
     # can end up in a different chunk from the words that qualify it.
-    _record_effective_date(filename, raw_docs)
 
     _tick("chunking")
     final_chunks = _chunk_and_dedup(raw_docs)
 
+    # An uploaded document's vocabulary matters more than the seeded corpus's:
+    # it is the NEW policy, so its terms are the ones students will be asking
+    # about — and mistyping — first. See rag/spelling.py.
+
     if final_chunks:
 
-        index = pc.Index(index_name)
+
+        index = TimedIndex(pc.Index(index_name), before_write=lambda: _tick("indexing", completed_batches, total_batches))
+        # Replacement starts only after extraction succeeds. Stable source IDs
+        # and recovery retries remove partial/obsolete passages for this file.
+        total_batches = (len(final_chunks) + 99) // 100
+        completed_batches = 0
+        _tick("indexing", 0, total_batches)
+        index.delete(filter={"source": filename})
         retriever = PineconeHybridSearchRetriever(
             embeddings=embeddings,
             sparse_encoder=bm25,
@@ -1138,15 +1200,25 @@ def append_file_to_index(
         # Counted in batches rather than chunks: `add_texts` embeds and upserts a
         # whole batch as one unit, so a batch is the smallest point at which
         # progress can truthfully be said to have moved.
-        total_batches = (len(final_chunks) + 99) // 100
-        _tick("indexing", 0, total_batches)
         for batch_no, batch in enumerate(batched(final_chunks, 100), start=1):
+            _tick("indexing", batch_no - 1, total_batches)
             retriever.add_texts(
                 [d.page_content for d in batch],
                 metadatas=[d.metadata for d in batch],
+                ids=[hashlib.sha256((filename + "\n" + d.page_content).encode("utf-8")).hexdigest() for d in batch],
             )
             _tick("indexing", batch_no, total_batches)
+            completed_batches = batch_no
 
+    if final_chunks:
+        _tick("storing")
+        _record_effective_date(filename, raw_docs)
+        _learn_spelling_terms(final_chunks)
+    if publish_shared and final_chunks:
+        paths = {"spell_vocab.json": artifact_path("spell_vocab.json")}
+        if os.path.exists(BM25_VALUES_FILE):
+            paths["bm25_values.json"] = BM25_VALUES_FILE
+        publish_artifacts(paths)
     logger.info(f"Appended {len(final_chunks)} chunks from {filename}")
     return len(final_chunks)
 

@@ -34,6 +34,7 @@ none of which shows a symptom until the app is behind a proxy.
 """
 
 import pathlib
+import ast
 import re
 import sys
 
@@ -68,8 +69,8 @@ client = read("sc_assistant/static/js/chat.js")
 
 # -- 1. captions are streamed WHILE the pipeline runs ----------------------
 check(
-    "the pipeline runs on a worker thread",
-    "threading.Thread(" in server and "app_graph.invoke(input_payload" in server,
+    "the pipeline runs on a bounded shared worker pool",
+    'shared_pool("pipeline").submit' in server and "app_graph.invoke(input_payload" in server,
 )
 check(
     "the generator polls for captions while the pipeline runs",
@@ -77,12 +78,10 @@ check(
 )
 check(
     "captions are drained inside that loop, not only after the answer",
-    bool(
-        re.search(
-            r"while not \w+\.wait\([^)]*\):\s*\n\s*for event in progress\.drain\(\)",
-            server,
-        )
-    ),
+    any(isinstance(node, ast.While) and "not finished.wait(" in ast.unparse(node.test)
+        and any(isinstance(child, ast.For) and ast.unparse(child.iter) == "progress.drain()"
+                for child in ast.walk(node))
+        for node in ast.walk(ast.parse(server))),
 )
 check(
     "a failure on the worker thread still reaches the browser as an error event",

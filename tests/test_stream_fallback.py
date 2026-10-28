@@ -40,6 +40,8 @@ import _bootstrap  # noqa: F401
 import os
 import sys
 import types
+import ast
+from rag.runtime import model_slot
 
 # (The old `sys.path.insert(dirname(__file__))` here is gone: it added the repo
 #  root only while this file lived in the repo root. _bootstrap above does it
@@ -101,37 +103,17 @@ def make_model(chunks=(), fail_at=None, error="content-blocked"):
     return types.SimpleNamespace(stream=stream)
 
 
+with open("rag/chain.py", encoding="utf-8") as source:
+    tree = ast.parse(source.read())
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+         and node.name in {"stream_answer", "_stream_answer"}]
+stream_code = compile(ast.Module(body=nodes, type_ignores=[]), "rag/chain.py", "exec")
+
+
 def stream_answer(messages, primary, fallback):
-    """Verbatim copy of rag.chain.stream_answer, with the models injected."""
-    attempts = [("primary", primary), ("fallback", fallback)]
-    last_error = None
-
-    for label, model in attempts:
-        produced = False
-        try:
-            for chunk in model.stream(messages):
-                text = chunk.content
-                if not text:
-                    continue
-                if isinstance(text, list):
-                    text = "".join(
-                        block.get("text", "")
-                        for block in text
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    )
-                if not text:
-                    continue
-                produced = True
-                yield text
-            return
-        except Exception as e:
-            last_error = e
-            if produced:
-                print(f"  [{label}] failed mid-stream, keeping partial answer: {e}")
-                return
-            print(f"  [{label}] refused before the first token, trying next: {e}")
-
-    raise last_error if last_error else RuntimeError("No model produced a response.")
+    namespace = {"primary_model": primary, "fallback_model": fallback, "model_slot": model_slot}
+    exec(stream_code, namespace)
+    yield from namespace["stream_answer"](messages)
 
 
 # ============================================================
@@ -169,11 +151,17 @@ section("3. A mid-stream failure keeps what arrived")
 primary = make_model(["Latin honors are ", "awarded to graduates ", "who..."], fail_at=2)
 fallback = make_model(["A COMPLETELY DIFFERENT ANSWER"])
 
-out = list(stream_answer([], primary, fallback))
+out = []
+interrupted = None
+try:
+    out.extend(stream_answer([], primary, fallback))
+except RuntimeError as error:
+    interrupted = error
 check("the partial answer is preserved",
       "".join(out) == "Latin honors are awarded to graduates ", out)
 check("the fallback did NOT restart the answer",
-      "DIFFERENT" not in "".join(out), out)
+       "DIFFERENT" not in "".join(out), out)
+check("the route learns that the partial answer must not be saved as complete", interrupted is not None)
 
 
 # ============================================================
@@ -218,12 +206,24 @@ section("6. A provider that returns nothing at all")
 # for an empty answer itself and tells the student to rephrase, instead of saving
 # a blank assistant turn into the conversation.
 out = list(stream_answer([], make_model([]), make_model(["fallback text"])))
-check("an empty primary is treated as success, not failure", out == [], out)
-check("so the route is the one that must notice", "".join(out).strip() == "")
+check("an empty primary tries the fallback", out == ["fallback text"], out)
+check("a completed answer is never blank", bool("".join(out).strip()))
+
+last = _Chunk("")
+last.response_metadata = {"finish_reason": "length"}
+out = []
+truncated = None
+try:
+    out.extend(stream_answer([], types.SimpleNamespace(stream=lambda _: iter([_Chunk("Partial answer"), last])),
+                             make_model(["must not restart"])))
+except RuntimeError as error:
+    truncated = error
+check("a token-limited answer keeps its visible text", out == ["Partial answer"])
+check("token truncation is surfaced rather than saved as complete", truncated is not None)
 
 
 # ============================================================
-section("7. The two providers are actually different gateways")
+section("7. Model fallback remains distinct, not independent account capacity")
 # ============================================================
 # The configuration half of the fix. If both models resolve to the same host, the
 # retry is filtered by the same rule that rejected the first attempt and this
@@ -236,7 +236,7 @@ check("primary and fallback are different models",
 # An OpenRouter model name is vendor-qualified ("deepseek/deepseek-chat-v3.1"),
 # an AgentRouter one is bare ("deepseek-v4-flash"). That is the cheapest reliable
 # signal that the fallback is not on the gateway that just refused us.
-check("the fallback is vendor-qualified, i.e. served elsewhere",
+check("the fallback is a vendor-qualified OpenRouter model",
       "/" in config.FALLBACK_MODEL_NAME, config.FALLBACK_MODEL_NAME)
 
 

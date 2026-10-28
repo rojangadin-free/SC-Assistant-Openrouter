@@ -8,7 +8,8 @@ from config import S3_BUCKET_NAME, AWS_REGION
 s3_client = boto3.client(
     's3',
     region_name=AWS_REGION,
-    config=Config(signature_version='s3v4')
+    config=Config(signature_version='s3v4', connect_timeout=3, read_timeout=20,
+                  retries={'max_attempts': 2}, max_pool_connections=32)
 )
 
 def upload_file_to_s3(file_path, object_name):
@@ -54,7 +55,6 @@ def delete_file_from_s3(object_name):
     return True
 
 def get_s3_presigned_url(object_name, for_download=False, expiration=3600):
-    s3_client = boto3.client('s3') # Add your credentials/region as needed
     
     # 1. Guess the file type (e.g., 'application/pdf' for PDFs)
     content_type, _ = mimetypes.guess_type(object_name)

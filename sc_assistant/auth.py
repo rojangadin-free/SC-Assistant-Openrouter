@@ -8,9 +8,18 @@ from aws.cognito import (
     get_user_role_from_claims, cognito_client
 )
 from .utils import is_admin
+from rag.guest_history import guest_history
 
 # Create a Blueprint
 bp = Blueprint('auth', __name__)
+
+
+def _clear_guest():
+    if (session.get("is_guest") or session.get("user") == "guest") and session.get("session_id"):
+        try:
+            guest_history.clear(session["session_id"])
+        except Exception:
+            pass  # Logical expiry still protects an unavailable shared store.
 
 @bp.route("/auth")
 def auth_page():
@@ -19,7 +28,7 @@ def auth_page():
     
     # Only redirect if they have an active session AND they are not a guest
     if user and not is_guest:
-        return redirect(url_for("chat.index"))
+        return redirect(url_for("chat.chat_page"))
         
     return render_template("auth.html")
 
@@ -58,10 +67,12 @@ def signup():
             # choice for their current session even if this call fails.
             pass
 
+        _clear_guest()
+        session.clear()
         session.update({
             "user": email, "uid": result.get("user_sub"),
             "username": username, "role": "user",
-            "data_consent": data_consent
+            "data_consent": data_consent, "is_guest": False, "start_new_chat": True
         })
         return jsonify({"success": True, "redirect": url_for("chat.chat_page")})
     return jsonify(result)
@@ -93,6 +104,8 @@ def login():
         # username in the email slot and break the student record lookup.
         email = claims.get("email") or identifier
         
+        _clear_guest()
+        session.clear()
         session.update({
             "user": email,
             "uid": claims["sub"],
@@ -113,6 +126,7 @@ def login():
 @bp.route("/guest", methods=["POST"])
 def guest_login():
     """Allow unenrolled visitors to use the general inquiry chatbot without an account."""
+    _clear_guest()
     session.clear()
     session["user"] = "guest"
     session["uid"] = None
@@ -141,5 +155,6 @@ def handle_reset_password():
 
 @bp.route("/logout")
 def logout():
+    _clear_guest()
     session.clear()
     return redirect(url_for("auth.auth_page"))

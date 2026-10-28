@@ -47,10 +47,16 @@ from __future__ import annotations
 import datetime
 import os
 import threading
+import time
 import uuid
 from typing import Callable, Dict, List, Optional
 
 from rag.store import JsonBlobStore
+from rag.runtime import CapacityError, env_int
+
+
+class LeaseLost(RuntimeError):
+    pass
 
 JOBS_FILE = os.getenv("INDEX_JOBS_FILE", "index_jobs.json")
 
@@ -169,6 +175,10 @@ def _settle(job: dict) -> dict:
     job is dead is when someone asks about it, and a background reaper would be
     one more thing to run and get wrong.
     """
+    if job.get("durable"):
+        if job.get("status") == "running" and job.get("lease_until", 0) <= time.time():
+            job["status"] = "queued"
+        return job
     if job.get("status") != "running":
         return job
     if _age_seconds(job.get("updated_at") or job.get("created_at") or "") <= STALE_AFTER_SECONDS:
@@ -191,7 +201,7 @@ def _settle(job: dict) -> dict:
 # WRITING
 # ============================================================
 
-def create_job(filenames: List[str]) -> str:
+def create_job(filenames: List[str], *, staged=None, uid=None) -> str:
     """Register a job in `queued` before any worker thread starts."""
     job_id = uuid.uuid4().hex[:12]
     now = _utcnow()
@@ -199,7 +209,7 @@ def create_job(filenames: List[str]) -> str:
         "job_id": job_id,
         "created_at": now,
         "updated_at": now,
-        "status": "running",
+        "status": "queued" if staged is not None else "running",
         "error": "",
         "files": [
             {
@@ -214,26 +224,97 @@ def create_job(filenames: List[str]) -> str:
             for name in filenames
         ],
     }
+    if staged is not None:
+        job.update(durable=True, staged=staged, uid=uid, attempts=0, lease_owner="", lease_until=0)
 
     def _add(data: dict) -> None:
         jobs = data.setdefault("jobs", {})
         jobs[job_id] = job
-        # Prune oldest first so the store cannot grow without bound.
-        if len(jobs) > MAX_JOBS:
-            for stale_id, _ in sorted(
-                jobs.items(), key=lambda kv: kv[1].get("created_at") or ""
-            )[: len(jobs) - MAX_JOBS]:
+        for stale_id, item in sorted(jobs.items(), key=lambda kv: kv[1].get("created_at") or ""):
+            if len(jobs) <= MAX_JOBS:
+                break
+            if item.get("status") in ("done", "error") and not item.get("staged"):
                 jobs.pop(stale_id, None)
+        if len(jobs) > MAX_JOBS:
+            raise CapacityError("The indexing queue is full. Please retry later.")
 
     _store().mutate(_add)
     return job_id
 
 
-def _mutate_file(job_id: str, filename: str, apply: Callable[[dict], None]) -> None:
+def _check_owner(job, owner):
+    if job.get("durable") and (job.get("status") != "running" or not owner
+                              or job.get("lease_owner") != owner or job.get("lease_until", 0) <= time.time()):
+        raise LeaseLost("Indexing lease expired or belongs to another worker")
+
+
+def claim_next(owner):
+    selected = [None]
+
+    def claim(data):
+        now = time.time()
+        selected[0] = None
+        entries = data.get("jobs") or {}
+        if any(j.get("durable") and j.get("status") == "running" and j.get("lease_until", 0) > now for j in entries.values()):
+            return False
+        for job in sorted(entries.values(), key=lambda j: j.get("created_at", "")):
+            if not job.get("durable") or job.get("status") not in ("queued", "running"):
+                continue
+            if job.get("attempts", 0) >= env_int("INDEX_JOB_MAX_ATTEMPTS", 3):
+                message = "Indexing was repeatedly interrupted; please upload again."
+                job.update(status="error", error=message, lease_owner="", lease_until=0, updated_at=_utcnow())
+                for file in job.get("files", []):
+                    if file.get("status") not in ("done", "error"):
+                        file.update(percent=_file_percent(file), status="error", phase="error", error=message)
+                continue
+            job.update(status="running", lease_owner=owner,
+                       lease_until=now + env_int("INDEX_JOB_LEASE_SECONDS", 120, 30),
+                       attempts=job.get("attempts", 0) + 1, updated_at=_utcnow())
+            selected[0] = dict(job)
+            return None
+        return None if any(j.get("status") == "error" and j.get("staged") for j in entries.values()) else False
+    _store().mutate(claim)
+    return selected[0]
+
+
+def heartbeat(job_id, owner):
+    def renew(data):
+        job = data["jobs"][job_id]
+        _check_owner(job, owner)
+        job["lease_until"] = time.time() + env_int("INDEX_JOB_LEASE_SECONDS", 120, 30)
+        job["updated_at"] = _utcnow()
+    _store().mutate(renew)
+
+
+def release(job_id, owner):
+    def relinquish(data):
+        job = (data.get("jobs") or {}).get(job_id)
+        if not job or job.get("lease_owner") != owner:
+            return False
+        job.update(status="queued", lease_owner="", lease_until=0)
+    _store().mutate(relinquish)
+
+
+def terminal_staging():
+    return [dict(job) for job in (_store().load().get("jobs") or {}).values()
+            if job.get("status") in ("done", "error") and job.get("staged")]
+
+
+def staging_cleaned(job_id):
+    def clean(data):
+        job = (data.get("jobs") or {}).get(job_id)
+        if not job or job.get("status") not in ("done", "error"):
+            return False
+        job.pop("staged", None)
+    _store().mutate(clean)
+
+
+def _mutate_file(job_id: str, filename: str, apply: Callable[[dict], None], owner=None) -> None:
     def _fn(data: dict):
         job = (data.get("jobs") or {}).get(job_id)
         if not job:
             return False
+        _check_owner(job, owner)
         for f in job.get("files") or []:
             if f.get("filename") == filename:
                 apply(f)
@@ -248,7 +329,7 @@ def _mutate_file(job_id: str, filename: str, apply: Callable[[dict], None]) -> N
 
 def set_phase(job_id: str, filename: str, phase: str,
               *, units_done: Optional[int] = None,
-              units_total: Optional[int] = None) -> None:
+              units_total: Optional[int] = None, owner=None) -> None:
     """
     Move a file into a phase, optionally with the counter that drives its bar.
 
@@ -264,10 +345,10 @@ def set_phase(job_id: str, filename: str, phase: str,
         f["units_total"] = units_total
         f["percent"] = _file_percent(f)
 
-    _mutate_file(job_id, filename, _apply)
+    _mutate_file(job_id, filename, _apply, owner)
 
 
-def finish_file(job_id: str, filename: str, chunks: int) -> None:
+def finish_file(job_id: str, filename: str, chunks: int, owner=None) -> None:
     def _apply(f: dict) -> None:
         f["status"] = "done"
         f["phase"] = "done"
@@ -276,20 +357,20 @@ def finish_file(job_id: str, filename: str, chunks: int) -> None:
         f["chunks"] = int(chunks)
         f["percent"] = 100
 
-    _mutate_file(job_id, filename, _apply)
+    _mutate_file(job_id, filename, _apply, owner)
 
 
-def fail_file(job_id: str, filename: str, message: str) -> None:
+def fail_file(job_id: str, filename: str, message: str, owner=None) -> None:
     def _apply(f: dict) -> None:
         f["percent"] = _file_percent(f)   # freeze the bar where it actually got to
         f["status"] = "error"
         f["phase"] = "error"
         f["error"] = str(message)[:500]
 
-    _mutate_file(job_id, filename, _apply)
+    _mutate_file(job_id, filename, _apply, owner)
 
 
-def finish_job(job_id: str) -> None:
+def finish_job(job_id: str, owner=None) -> None:
     """
     Close the job, deriving its status from its files.
 
@@ -301,7 +382,10 @@ def finish_job(job_id: str) -> None:
         job = (data.get("jobs") or {}).get(job_id)
         if not job:
             return False
+        _check_owner(job, owner)
         files = job.get("files") or []
+        if any(f.get("status") not in ("done", "error") for f in files):
+            raise ValueError("Cannot complete a job with unfinished files")
         failed = [f for f in files if f.get("status") == "error"]
         job["status"] = "error" if failed else "done"
         if failed:
@@ -309,17 +393,19 @@ def finish_job(job_id: str) -> None:
                 f"{f.get('filename')}: {f.get('error') or 'failed'}" for f in failed
             )[:1000]
         job["updated_at"] = _utcnow()
+        job["lease_owner"], job["lease_until"] = "", 0
         return None
 
     _store().mutate(_fn)
 
 
-def fail_job(job_id: str, message: str) -> None:
+def fail_job(job_id: str, message: str, owner=None) -> None:
     """For a failure outside any single file (bad job, thread died on setup)."""
     def _fn(data: dict):
         job = (data.get("jobs") or {}).get(job_id)
         if not job:
             return False
+        _check_owner(job, owner)
         job["status"] = "error"
         job["error"] = str(message)[:1000]
         job["updated_at"] = _utcnow()

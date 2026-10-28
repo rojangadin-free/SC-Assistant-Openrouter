@@ -49,7 +49,7 @@ import threading
 import datetime
 from typing import Dict, List, Optional
 
-from rag.store import JsonBlobStore
+from rag.store import JsonBlobStore, atomic_mutation
 
 GAPS_FILE = os.getenv("CONTENT_GAPS_FILE", "content_gaps.json")
 
@@ -337,6 +337,7 @@ def _prune(gaps: dict) -> dict:
 # PUBLIC API
 # ============================================================
 
+@atomic_mutation(_store, swallow=True)
 def record_gap(
     question: str,
     *,
@@ -437,6 +438,7 @@ def gap_stats() -> dict:
     }
 
 
+@atomic_mutation(_store)
 def set_gap_status(key: str, status: str, *, resolved_by: str = "", note: str = "") -> Optional[dict]:
     """Mark a topic resolved (document uploaded) or reopen it."""
     if status not in ("open", "resolved"):
@@ -460,6 +462,7 @@ def set_gap_status(key: str, status: str, *, resolved_by: str = "", note: str = 
         return entry
 
 
+@atomic_mutation(_store)
 def delete_gap(key: str) -> bool:
     """Remove a topic entirely (e.g. spam or a test question)."""
     with _lock:

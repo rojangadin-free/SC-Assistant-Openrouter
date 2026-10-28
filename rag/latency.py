@@ -51,6 +51,14 @@ import re
 import time
 from typing import Dict, List, Optional
 
+# A word that exists in no document cannot be searched for. That is a retrieval
+# fact, not a spelling opinion, which is why the decision below consults it:
+# "latin honir requirements" measures as a perfectly searchable three-term
+# question by every rule in this file, and retrieves the wrong pages because its
+# most important token scores zero in BM25. See rag/spelling.py.
+from rag.spelling import has_misspelling
+
+
 # Words that carry no search signal. Same intent as `_STOPWORDS` in rag/chain.py
 # and duplicated on purpose: importing chain.py constructs the Pinecone index and
 # loads the embedding model at module scope, which would make a unit test of this
@@ -146,6 +154,9 @@ def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> b
 
     The rule, in the order it is applied:
 
+      0. A word no document contains -> wait, with or without history. The
+                                question is not searchable AS TYPED no matter
+                                how many terms it has. See below.
       1. No history          -> nothing to resolve a reference against, so the
                                 rewrite has no information the question lacks.
                                 Skip, UNLESS the question is too thin to search.
@@ -168,11 +179,32 @@ def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> b
 
     terms = _content_terms(q)
 
+    # (0) A misspelled term, checked BEFORE the history rule, because it is the
+    # one signal that does not depend on there being a previous turn.
+    #
+    # "latin honir requirements" was the question that added this branch. It has
+    # three content words, no pronouns and no follow-up marker, so every rule
+    # below reads it as self-contained and skips the rewrite — and then BM25
+    # scores `honir` at zero (no document contains it), the dense encoder embeds
+    # a nonsense token, and the search collapses to "latin ... requirements",
+    # which fits admission, transfer and graduation requirements equally badly.
+    # The student sees a confidently wrong answer.
+    #
+    # Counting terms measures how MUCH the question carries. This measures
+    # whether those terms exist in the corpus at all, which is a different
+    # question and the one that decides whether the literal words can be
+    # searched. rag/chain.py also adds a corrected retrieval probe locally, so
+    # this is not the only defence — it is the one that lets the LLM see the
+    # question in context and fix a typo the edit-distance repair declined.
+    if has_misspelling(q):
+        return True
+
     # (1) First turn. There is no previous topic to inherit, so the only thing a
     # rewrite can add is bulk — and `expand_queries()` already does that for
     # thin queries without a network call.
     if not history:
         return len(terms) < THIN_QUERY_TERMS
+
 
     lowered = q.lower()
 

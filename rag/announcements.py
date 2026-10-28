@@ -315,6 +315,7 @@ def delete_announcement(key: str) -> bool:
     removed = {"ok": False}
 
     def _apply(data: dict):
+        removed["ok"] = False
         items = data.get("announcements", [])
         keep = [a for a in items if a.get("key") != key]
         if len(keep) == len(items):
@@ -338,6 +339,7 @@ def set_active(key: str, active: bool) -> Optional[dict]:
     found = {}
 
     def _apply(data: dict):
+        found.clear()
         for a in data.get("announcements", []):
             if a.get("key") == key:
                 a["active"] = bool(active)

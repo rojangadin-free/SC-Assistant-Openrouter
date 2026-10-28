@@ -2,9 +2,13 @@ import boto3
 import datetime
 import uuid
 from boto3.dynamodb.conditions import Key
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from config import AWS_REGION
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION, config=Config(
+    connect_timeout=3, read_timeout=10, retries={"max_attempts": 2}, max_pool_connections=32
+))
 files_table         = dynamodb.Table("Files")
 conversations_table = dynamodb.Table("Conversations")
 reports_table       = dynamodb.Table("SCAssistantReports")
@@ -24,19 +28,35 @@ def save_file_metadata(filename, uid):
 # ── Conversations ────────────────────────────────────────────
 
 def upsert_conversation(uid, conv_id, history, created_at):
-    """Creates or updates a conversation in DynamoDB."""
+    """Atomically append a completed turn, without replacing another worker's turn."""
     if not history:
         return
     title = next((m["content"][:40] for m in history if m["role"] == "user"), "Untitled Chat")
-    item = {
-        "conv_id":    conv_id,
-        "uid":        uid,
-        "messages":   history,
-        "title":      title,
-        "created_at": created_at,
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
-    }
-    conversations_table.put_item(Item=item)
+    message_id = history[-1].get("msg_id")
+    if not message_id:
+        raise ValueError("A completed assistant turn requires a stable message ID")
+    try:
+        conversations_table.update_item(
+            Key={"conv_id": conv_id, "uid": uid},
+            UpdateExpression=(
+                "SET #messages = list_append(if_not_exists(#messages, :empty), :turn), "
+                "title = if_not_exists(title, :title), "
+                "created_at = if_not_exists(created_at, :created), updated_at = :now "
+                "ADD #turn_ids :turn_ids"
+            ),
+            ConditionExpression="attribute_not_exists(#turn_ids) OR NOT contains(#turn_ids, :message_id)",
+            ExpressionAttributeNames={"#messages": "messages", "#turn_ids": "turn_ids"},
+            ExpressionAttributeValues={
+                ":empty": [], ":turn": history, ":title": title, ":created": created_at,
+                ":now": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ":message_id": message_id, ":turn_ids": {message_id},
+            },
+        )
+    except ClientError as exc:
+        # A timed-out successful UpdateItem may be retried by the SDK. Its
+        # stable turn ID prevents a second append without losing other turns.
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def list_conversations(uid):
@@ -46,13 +66,25 @@ def list_conversations(uid):
         KeyConditionExpression=Key("uid").eq(uid),
         ScanIndexForward=False
     )
-    return resp.get("Items", [])
+    items = resp.get("Items", [])
+    while resp.get("LastEvaluatedKey"):
+        resp = conversations_table.query(
+            IndexName="uid-index", KeyConditionExpression=Key("uid").eq(uid),
+            ScanIndexForward=False, ExclusiveStartKey=resp["LastEvaluatedKey"],
+        )
+        items.extend(resp.get("Items", []))
+    for item in items:
+        item.pop("turn_ids", None)
+    return items
 
 
 def get_conversation(uid, conv_id):
     """Retrieves a specific conversation from DynamoDB."""
-    resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid})
-    return resp.get("Item")
+    resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid}, ConsistentRead=True)
+    item = resp.get("Item")
+    if item:
+        item.pop("turn_ids", None)
+    return item
 
 
 def delete_conversation_from_db(uid, conv_id):

@@ -51,7 +51,7 @@ import threading
 import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from rag.store import JsonBlobStore
+from rag.store import JsonBlobStore, atomic_mutation
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +527,7 @@ def list_resolutions() -> Dict[str, dict]:
 
 
 
+@atomic_mutation(_store)
 def set_resolution(
     key: str,
     person_display: str,
@@ -563,6 +564,7 @@ def set_resolution(
     return entry
 
 
+@atomic_mutation(_store)
 def delete_resolution(key: str) -> bool:
     with _store_lock:
         store = _load_store()

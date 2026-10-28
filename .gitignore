@@ -16,6 +16,10 @@ escalations.json.tmp
 # that finished on someone else's machine.
 index_jobs.json
 index_jobs.json.tmp
+retrieval_artifacts.json
+*.json.lock
+*.json.refresh.lock
+*.json.*.tmp
 
 # Admin-entered academic-calendar periods (real dates differ per deployment,
 
@@ -36,6 +40,15 @@ announcements.json.tmp
 # inferred date from the documents themselves.
 doc_freshness.json
 doc_freshness.json.tmp
+
+# Corpus vocabulary for the query spell checker (rag/spelling.py). A build
+# artefact of whichever documents THIS deployment indexed, exactly like
+# bm25_values.json — a committed copy would claim words for a corpus the next
+# deployment does not have, and it is cheap to rebuild:
+#   python tools/build_spell_vocab.py
+spell_vocab.json
+spell_vocab.json.tmp
+
 
 
 
