@@ -15,8 +15,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.image.outputs.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,15 +46,16 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
       - name: Build and publish immutable image
-        id: image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           REPOSITORY: ${{ secrets.ECR_REPO }}
         run: |
+          : "${REGISTRY:?ECR login did not return a registry}"
+          : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
+          : "${GITHUB_SHA:?Missing commit SHA}"
           IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: build
@@ -69,9 +68,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_DEFAULT_REGION || secrets.AWS_REGION }}
       - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
       - name: Readiness-gated, memory-aware rollout
         env:
-          IMAGE: ${{ needs.build.outputs.image }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPO }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION || secrets.AWS_DEFAULT_REGION }}
@@ -88,6 +89,11 @@ jobs:
           S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'sc-assistant-bucket2' }}
           RERANKER_ENABLED: 'false'
         run: |
+          # Reconstruct locally: GitHub can discard secret-containing job outputs.
+          : "${REGISTRY:?ECR login did not return a registry}"
+          : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
+          : "${GITHUB_SHA:?Missing commit SHA}"
+          IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
           ENV_FILE="$(mktemp "$RUNNER_TEMP/sc-assistant-env.XXXXXX")"
           export ENV_FILE
           trap 'rm -f "$ENV_FILE"' EXIT

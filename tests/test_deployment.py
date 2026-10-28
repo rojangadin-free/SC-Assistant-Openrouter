@@ -65,6 +65,22 @@ class DeploymentTests(unittest.TestCase):
                 patch.dict(sys.modules, {"config": fake}):
             self.assertFalse(readiness.probe())
 
+    def test_image_reference_does_not_cross_secret_filtered_job_outputs(self):
+        with open(".github/workflows/cicd.yaml", encoding="utf-8") as handle:
+            workflow = handle.read()
+        build, deploy = workflow.split("\n  deploy:\n", 1)
+        for job in (build, deploy):
+            self.assertIn("id: ecr", job)
+            self.assertIn("REGISTRY: ${{ steps.ecr.outputs.registry }}", job)
+            self.assertIn("REPOSITORY: ${{ secrets.ECR_REPO }}", job)
+            self.assertIn('IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"', job)
+            self.assertIn('${REPOSITORY:?Set the ECR_REPO GitHub secret}', job)
+        self.assertNotIn("needs.build.outputs.image", workflow)
+        self.assertNotIn("$GITHUB_OUTPUT", workflow)
+        self.assertIn("needs: build", deploy)
+        self.assertLess(deploy.index('IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"'),
+                        deploy.index('bash tools/deploy.sh --apply "$IMAGE" "$ENV_FILE"'))
+
 
 if __name__ == "__main__":
     unittest.main()
