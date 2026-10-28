@@ -72,6 +72,7 @@ SUITES = [
     ("Shared-state concurrency and guest expiry", "test_storage_scaling.py"),
     ("Durable indexing and shared artifacts", "test_jobs_artifacts.py"),
     ("Deployment configuration and readiness", "test_deployment.py"),
+    ("Deployment disk and image-retention safety", "test_deploy_storage.py"),
     ("SSE load-test tooling (fake HTTP)", "test_loadtest_chat.py"),
     ("Chat shared-history and timeout integration", "test_chat_scaling.py"),
     ("Content-gap storage & detection", "test_gaps.py"),

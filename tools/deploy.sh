@@ -40,7 +40,10 @@ running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || tru
 owned() { [[ "$(docker inspect -f '{{index .Config.Labels "sc.project"}}' "$1" 2>/dev/null || true)" == sc-assistant ]]; }
 stop_candidate() { if (( candidate_started )); then docker stop -t 150 "$candidate" >/dev/null 2>&1; fi; }
 write_proxy() {
-    python3 "$root/tools/proxy_config.py" "$1" > "$state/proxy/next.conf"
+    if ! python3 "$root/tools/proxy_config.py" "$1" > "$state/proxy/next.conf"; then
+        rm -f "$state/proxy/next.conf"
+        return 1
+    fi
     mv "$state/proxy/next.conf" "$state/proxy/nginx.conf"
 }
 ready() {
@@ -100,15 +103,18 @@ for name in "$proxy" "$indexer" "$candidate"; do
     fi
 done
 if [[ -n "$old" ]] && ! owned "$old"; then echo 'Active backend is not project-owned'; exit 1; fi
-trap restore ERR
-docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
+# Pull/preflight failures must not enter rollback: no service has changed yet.
+# Keep every image referenced by any container, including the rollback backend.
+python3 "$root/tools/deploy_storage.py" --image "$image" --apply
 docker pull "$image"
 docker pull "$proxy_image"
+docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
 if [[ -z "$old" ]] && running "$legacy"; then
     legacy_image="$(docker inspect -f '{{.Config.Image}}' "$legacy")"
     [[ "${legacy_image%:*}" == "${image%:*}" ]] || { echo 'Legacy name belongs to another image; refusing to stop it'; exit 1; }
     docker exec "$legacy" python -c "import config; from rag import jobs; import sys; active=[j for j in jobs._store().load().get('jobs',{}).values() if j.get('status')=='running' and jobs._age_seconds(j.get('updated_at',''))<jobs.STALE_AFTER_SECONDS]; sys.exit(bool(active))" || { echo 'Wait for legacy uploads to finish before migration'; exit 1; }
 fi
+trap restore ERR
 if running "$indexer"; then
     owned "$indexer" || { echo 'Indexer name is not project-owned'; exit 1; }
     docker stop -t 90 "$indexer" >/dev/null
@@ -124,6 +130,7 @@ rm -f "$runtime"/ready-*
 printf '1\n' > "$runtime/workers"
 docker run -d --name "$candidate" --label sc.project=sc-assistant --restart unless-stopped \
     --network "$network" --memory "${SC_WEB_MEMORY:-5g}" --env-file "$env_file" \
+    --log-driver local --log-opt max-size=10m --log-opt max-file=3 \
     -e GUNICORN_WORKERS="$target" -e GUNICORN_WORKERS_FILE=/run/sc-assistant/workers \
     -v "$runtime:/run/sc-assistant" "$image" >/dev/null
 candidate_started=1
@@ -141,6 +148,7 @@ else
     if docker inspect "$proxy" >/dev/null 2>&1; then owned "$proxy" && docker rm "$proxy" >/dev/null; fi
     docker run -d --name "$proxy" --label sc.project=sc-assistant --restart unless-stopped \
         --network "$network" -p 8080:8080 -v "$state/proxy:/etc/nginx/sc:ro" \
+        --log-driver local --log-opt max-size=10m --log-opt max-file=3 \
         "$proxy_image" nginx -c /etc/nginx/sc/nginx.conf -g 'daemon off;' >/dev/null
 fi
 switched=1
@@ -167,6 +175,7 @@ if docker inspect "$indexer" >/dev/null 2>&1; then
 fi
 docker run -d --name "$indexer" --label sc.project=sc-assistant --restart unless-stopped \
     --network "$network" --memory "${SC_INDEX_MEMORY:-2g}" --cpus "${SC_INDEX_CPUS:-1}" \
+    --log-driver local --log-opt max-size=10m --log-opt max-file=3 \
     --env-file "$env_file" "$image" python tools/index_worker.py >/dev/null
 sleep 1
 running "$indexer"

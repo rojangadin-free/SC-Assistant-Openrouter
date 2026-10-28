@@ -11,6 +11,7 @@
 # The real fix is in requirements.txt: every C-extension package is pinned to a
 # version with a cp310 manylinux wheel, so nothing needs a compiler at all.
 FROM python:3.10-slim-bookworm
+LABEL sc.project="sc-assistant"
 
 # Unbuffered output, or the first crash in the container logs nothing useful.
 ENV PYTHONUNBUFFERED=1 \
@@ -28,7 +29,11 @@ COPY requirements.txt .
 # immediate, clearly-named failure instead of a slow build that dies further
 # down in a C compiler error. If this line fails, the message names the package
 # whose pin needs fixing.
-RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
+# The default Linux PyPI torch wheel brings CUDA libraries the CPU-only EC2
+# instance cannot use. Install the same CPU wheel as CI before resolving the rest.
+RUN pip install --no-cache-dir --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 \
+    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt \
+    && python3 -c "import torch; assert torch.version.cuda is None, 'CPU deployment must not contain CUDA torch'"
 
 # BM25 tokenizer data for pinecone-text. nltk is now a declared dependency
 # rather than a transitive accident, so this can be relied on.

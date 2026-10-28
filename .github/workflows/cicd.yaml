@@ -45,7 +45,8 @@ jobs:
           aws-region: ${{ secrets.AWS_DEFAULT_REGION || secrets.AWS_REGION }}
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
-      - name: Build and publish immutable image
+      - uses: docker/setup-buildx-action@v3
+      - name: Validate immutable image reference
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           REPOSITORY: ${{ secrets.ECR_REPO }}
@@ -54,8 +55,16 @@ jobs:
           : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
           : "${GITHUB_SHA:?Missing commit SHA}"
           IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          printf 'SC_BUILD_IMAGE=%s\n' "$IMAGE" >> "$GITHUB_ENV"
+      - name: Build and publish immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.SC_BUILD_IMAGE }}
+          cache-from: type=gha,scope=sc-assistant-runtime
+          cache-to: type=gha,scope=sc-assistant-runtime,mode=max,ignore-error=true
+          labels: org.opencontainers.image.revision=${{ github.sha }}
 
   deploy:
     needs: build
@@ -88,12 +97,14 @@ jobs:
           STORE_TABLE_NAME: ${{ vars.STORE_TABLE_NAME || 'SCAssistantStores' }}
           S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'sc-assistant-bucket2' }}
           RERANKER_ENABLED: 'false'
+          SC_DEPLOY_MIN_DISK_MB: ${{ vars.SC_DEPLOY_MIN_DISK_MB || '6144' }}
         run: |
           # Reconstruct locally: GitHub can discard secret-containing job outputs.
           : "${REGISTRY:?ECR login did not return a registry}"
           : "${REPOSITORY:?Set the ECR_REPO GitHub secret}"
           : "${GITHUB_SHA:?Missing commit SHA}"
           IMAGE="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
+          python3 tools/deploy_storage.py --image "$IMAGE" --apply
           ENV_FILE="$(mktemp "$RUNNER_TEMP/sc-assistant-env.XXXXXX")"
           export ENV_FILE
           trap 'rm -f "$ENV_FILE"' EXIT

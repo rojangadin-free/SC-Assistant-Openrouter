@@ -90,6 +90,44 @@ The GitHub workflow runs offline tests, publishes an image tagged with the commi
 SHA, then calls `tools/deploy.sh`. It no longer stops every container or prunes
 other services' images, volumes, networks or system files.
 
+The runtime image installs CPU-only PyTorch, matching CI, and asserts that CUDA
+was not pulled in by dependency resolution. Hosted builds reuse dependency/model
+layers via BuildKit's GitHub Actions cache. New containers use bounded local
+Docker logs (10 MB per file, three files); existing containers keep their prior
+logging settings until recreated.
+
+Before downloading an image, `tools/deploy_storage.py --apply` removes only
+unreferenced images belonging exclusively to this app's repository, or untagged
+images labelled `sc.project=sc-assistant`. Every running or stopped container's
+image is protected, including rollback containers. Shared tags and unknown
+untagged images are retained. Removal is by image ID without force; it never
+stops/removes containers, prunes volumes or deletes raw Docker/containerd files.
+
+The preflight then checks both Docker and `/var/lib/containerd` filesystem free
+space and inode availability. The default reserve is 6144 MiB per filesystem,
+configurable with the `SC_DEPLOY_MIN_DISK_MB` GitHub variable. This is headroom,
+not an exact prediction of extraction size. Larger images can need more. Set
+`SC_CONTAINERD_ROOT` on the runner if containerd uses another data directory.
+Preflight/pull failures exit before any service changes or proxy rewrites.
+
+On the EC2 host, inspect disk pressure without deleting anything:
+
+```bash
+df -h / /var/lib/docker /var/lib/containerd
+df -i / /var/lib/docker /var/lib/containerd
+docker system df
+```
+
+With the updated checkout, preview eligible cleanup using
+`python3 tools/deploy_storage.py --image REGISTRY/REPOSITORY:TAG`; adding `--apply`
+performs the scoped cleanup and enforces headroom. Do not blindly run a global
+prune or delete `/var/lib/containerd`. If protected images or failed-ingest data
+still leave insufficient space, expand the backing EBS volume and then its actual
+partition/filesystem (check `lsblk -f` first). Volume expansion changes AWS cost
+and is not performed by the workflow. Keep capacity for the live image, rollback,
+and a new image being downloaded/unpacked simultaneously. Merely re-running a
+failed pull on a full filesystem does not solve the capacity problem.
+
 The single-host rollout uses a stable streaming-aware Nginx proxy on port 8080:
 
 1. Stop the old index worker gracefully to release memory.
