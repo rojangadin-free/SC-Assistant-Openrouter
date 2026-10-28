@@ -5,10 +5,20 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 
 def docker(*args):
     return subprocess.run(["docker", *args], check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+
+
+def docker_error(error):
+    # Inspection stdout can contain image environment values. Report stderr
+    # only, rather than dumping the inspected document or hiding the engine error.
+    message = error.stderr or "Docker exited with status " + str(error.returncode)
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="replace")
+    return " ".join(message.split())[:1000]
 
 
 def repository(reference):
@@ -22,20 +32,42 @@ def protected_images():
     ids = docker("container", "ls", "--all", "--quiet").splitlines()
     protected = set()
     for container_id in ids:
-        # Include stopped containers: one is the rollback backend. Only read the
-        # image ID, never a container's environment or credentials.
-        protected.add(docker("container", "inspect", "--format", "{{.Image}}", container_id))
+        # An OCI index ID can differ from the container's platform image ID.
+        # Protect its original reference too, without reading environment values.
+        template = '{{.Image}}{{with .Config}}\n{{.Image}}{{end}}'
+        protected.update(docker("container", "inspect", "--format", template, container_id).splitlines())
+    protected.discard("")
     return protected
 
 
 def images():
     result = []
     for image_id in sorted(set(docker("image", "ls", "--all", "--quiet", "--no-trunc").splitlines())):
-        template = '{{json .Id}}\t{{json .RepoTags}}\t{{json .RepoDigests}}\t{{json .Config.Labels}}\t{{json .Size}}'
-        identity, tags, digests, labels, size = [json.loads(value) for value in
-            docker("image", "inspect", "--format", template, image_id).split("\t")]
-        result.append({"id": identity, "tags": tags or [], "digests": digests or [],
-                       "labels": labels or {}, "size": size})
+        try:
+            # OCI indexes/attestations may have no Config. Parse the API's JSON
+            # instead of dereferencing .Config.Labels in a fragile Go template.
+            # Never print this payload; retain only ownership metadata.
+            records = json.loads(docker("image", "inspect", image_id))
+            if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+                raise ValueError("Unexpected image metadata shape")
+            record = records[0]
+            config = record.get("Config") or {}
+            if not isinstance(config, dict):
+                raise ValueError("Invalid image configuration metadata")
+            identity = record.get("Id")
+            tags, digests = record.get("RepoTags") or [], record.get("RepoDigests") or []
+            labels = config.get("Labels") or {}
+            if (not isinstance(identity, str) or not identity
+                    or not isinstance(tags, list) or not isinstance(digests, list)
+                    or not all(isinstance(ref, str) and ref for ref in tags + digests)
+                    or not isinstance(labels, dict)):
+                raise ValueError("Incomplete image ownership metadata")
+            result.append({"id": identity, "tags": tags, "digests": digests,
+                           "labels": labels, "size": record.get("Size") or 0})
+        except subprocess.CalledProcessError as error:
+            print(f"Preserving uninspectable image {image_id}: {docker_error(error)}", file=sys.stderr)
+        except ValueError:
+            print(f"Preserving image {image_id}: invalid inspection metadata", file=sys.stderr)
     return result
 
 
@@ -44,7 +76,7 @@ def cleanup_candidates(items, protected, target):
     candidates = []
     for item in items:
         refs = item["tags"] + item["digests"]
-        if item["id"] in protected or target in refs:
+        if item["id"] in protected or protected.intersection(refs) or target in refs:
             continue
         if refs:
             # An image tagged by another project is not exclusively ours, even
@@ -92,14 +124,14 @@ def main(argv=None):
                       "note": "Active and stopped-container images are protected; shared layers may limit reclaimed space."}))
     if args.apply:
         for item in candidates:
-            if item["id"] in protected_images():
+            if not cleanup_candidates([item], protected_images(), args.image):
                 continue
             try:
                 # No --force: Docker also refuses deletion if a container or
                 # multiple tags now reference the image. No raw storage deletion.
                 docker("image", "rm", item["id"])
-            except subprocess.CalledProcessError:
-                print("Image remains referenced or unavailable; preserved: " + item["id"])
+            except subprocess.CalledProcessError as error:
+                print(f"Image preserved {item['id']}: {docker_error(error)}", file=sys.stderr)
     report = filesystem_report(args.min_free_mb)
     print(json.dumps({"storage": report}, indent=2))
     if args.apply and not all(row["sufficient"] for row in report):
@@ -111,4 +143,11 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except subprocess.CalledProcessError as error:
+        print("Docker storage preflight failed: " + docker_error(error), file=sys.stderr)
+        raise SystemExit(1)
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f"Storage preflight failed: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -3,8 +3,11 @@
 import _bootstrap  # noqa: F401
 import contextlib
 import io
+import json
 import os
+import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -40,10 +43,98 @@ class StorageTests(unittest.TestCase):
         def docker(*args):
             if args == ("container", "ls", "--all", "--quiet"):
                 return "running\nstopped"
-            self.assertEqual(args[:4], ("container", "inspect", "--format", "{{.Image}}"))
-            return {"running": "active-image", "stopped": "rollback-image"}[args[-1]]
+            self.assertEqual(args[:3], ("container", "inspect", "--format"))
+            self.assertEqual(args[3], '{{.Image}}{{with .Config}}\n{{.Image}}{{end}}')
+            return {"running": "active-image\n" + REPOSITORY + ":active",
+                    "stopped": "rollback-image\n" + REPOSITORY + ":rollback"}[args[-1]]
         with patch.object(storage, "docker", side_effect=docker):
-            self.assertEqual(storage.protected_images(), {"active-image", "rollback-image"})
+            self.assertEqual(storage.protected_images(), {"active-image", "rollback-image",
+                             REPOSITORY + ":active", REPOSITORY + ":rollback"})
+
+    def test_oci_parent_reference_protects_different_platform_image_id(self):
+        parent = image("parent-index", [REPOSITORY + ":rollback"])
+        self.assertEqual(storage.cleanup_candidates([parent],
+                         {"child-platform-id", REPOSITORY + ":rollback"}, TARGET), [])
+
+    def test_inspection_parses_null_and_missing_configs_without_a_go_template(self):
+        records = {
+            "index": {"Id": "index", "Config": None, "RepoTags": [REPOSITORY + ":old"], "RepoDigests": None},
+            "attestation": {"Id": "attestation", "RepoTags": None, "RepoDigests": None},
+            "normal": {"Id": "normal", "Config": {"Labels": {"sc.project": "sc-assistant"},
+                                                      "Env": ["SECRET=do-not-log"]}, "Size": 1024},
+        }
+
+        def docker(*args):
+            if args[:2] == ("image", "ls"):
+                return "\n".join(records)
+            self.assertEqual(args[:2], ("image", "inspect"))
+            self.assertNotIn("--format", args)
+            return json.dumps([records[args[-1]]])
+
+        with patch.object(storage, "docker", side_effect=docker), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            found = storage.images()
+        self.assertEqual(len(found), 3)
+        self.assertEqual(next(row for row in found if row["id"] == "index")["labels"], {})
+        self.assertNotIn("SECRET", output.getvalue() + errors.getvalue() + repr(found))
+        eligible = storage.cleanup_candidates(found, set(), TARGET)
+        self.assertEqual({row["id"] for row in eligible}, {"index", "normal"})
+
+    def test_uninspectable_image_is_preserved_and_engine_error_is_visible(self):
+        def docker(*args):
+            if args[:2] == ("image", "ls"):
+                return "missing\ngood"
+            if args[-1] == "missing":
+                raise subprocess.CalledProcessError(1, ["docker"], output="SECRET=never-print",
+                                                    stderr="Error response from daemon: content digest not found")
+            return json.dumps([{"Id": "good", "RepoTags": [REPOSITORY + ":old"]}])
+        with patch.object(storage, "docker", side_effect=docker), \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            found = storage.images()
+        self.assertEqual([row["id"] for row in found], ["good"])
+        self.assertIn("content digest not found", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_malformed_ownership_metadata_is_never_a_cleanup_candidate(self):
+        malformed = ({"Id": "bad", "RepoTags": REPOSITORY + ":old"},
+                     {"Id": "bad", "Config": {"Labels": "not-an-object"}},
+                     {"RepoTags": [REPOSITORY + ":old"]})
+        for record in malformed:
+            with patch.object(storage, "docker", side_effect=["bad", json.dumps([record])]), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(storage.images(), [])
+
+    def test_container_inventory_failure_still_blocks_deletion(self):
+        error = subprocess.CalledProcessError(1, ["docker"], stderr="Cannot connect to the Docker daemon")
+        with patch.object(storage, "images", return_value=[image("old", [REPOSITORY + ":old"])]), \
+                patch.object(storage, "protected_images", side_effect=error), \
+                patch.object(storage, "docker") as docker:
+            with self.assertRaises(subprocess.CalledProcessError):
+                storage.main(["--image", TARGET, "--apply"])
+        docker.assert_not_called()
+
+    def test_skipping_uninspectable_images_does_not_skip_disk_check(self):
+        error = subprocess.CalledProcessError(1, ["docker"], stderr="No such image")
+        with patch.object(storage, "docker", side_effect=["uninspectable", error]) as docker, \
+                patch.object(storage, "protected_images", return_value=set()), \
+                patch.object(storage, "filesystem_report", return_value=[{"sufficient": False}]) as report, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(storage.main(["--image", TARGET, "--apply"]), 2)
+        report.assert_called_once()
+        self.assertTrue(all(call.args[:2] != ("image", "rm") for call in docker.call_args_list))
+
+    def test_command_line_reports_engine_stderr_without_dumping_stdout(self):
+        error = subprocess.CalledProcessError(1, ["docker"], output="SECRET=never-print",
+                                              stderr="Cannot connect to the Docker daemon")
+        with patch.object(sys, "argv", ["deploy_storage.py", "--image", TARGET, "--apply"]), \
+                patch.object(subprocess, "run", side_effect=error), \
+                contextlib.redirect_stderr(io.StringIO()) as output, self.assertRaises(SystemExit) as raised:
+            runpy.run_path("tools/deploy_storage.py", run_name="__main__")
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("Cannot connect to the Docker daemon", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
 
     def test_preview_never_removes_images(self):
         with patch.object(storage, "images", return_value=[image("old", [REPOSITORY + ":old"])]), \
