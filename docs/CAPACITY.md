@@ -75,6 +75,15 @@ invalidate retrieval caches when the generation changes. Unavailable/corrupt
 downloads retain usable local artifacts; mutations and worker refreshes fail
 closed rather than silently discard learned state.
 
+For the first deployment of an already-built local corpus, the learned
+`spell_vocab.json` is gitignored and therefore is not present in a clean GitHub
+checkout. Preview the existing files with
+`python tools/sync_retrieval_artifacts.py`, then use `--publish` only after
+confirming they match the configured Pinecone index. This uploads the two files
+and publishes their shared manifest; it does not reindex or call a model.
+The command refuses active indexing and concurrent manifest changes. Web workers
+pick up the generation on subsequent requests after the refresh interval.
+
 ## Deployment
 
 The GitHub workflow runs offline tests, publishes an image tagged with the commit
@@ -101,6 +110,12 @@ can also have a short interruption.
 The script requires Linux, Docker, Python 3 and `flock` on the existing host. It
 does not provision instances, load balancers, IAM policies or certificates.
 Retain the existing HTTPS termination in front of port 8080.
+
+The inner proxy must forward `X-Accel-Buffering` so an outer HTTPS Nginx proxy
+also sees the no-buffer instruction. If that outer proxy explicitly ignores the
+header, its `/chat/get` location also needs `proxy_buffering off`. The waiting
+caption appears before response headers; subsequent captions reflect actual
+pipeline events rather than an animated sequence of invented phases.
 
 `/health` remains a cheap liveness endpoint. `/ready` checks non-default session
 configuration and shared-store access in production, with cached probes. It does

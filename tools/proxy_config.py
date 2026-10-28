@@ -29,6 +29,10 @@ http {{
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
             proxy_buffering off;
+            # Nginx hides X-Accel-* headers by default. Preserve this one so
+            # the HTTPS proxy outside this container also disables buffering.
+            proxy_pass_header X-Accel-Buffering;
+            proxy_set_header Accept-Encoding "";
             proxy_request_buffering off;
             proxy_cache off;
             gzip off;

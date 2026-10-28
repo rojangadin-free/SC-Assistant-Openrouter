@@ -2,8 +2,10 @@
 
 import _bootstrap  # noqa: F401
 import ast
+import contextlib
 import hashlib
 import importlib
+import io
 import json
 import os
 import sys
@@ -47,6 +49,9 @@ class S3:
 
     def delete_object(self, Bucket, Key):
         self.objects.pop(Key, None)
+
+    def head_object(self, Bucket, Key):
+        return {"ContentLength": len(self.objects[Key])}
 
 
 class JobArtifactTests(unittest.TestCase):
@@ -209,6 +214,41 @@ class JobArtifactTests(unittest.TestCase):
             self.assertEqual(artifacts.refresh_artifacts(force=True), "last-good")
             with self.assertRaises(OSError):
                 artifacts.refresh_artifacts(force=True, strict=True)
+
+    def test_operator_sync_cannot_overwrite_a_concurrent_publication(self):
+        target = artifacts.artifact_path("spell_vocab.json")
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump({"terms": {"directory": 3}}, handle)
+        artifacts.mark_index_changed()
+        before = artifacts._manifest().load()
+        with self.assertRaises(RuntimeError):
+            artifacts.publish_artifacts({"spell_vocab.json": target}, expected_generation=None)
+        self.assertEqual(artifacts._manifest().load(), before)
+
+    def test_sync_tool_preview_and_explicit_publish(self):
+        from tools import sync_retrieval_artifacts
+        with open(artifacts.artifact_path("bm25_values.json"), "w", encoding="utf-8") as handle:
+            json.dump({"avgdl": 3, "n_docs": 1, "doc_freq": {"indices": [1], "values": [1]}}, handle)
+        with open(artifacts.artifact_path("spell_vocab.json"), "w", encoding="utf-8") as handle:
+            json.dump({"terms": {"directory": 3}}, handle)
+        config = SimpleNamespace(INDEX_NAME="test-index", STORE_BACKEND="dynamodb")
+        with patch.dict(sys.modules, {"config": config}), \
+                patch.object(artifacts, "_cloud") as cloud, patch.object(artifacts, "_manifest") as manifest, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(sync_retrieval_artifacts.main([]), 0)
+            self.assertFalse(json.loads(output.getvalue())["published"])
+            cloud.assert_not_called()
+            manifest.assert_not_called()
+        table, cloud = Table(), S3()
+        with patch.dict(sys.modules, {"config": config}), \
+                patch.dict(os.environ, {"STORE_BACKEND": "dynamodb"}), \
+                patch.object(store, "_table", return_value=table), \
+                patch.object(artifacts, "_cloud", return_value=(cloud, "bucket")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(sync_retrieval_artifacts.main(["--publish"]), 0)
+            result = json.loads(output.getvalue())
+        self.assertTrue(result["published"])
+        self.assertEqual(len(cloud.objects), 2)
 
     def test_recovered_indexing_does_not_double_learn_vocabulary(self):
         import rag.spelling as spelling

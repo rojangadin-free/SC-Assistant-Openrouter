@@ -15,6 +15,7 @@ NAMES = {"bm25_values.json", "spell_vocab.json"}
 _lock = threading.Lock()
 _checked_at = 0.0
 _generation = "bundled"
+_ANY_GENERATION = object()
 
 
 def artifact_path(name):
@@ -55,7 +56,7 @@ def publish_artifact(path, name):
     return publish_artifacts({name: path})
 
 
-def publish_artifacts(paths):
+def publish_artifacts(paths, *, expected_generation=_ANY_GENERATION):
     references = {}
     for name, path in paths.items():
         if name not in NAMES:
@@ -68,6 +69,8 @@ def publish_artifacts(paths):
         references[name] = {"sha256": digest, "key": key}
 
     def publish(data):
+        if expected_generation is not _ANY_GENERATION and data.get("generation") != expected_generation:
+            raise RuntimeError("Shared artifacts changed during publication; inspect them before retrying")
         data.setdefault("artifacts", {}).update(references)
         data["generation"] = uuid.uuid4().hex
     _manifest().mutate(publish)

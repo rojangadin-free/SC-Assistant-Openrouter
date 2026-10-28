@@ -127,6 +127,18 @@ check(
     "the caption element is still updated from phase events",
     "data.type === 'phase'" in client and "setTypingPhase(data.label)" in client,
 )
+check(
+    "a neutral caption is visible before any server event arrives",
+    bool(re.search(r'class="typing-phase"[^>]*>Waiting for response</span>', client)),
+)
+check(
+    "phase updates target the live indicator instead of a fading previous one",
+    "typingIndicator().find('.typing-phase').text(" in client,
+)
+check(
+    "the inner proxy preserves the streaming instruction for an outer proxy",
+    "proxy_pass_header X-Accel-Buffering;" in read("tools/proxy_config.py"),
+)
 
 print("-" * 60)
 if failures:

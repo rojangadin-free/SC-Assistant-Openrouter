@@ -34,6 +34,8 @@ class DeploymentTests(unittest.TestCase):
         config = render("sc-assistant-web-blue")
         self.assertIn("proxy_buffering off", config)
         self.assertIn("proxy_request_buffering off", config)
+        self.assertIn("proxy_pass_header X-Accel-Buffering;", config)
+        self.assertIn('proxy_set_header Accept-Encoding "";', config)
         self.assertIn("worker_shutdown_timeout", config)
         with self.assertRaises(ValueError):
             render("bad; upstream injected")
