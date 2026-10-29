@@ -556,21 +556,19 @@ def set_resolution(
         "resolved_by": resolved_by,
         "resolved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    with _store_lock:
-        store = _load_store()
+    def update(store):
         store.setdefault("resolutions", {})[key] = entry
-        _save_store(store)
+    _store().mutate(update)
     return entry
 
 
 def delete_resolution(key: str) -> bool:
-    with _store_lock:
-        store = _load_store()
+    def update(store):
         if key in store.get("resolutions", {}):
             del store["resolutions"][key]
-            _save_store(store)
             return True
-    return False
+        return False
+    return _store().mutate(update, return_result=True)
 
 
 # ============================================================

@@ -1,10 +1,8 @@
-import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from config import AWS_REGION
+from aws.dynamodb_access import ThreadLocalTable
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
-students_table = dynamodb.Table("StudentRecords")
+students_table = ThreadLocalTable("StudentRecords")
 
 
 def get_student_by_uid(uid):

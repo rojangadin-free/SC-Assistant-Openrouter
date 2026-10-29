@@ -320,6 +320,7 @@ def set_doc_date(
     text: str = "",
     set_by: str = "",
     note: str = "",
+    preserve_admin: bool = False,
 ) -> dict:
     """
     Record (or correct) a document's effective date.
@@ -348,22 +349,27 @@ def set_doc_date(
         "updated_at": _now(),
     }
 
-    with _store_lock:
-        store = _store().load()
+    def update(store):
         docs = store.setdefault("docs", {})
         existing = docs.get(key) or {}
+        if preserve_admin and existing.get("date_source") == "admin":
+            return existing
         # First-seen is kept across corrections: it is the only record of when the
         # document entered the corpus, which is not the same as its own date.
         record["first_seen"] = existing.get("first_seen") or _now()
         docs[key] = record
         store["updated_at"] = _now()
-        _store().save(store)
-
-    return record
+        return record
+    return _store().mutate(update, return_result=True)
 
 
 def get_doc_date(filename: str) -> Optional[dict]:
     return (_store().load().get("docs") or {}).get(doc_key(filename))
+
+
+def get_doc_dates() -> Dict[str, dict]:
+    """One request-scoped snapshot, shared by context labels and date guidance."""
+    return _store().load().get("docs") or {}
 
 
 def list_docs() -> List[dict]:
@@ -382,15 +388,14 @@ def list_docs() -> List[dict]:
 
 def delete_doc(filename: str) -> bool:
     key = doc_key(filename)
-    with _store_lock:
-        store = _store().load()
+    def update(store):
         docs = store.setdefault("docs", {})
         if key in docs:
             del docs[key]
             store["updated_at"] = _now()
-            _store().save(store)
             return True
-    return False
+        return False
+    return _store().mutate(update, return_result=True)
 
 
 # ---------------------------------------------------------------------------
@@ -446,10 +451,10 @@ def ensure_doc_date(
         # evidence for, and so the admin screen can still show it as undated.
         return None
 
-    return set_doc_date(filename, text=text, set_by=set_by)
+    return set_doc_date(filename, text=text, set_by=set_by, preserve_admin=True)
 
 
-def source_priority(*sources: str) -> Dict[str, dict]:
+def source_priority(*sources: str, dates=None) -> Dict[str, dict]:
     """
     Rank the documents behind one answer by effective date.
 
@@ -473,6 +478,7 @@ def source_priority(*sources: str) -> Dict[str, dict]:
     one document there is nothing to supersede, with two undated documents there
     is no evidence, and in both cases no document is labelled authoritative.
     """
+    snapshot = get_doc_dates() if dates is None else dates
     dated: Dict[str, dict] = {}
     for s in sources:
         if not s:
@@ -480,7 +486,7 @@ def source_priority(*sources: str) -> Dict[str, dict]:
         key = doc_key(s)
         if key in dated:
             continue
-        meta = get_doc_date(s)
+        meta = snapshot.get(key)
         d = _parse_iso_date((meta or {}).get("effective_date") or "")
         if d:
             dated[key] = {"filename": meta.get("filename") or s, "date": d}
@@ -709,7 +715,7 @@ def _recommend(filename: str, newer: Optional[str], date_info: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def freshness_block(*sources: str) -> str:
+def freshness_block(*sources: str, dates=None) -> str:
     """
     Tell the model the relative age of the documents it is about to quote.
 
@@ -718,11 +724,12 @@ def freshness_block(*sources: str) -> str:
     listing one document's date is pure token cost, and one listing two identical
     dates invites the model to invent a distinction that does not exist.
     """
+    snapshot = get_doc_dates() if dates is None else dates
     seen: Dict[str, dict] = {}
     for s in sources:
         if not s:
             continue
-        meta = get_doc_date(s)
+        meta = snapshot.get(doc_key(s))
         if meta and meta.get("effective_date"):
             seen.setdefault(doc_key(s), meta)
 

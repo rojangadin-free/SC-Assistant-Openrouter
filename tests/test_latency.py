@@ -272,8 +272,10 @@ check("chain.py consults should_optimize()",
 # the whole change — with no test failure anywhere else to show it.
 check("the executor is NOT used as a context manager",
       "with concurrent.futures.ThreadPoolExecutor(max_workers=3)" not in chain_src)
-check("and it is shut down without waiting",
-      "executor.shutdown(wait=False)" in chain_src)
+check("bounded pools are reused rather than joined per request",
+      "executor = preparation_pool" in chain_src
+      and "optimizer_pool.submit(task_query_optimization)" in chain_src
+      and "executor.shutdown(" not in chain_src)
 
 # `future_query.result()` outside the late callback is the other way to
 # accidentally serialise it: the rewrite must only ever be collected with a

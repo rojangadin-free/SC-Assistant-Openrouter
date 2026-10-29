@@ -38,7 +38,8 @@ the control flow around a provider failure, not any provider.
 import _bootstrap  # noqa: F401
 
 import os
-import sys
+import ast
+from pathlib import Path
 import types
 
 # (The old `sys.path.insert(dirname(__file__))` here is gone: it added the repo
@@ -102,36 +103,13 @@ def make_model(chunks=(), fail_at=None, error="content-blocked"):
 
 
 def stream_answer(messages, primary, fallback):
-    """Verbatim copy of rag.chain.stream_answer, with the models injected."""
-    attempts = [("primary", primary), ("fallback", fallback)]
-    last_error = None
-
-    for label, model in attempts:
-        produced = False
-        try:
-            for chunk in model.stream(messages):
-                text = chunk.content
-                if not text:
-                    continue
-                if isinstance(text, list):
-                    text = "".join(
-                        block.get("text", "")
-                        for block in text
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    )
-                if not text:
-                    continue
-                produced = True
-                yield text
-            return
-        except Exception as e:
-            last_error = e
-            if produced:
-                print(f"  [{label}] failed mid-stream, keeping partial answer: {e}")
-                return
-            print(f"  [{label}] refused before the first token, trying next: {e}")
-
-    raise last_error if last_error else RuntimeError("No model produced a response.")
+    """Execute the production function, skipping module-level cloud clients."""
+    tree = ast.parse(Path("rag/chain.py").read_text(encoding="utf-8"))
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name == "stream_answer")
+    namespace = {"primary_model": primary, "fallback_model": fallback}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "rag/chain.py", "exec"), namespace)
+    return namespace["stream_answer"](messages)
 
 
 # ============================================================
@@ -169,11 +147,17 @@ section("3. A mid-stream failure keeps what arrived")
 primary = make_model(["Latin honors are ", "awarded to graduates ", "who..."], fail_at=2)
 fallback = make_model(["A COMPLETELY DIFFERENT ANSWER"])
 
-out = list(stream_answer([], primary, fallback))
+out = []
+raised = None
+try:
+    out.extend(stream_answer([], primary, fallback))
+except RuntimeError as error:
+    raised = error
 check("the partial answer is preserved",
       "".join(out) == "Latin honors are awarded to graduates ", out)
 check("the fallback did NOT restart the answer",
       "DIFFERENT" not in "".join(out), out)
+check("an interrupted answer cannot be saved as completed", raised is not None)
 
 
 # ============================================================
@@ -218,8 +202,8 @@ section("6. A provider that returns nothing at all")
 # for an empty answer itself and tells the student to rephrase, instead of saving
 # a blank assistant turn into the conversation.
 out = list(stream_answer([], make_model([]), make_model(["fallback text"])))
-check("an empty primary is treated as success, not failure", out == [], out)
-check("so the route is the one that must notice", "".join(out).strip() == "")
+check("an empty primary tries the fallback", out == ["fallback text"], out)
+check("the fallback supplies a nonempty answer", bool("".join(out).strip()))
 
 
 # ============================================================

@@ -8,8 +8,13 @@ import threading
 import time
 import uuid
 import os
+import queue
+import concurrent.futures
 from PIL import Image
+from werkzeug.exceptions import HTTPException
 from rag.chain import app_graph, stream_answer
+from rag.chat_runtime import chat_runtime, ConcurrentTurnError
+from rag.runtime import CapacityError, RequestBudget, answer_pool, preparation_pool, env_int
 
 from aws.s3 import get_s3_presigned_url
 from aws.dynamodb import (
@@ -61,54 +66,62 @@ def chat_page():
 def chat():
     if not session.get("user"):
         return jsonify({"error": "Please log in to use the chatbot."}), 401
+    lease = None
     try:
+        request.max_content_length = env_int("CHAT_MAX_UPLOAD_MB", 8, maximum=32) * 1024 * 1024
         msg = request.form.get("msg", "")
         guest = _is_guest()
+        uploaded = request.files.get("image")
+        has_image = bool(uploaded and uploaded.filename)
+        if not msg.strip() and not has_image:
+            return jsonify({"error": "Please enter a question or attach an image."}), 400
+        if len(msg) > 4000:
+            return jsonify({"error": "Please keep your question under 4,000 characters."}), 400
+        budget = RequestBudget()
+        session_id = get_session_id()
+        uid, user_email = session.get("uid"), session.get("user")
+        if not guest and not uid:
+            return jsonify({"error": "Please log in again to restore your account session."}), 401
+        conv_id = None if guest else session.get("current_conv_id")
+        is_new_conversation = not guest and not conv_id
+        if is_new_conversation:
+            conv_id = str(uuid.uuid4())
+        lock_key = f"conversation:{uid}:{conv_id}" if conv_id else f"session:{session_id}"
+        lease = chat_runtime.acquire(
+            lock_key, image=has_image, seconds=env_int("CHAT_TIMEOUT_SECONDS", 90) + 60,
+        )
 
-        # Image handling
+        # Decode only after admission; a burst of image uploads must not bypass
+        # the smaller image budget and consume every worker's RAM.
         image_data = None
         image_mime = "image/jpeg"
-        if 'image' in request.files and request.files['image'].filename != '':
+        if has_image:
             try:
-                uploaded = request.files['image']
-                img = Image.open(uploaded)
-                fmt = (img.format or "JPEG").upper()
-                image_mime = "image/png" if fmt == "PNG" else "image/jpeg"
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                    image_mime = "image/jpeg"
-                image_data = encode_image(img)
+                with Image.open(uploaded) as img:
+                    if img.width * img.height > 12_000_000:
+                        raise ValueError("Image exceeds 12 megapixels.")
+                    image_data = encode_image(img)
             except Exception as img_err:
-                print(f"Error processing upload: {img_err}")
+                raise ValueError("Please attach a readable image of at most 12 megapixels.") from img_err
 
-        session_id = get_session_id()
-        config = {"configurable": {"thread_id": session_id}}
-
-        conv_id = None if guest else session.get("current_conv_id")
         current_db_history = []
-
-        if not guest and conv_id:
-            conversation = get_conversation(session.get("uid"), conv_id)
+        if not guest and not is_new_conversation:
+            conversation = get_conversation(uid, conv_id)
             if conversation and "messages" in conversation:
                 current_db_history = conversation["messages"]
-                app_graph.update_state(config, values={"chat_history": current_db_history})
+            if not current_db_history:
+                # A previous first attempt may have failed after sending its
+                # cookie. The eventual successful turn must still create the UI entry.
+                is_new_conversation = True
         elif guest:
-            # 🚀 NEW: Retrieve temporary session memory for the guest
-            state = app_graph.get_state(config)
-            if state and hasattr(state, 'values'):
-                current_db_history = state.values.get("chat_history", [])
-            
-            if current_db_history:
-                app_graph.update_state(config, values={"chat_history": current_db_history})
+            current_db_history = chat_runtime.load_guest(session_id)
 
         # 🚀 FIX: Handle Conversation ID & Session updates BEFORE the streaming generator starts
-        is_new_conversation = False
         conv_title = None
         created_at = None
 
         if not guest:
-            if not conv_id:
-                conv_id = str(uuid.uuid4())
+            if is_new_conversation:
                 created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 session["current_conv_id"] = conv_id
                 session["created_at"]      = created_at
@@ -119,6 +132,7 @@ def chat():
 
         input_payload = {
             "input":      msg,
+            "chat_history": current_db_history,
             "image_data": image_data if image_data else None,
             "image_mime": image_mime  if image_data else None,
             "uid":        None if guest else session.get("uid"),
@@ -145,15 +159,34 @@ def chat():
         progress = ProgressChannel()
         config = {
             "configurable": {
-                **config["configurable"],
+                "thread_id": session_id,
                 "progress": progress,
+                "budget": budget,
             }
         }
 
+        closed = threading.Event()
+        work = {"future": None}
 
+        def release_if_closed(_future):
+            if closed.is_set() and _future is work["future"]:
+                try:
+                    chat_runtime.release(lease)
+                except Exception:
+                    # Crash/cleanup leases also expire; never break WSGI close.
+                    print("[chat] Lease cleanup deferred to expiry.")
+
+        def cleanup():
+            closed.set()
+            budget.cancelled.set()
+            progress.close()
+            future = work["future"]
+            if future is not None:
+                future.cancel()
+            if future is None or future.done():
+                release_if_closed(future)
 
         # 🚀 Server-Sent Events Token Streaming Loop
-        @stream_with_context
         def generate():
             # The pipeline runs INSIDE the generator, deliberately.
             #
@@ -198,18 +231,47 @@ def chat():
             # that. The seconds a student actually waits had no caption at all.
             box = {}
             finished = threading.Event()
+            chunks = queue.Queue(maxsize=64)
 
             def run_pipeline():
+                stream = None
                 try:
+                    budget.remaining()
                     box["result"] = app_graph.invoke(input_payload, config=config)
+                    messages = (box["result"] or {}).get("messages_to_llm")
+                    if not messages:
+                        raise RuntimeError("Context preparation did not complete.")
+                    budget.remaining()
+                    progress.publish("writing")
+                    stream = stream_answer(messages)
+                    length = 0
+                    for text in stream:
+                        budget.remaining()
+                        length += len(text)
+                        if length > 32000:
+                            raise RuntimeError("Answer exceeded its output budget.")
+                        while True:
+                            try:
+                                chunks.put(text, timeout=budget.remaining(0.2))
+                                break
+                            except queue.Full:
+                                continue
                 except Exception as e:
                     box["error"] = e
                 finally:
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
                     finished.set()
 
-            threading.Thread(
-                target=run_pipeline, name="answer-pipeline", daemon=True
-            ).start()
+            try:
+                work["future"] = answer_pool.submit(run_pipeline)
+                work["future"].add_done_callback(release_if_closed)
+            except CapacityError:
+                yield f"data: {json.dumps({'type': 'error', 'text': 'The assistant is busy. Please retry shortly.'})}\n\n"
+                return
 
             # Forward captions the moment they are published, and emit a comment
             # every few seconds while the CPU-bound phases run. The heartbeat is
@@ -218,12 +280,27 @@ def chat():
             # instead of a 15-second silence that a proxy is free to interpret as
             # a stalled response.
             POLL_SECONDS = 0.2
-            HEARTBEAT_SECONDS = 5.0
+            HEARTBEAT_SECONDS = env_int("CHAT_HEARTBEAT_SECONDS", 5)
             last_beat = time.monotonic()
 
-            while not finished.wait(POLL_SECONDS):
+            while not finished.is_set() or not chunks.empty():
+                try:
+                    budget.remaining()
+                except TimeoutError:
+                    budget.cancelled.set()
+                    yield f"data: {json.dumps({'type': 'error', 'text': 'The answer took too long. Please retry.'})}\n\n"
+                    return
                 for event in progress.drain():
                     yield f"data: {json.dumps(event)}\n\n"
+                try:
+                    chunk_text = chunks.get(timeout=budget.remaining(POLL_SECONDS))
+                except queue.Empty:
+                    pass
+                else:
+                    for event in progress.drain():
+                        yield f"data: {json.dumps(event)}\n\n"
+                    full_answer += chunk_text
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': chunk_text})}\n\n"
                 if time.monotonic() - last_beat >= HEARTBEAT_SECONDS:
                     last_beat = time.monotonic()
                     yield ": keep-alive\n\n"
@@ -233,8 +310,8 @@ def chat():
                 yield f"data: {json.dumps(event)}\n\n"
 
             if box.get("error") is not None:
-                print(f"Graph invocation failed: {box['error']}")
-                yield f"data: {json.dumps({'type': 'error', 'text': 'Sorry, something went wrong while preparing that answer. Please try again.'})}\n\n"
+                print(f"[chat] Request failed: {type(box['error']).__name__}")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'The assistant could not finish this answer. Please retry.'})}\n\n"
                 return
 
             result = box.get("result") or {}
@@ -248,31 +325,6 @@ def chat():
 
             if not messages_to_llm:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'Context compilation failed. Please try again.'})}\n\n"
-                return
-
-            # No drain here any more: the captions above were streamed while the
-            # pipeline was still running, which is the only way a student sees
-            # them.
-
-            # The answer LLM is about to be called and the first token has not
-            # arrived. This is the one caption the graph cannot publish itself,
-            # because the model is invoked out here.
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'writing', 'label': 'Generating response'})}\n\n"
-
-            try:
-
-                # stream_answer() (rag/chain.py) walks the providers itself.
-                # `chatModel.stream()` could not: with_fallbacks wraps the CALL,
-                # but a stream fails INSIDE the caller's loop — long after the
-                # wrapper returned — so a provider refusal such as AgentRouter's
-                # 400 `content-blocked` on "latin honor" never reached the
-                # fallback and surfaced here as "Streaming interrupted."
-                for chunk_text in stream_answer(messages_to_llm):
-                    full_answer += chunk_text
-                    yield f"data: {json.dumps({'type': 'chunk', 'text': chunk_text})}\n\n"
-            except Exception as stream_err:
-                print(f"Streaming pipeline breakdown: {stream_err}")
-                yield f"data: {json.dumps({'type': 'error', 'text': 'Streaming interrupted.'})}\n\n"
                 return
 
             # Every provider answered without raising, yet nothing arrived. This
@@ -322,13 +374,6 @@ def chat():
             unanswered = False
             if msg and looks_unanswered(full_answer):
                 unanswered = True
-                record_gap(
-                    msg,
-                    answer=full_answer,
-                    asked_by="guest" if guest else (session.get("user") or ""),
-                    conv_id=conv_id or "",
-                )
-                print(f"  [gaps] logged unanswered question: {msg[:80]!r}")
 
             # 🚀 1c. CITATIONS
             #
@@ -344,18 +389,36 @@ def chat():
             # tab stays open.
             full_history_to_save[-1]["citations"] = shown_citations
 
-            # 🚀 2. ALWAYS update the LangGraph state so both logged-in users and guests have temporary memory for the next turn
-            app_graph.update_state(config, values={"chat_history": full_history_to_save})
+            budget.remaining()
+
+            def persist():
+                budget.remaining()
+                if unanswered:
+                    record_gap(msg, answer=full_answer,
+                               asked_by="guest" if guest else (user_email or ""),
+                               conv_id=conv_id or "")
+                budget.remaining()
+                if guest:
+                    chat_runtime.save_guest(session_id, full_history_to_save)
+                elif uid:
+                    upsert_conversation(uid, conv_id, full_history_to_save, created_at)
+
+            work["future"] = preparation_pool.submit(persist)
+            work["future"].add_done_callback(release_if_closed)
+            while not work["future"].done():
+                try:
+                    work["future"].result(timeout=budget.remaining(HEARTBEAT_SECONDS))
+                except concurrent.futures.TimeoutError:
+                    budget.remaining()
+                    yield ": keep-alive\n\n"
+            work["future"].result()
+            budget.remaining()
 
             # 🚀 3. If guest, yield done and exit WITHOUT saving to the DynamoDB database
             if guest:
                 yield f"data: {json.dumps({'type': 'done', 'conv_id': None, 'new_conversation_created': False, 'new_conv_title': None, 'unanswered': unanswered, 'citations': shown_citations, 'msg_id': answer_msg_id})}\n\n"
                 return
 
-
-            # 🚀 4. DB Save strictly for Logged-In Users
-            if session.get("uid"):
-                upsert_conversation(session.get("uid"), conv_id, full_history_to_save, created_at)
 
             # `msg_id` travels with 'done' so the element the browser just built
             # adopts the id the answer was SAVED under. Without that handshake the
@@ -366,8 +429,18 @@ def chat():
 
 
 
-        return Response(
-            generate(),
+        @stream_with_context
+        def guarded_stream():
+            try:
+                yield from generate()
+            except Exception as error:
+                print(f"[chat] Stream or persistence failed: {type(error).__name__}")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'The answer could not be completed and saved. Please retry.'})}\n\n"
+            finally:
+                cleanup()
+
+        response = Response(
+            guarded_stream(),
             mimetype='text/event-stream',
             headers={
                 # Never cache a stream, and — `no-transform` — never let an
@@ -381,11 +454,25 @@ def chat():
                 'Connection': 'keep-alive',
             },
         )
-
+        response.call_on_close(cleanup)
+        return response
 
     except Exception as e:
-        print(f"Error in /get endpoint: {e}")
-        return jsonify({"answer": f"Sorry, an error occurred: {str(e)}"}), 500
+        if lease:
+            try:
+                chat_runtime.release(lease)
+            except Exception:
+                print("[chat] Lease cleanup deferred to expiry.")
+        if isinstance(e, ConcurrentTurnError):
+            return jsonify({"error": str(e)}), 409
+        if isinstance(e, CapacityError):
+            return jsonify({"error": str(e)}), 429, {"Retry-After": "3"}
+        if isinstance(e, HTTPException):
+            return jsonify({"error": e.description}), e.code
+        if isinstance(e, ValueError):
+            return jsonify({"error": str(e)}), 400
+        print(f"[chat] Request setup failed: {type(e).__name__}")
+        return jsonify({"error": "The assistant is temporarily unavailable. Please retry."}), 503
 
 
 @bp.route("/report", methods=["POST"])
@@ -699,6 +786,8 @@ def serve_document(filename):
 def clear_memory():
     if not session.get("user"):
         return jsonify({"status": "error", "message": "Not authenticated"})
+    if _is_guest() and session.get("session_id"):
+        chat_runtime.delete_guest(session["session_id"])
     session.pop("session_id",       None)
     session.pop("current_conv_id",  None)
     session.pop("created_at",       None)
@@ -730,11 +819,6 @@ def restore_conversation(conv_id):
     if not conv or "messages" not in conv:
         return jsonify({"error": "Conversation not found"}), 404
 
-    session_id = get_session_id()
-    app_graph.update_state(
-        config={"configurable": {"thread_id": session_id}},
-        values={"chat_history": conv["messages"]},
-    )
     session["current_conv_id"] = conv_id
     session["created_at"]      = conv.get(
         "created_at",

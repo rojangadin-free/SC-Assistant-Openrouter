@@ -1,0 +1,16 @@
+.git
+.kilo
+.env
+.env.*
+venv
+.venv
+.venv-*
+env
+**/__pycache__
+**/*.pyc
+.ruff_cache
+.pytest_cache
+**/*.sqlite3*
+**/*.json.lock
+**/*.json.*.tmp
+*.log

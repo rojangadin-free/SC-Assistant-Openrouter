@@ -82,10 +82,20 @@ ENV OMP_NUM_THREADS=1 \
 # numbers. Set RERANKER_ENABLED=true at `docker run` to put it back with no
 # rebuild — the startup banner reports which mode is live either way.
 ENV RERANKER_ENABLED=false
+ENV CHAT_MAX_ACTIVE=30 \
+    CHAT_TIMEOUT_SECONDS=90 \
+    CHAT_MAX_IMAGES=2 \
+    ANSWER_WORKERS=12 \
+    RETRIEVAL_WORKERS=4 \
+    PREPARATION_WORKERS=4 \
+    OPTIMIZER_WORKERS=2 \
+    SC_RUNTIME_DB=/tmp/sc-assistant-runtime.sqlite3 \
+    WEB_INDEXING_ENABLED=false
 
 EXPOSE 8080
 
-# 3 workers x 4 threads on a small EC2 box (m7i-flex.large: 2 vCPU, 8 GB).
+# 3 workers x 12 threads: 36 HTTP slots, with at most 30 admitted chat turns.
+# This is a load-test target, not a measured production capacity guarantee.
 #
 # The worker count is a MEMORY budget, not a CPU one. Every worker imports
 # torch — via the MiniLM embeddings in rag/chain.py, which load at module scope
@@ -102,10 +112,12 @@ EXPOSE 8080
 # The threads are not there to add CPU capacity (there is none to add on 2 cores)
 # but because most of a request is spent WAITING — on Pinecone, on DynamoDB, and
 # above all on the LLM gateway streaming tokens back. A thread parked on a socket
-# costs nothing, and without them a handful of slow answers would occupy every
+# uses much less CPU than inference; without them slow answers occupy every
 # worker and queue everyone else at the front door.
 #
-# --timeout 120 covers a slow first LLM response.
+# gthread's --timeout is a worker heartbeat timeout, NOT a request deadline.
+# CHAT_TIMEOUT_SECONDS bounds responses; graceful restart allows admitted turns
+# time to finish instead of killing them at Gunicorn's 30-second default.
 #
 # --max-requests 400 with jitter: torch's allocator does not return freed memory
 # to the OS, so a long-lived worker's RSS drifts upward and never comes back
@@ -118,10 +130,10 @@ EXPOSE 8080
 # EBS-backed instance /tmp can stall long enough under load for the arbiter to
 # decide a busy-but-healthy worker has hung and kill it mid-answer. /dev/shm is
 # memory, so the heartbeat cannot be delayed by disk.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "4", \
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--worker-class", "gthread", "--workers", "3", "--threads", "12", \
      "--worker-tmp-dir", "/dev/shm", \
      "--max-requests", "400", "--max-requests-jitter", "50", \
-     "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
+     "--timeout", "120", "--graceful-timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
      "run:app"]
 
 

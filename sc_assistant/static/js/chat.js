@@ -1078,19 +1078,25 @@ $(document).ready(function() {
     }
 
 
+    let activeReader = null;
+    let streamCompleted = false;
     try {
         const response = await fetch('/chat/get', {
             method: 'POST',
             body: formData
         });
 
-        if (!response.ok) throw new Error("Network response was not ok");
+        if (!response.ok) {
+            const failure = await response.json().catch(() => ({}));
+            throw new Error(failure.error || "The assistant is temporarily unavailable. Please retry.");
+        }
 
         // The bubble is already on screen — appended before the request went out —
         // so this only has to find where to write.
         const assistantBubble = $(`#${assistantMessageId}`).find('.streaming-text');
 
         const reader = response.body.getReader();
+        activeReader = reader;
         const decoder = new TextDecoder();
         let fullAnswerText = "";
         let isFirstToken = true;
@@ -1159,6 +1165,7 @@ $(document).ready(function() {
                         messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
                     } 
                     else if (data.type === 'done') {
+                        streamCompleted = true;
                         // Sources arrive with 'done', not with the chunks: they
                         // describe the finished answer.
                         rememberCitations($('#' + assistantMessageId), data.citations);
@@ -1191,10 +1198,13 @@ $(document).ready(function() {
                         }
                     } 
                     else if (data.type === 'error') {
-                        assistantBubble.html(`<span style="color:red">${data.text}</span>`);
+                        throw new Error(data.text || "The answer was interrupted. Please retry.");
                     }
                 }
             }
+        }
+        if (!streamCompleted || !fullAnswerText.trim()) {
+            throw new Error("The answer was interrupted before completion. Please retry.");
         }
     } catch (err) {
         console.error("Streaming error:", err);
@@ -1208,12 +1218,17 @@ $(document).ready(function() {
         // read, and deleting it to replace it with "An error occurred." would
         // throw away the more useful of the two.
         const $pending = $('#' + assistantMessageId);
+        $pending.find('.message-report-row').remove();
         if ($pending.find('.streaming-text').text().trim() === '') $pending.remove();
 
         if (requestConvId === activeConversationId) {
-            addMessage('An error occurred.');
+            addMessage(err.message || 'The answer was interrupted. Please retry.');
         }
     } finally {
+        if (activeReader) {
+            try { await activeReader.cancel(); } catch (_) { /* Connection already closed. */ }
+            activeReader.releaseLock();
+        }
         // Covers every exit the loop did not: a stream that ended with no chunk
         // at all, and the error path above when a partial answer was kept.
         clearTypingIndicator();

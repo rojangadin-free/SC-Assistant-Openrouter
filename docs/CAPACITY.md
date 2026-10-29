@@ -1,372 +1,169 @@
 # Capacity
 
-How many students can use this at once, on the box it actually runs on.
+## Target, not a throughput guarantee
 
-The deployment target is a single **`m7i-flex.large`** — 2 vCPU, 8 GB RAM —
-running the container from the `Dockerfile` at the repo root. Everything below is
-derived from that shape and from the code in `rag/chain.py` and
-`rag/reranker.py`, not from a general rule of thumb about Flask.
+The target remains one `m7i-flex.large` (2 vCPU, 8 GB RAM), with no additional
+server or Redis service. The deployment is configured to admit **30 simultaneous
+text questions**. Actual response times depend on CPU/RAM, question complexity,
+Pinecone latency, and the LLM provider's concurrent-request and token limits.
 
----
+Earlier versions of this document claimed 20-40 simultaneous answers and 3-8
+second latency without a representative live load test. Those were estimates,
+not established capacity, and should not be used for beta-test planning.
 
-## The answer
+## Current limits
 
-Reranking is **off by default** in this deployment (`ENV RERANKER_ENABLED=false`
-in the `Dockerfile`), which removes the only CPU-bound phase of a request. The
-numbers below are for the shipped configuration; the reranked figures are kept
-alongside because they are what the trade is measured against.
-
-| Question | Shipped (reranker off) | With reranker on |
+| Resource | Default | Scope |
 |---|---|---|
-| Questions being *processed* at the same instant | **20–40** | 2–4 |
-| Students actively chatting (asking, then reading for 20–40 s) | **60–100** | 30–60 |
-| Answer latency | **~3–8 s** | ~6–12 s |
-| Sessions merely open on the page | **hundreds** | hundreds |
-| Point where it starts to feel slow | **~40+ simultaneous questions** | ~8–10 |
+| Gunicorn | 3 `gthread` workers, 12 threads each | 36 HTTP request slots total |
+| Admitted chat turns | `CHAT_MAX_ACTIVE=30` | Shared across workers in this container |
+| Image turns | `CHAT_MAX_IMAGES=2` | Included in the same 30-turn limit |
+| Duplicate turns | One per conversation/session | A second overlapping turn gets HTTP 409 |
+| Answer preparation/stream jobs | `ANSWER_WORKERS=12`, no pending queue | Per process |
+| Retrieval jobs | `RETRIEVAL_WORKERS=4`, 24 pending slots | Per process; 12 running jobs across 3 workers |
+| Retrieval fairness | At most 2 probes in flight per question | Every original query variant is retained |
+| MiniLM inference | One call at a time per model instance | Per process; at most 3 across 3 workers |
+| Query-vector cache | `QUERY_EMBEDDING_CACHE_SIZE=512` | Bounded LRU per process |
+| Preparation/persistence | `PREPARATION_WORKERS=4`, 24 pending slots | Per process |
+| Optional optimizer | `OPTIMIZER_WORKERS=2`, no pending queue | Per process; skipped when busy |
+| Response budget | `CHAT_TIMEOUT_SECONDS=90` | Covers preparation, generation and persistence waits |
+| Model output | `CHAT_MAX_OUTPUT_TOKENS=4096` | Per answer model call; route also bounds characters |
+| Retrieval wait | `RETRIEVAL_TIMEOUT_SECONDS=30` | Also bounded by the remaining request budget |
+| Heartbeat | `CHAT_HEARTBEAT_SECONDS=5` | During preparation, provider waits and persistence |
+| Image upload | `CHAT_MAX_UPLOAD_MB=8`, at most 12 megapixels | Per chat request |
 
-For a single campus assistant, 60–100 students mid-conversation is a busy day.
+Slots are not additional CPU cores. Do not increase the process count simply to
+accept more sockets: every worker still loads PyTorch and MiniLM even when
+`RERANKER_ENABLED=false`. Numerical libraries remain pinned to one compute thread.
+Measure RSS and CPU on the deployed image before changing these settings.
 
-The binding constraint has moved. With the cross-encoder gone the box is no
-longer CPU-starved, so the ceiling is now **memory** — every worker holds a torch
-runtime whatever the flag says, and that is what fixes the worker count at 3.
-The next two sections are the two halves of that.
+The chat admission limit leaves some aggregate HTTP headroom, not dedicated
+login/admin threads. A hot worker or saturated dependency can still reject work.
+Overload returns HTTP 429 with `Retry-After: 3`, or an SSE error if a worker-local
+pool fills after streaming begins. There is no unbounded waiting room.
 
+Timed-out running jobs retain their executor slots until they actually finish.
+Cancelled queued jobs retain their slots until their queue entries are consumed,
+so cancellation cannot bypass the memory bound. Python cannot forcibly stop an
+in-flight native model or SDK call. Leases
+also expire after a crashed worker; they are not released just to pretend a slow
+job stopped. DynamoDB resources are thread-local, with bounded connection/read
+timeouts and retries. Provider retries are reduced to avoid retry amplification.
 
----
+## Less work, same evidence
 
-## Where a request's time goes
+- Retrieved document text is inserted into the prompt once, not twice.
+- Date labels and freshness guidance share one per-turn metadata snapshot.
+- Sparse/dense searches reuse cached query vectors; the model serializes local
+  inference rather than executing many CPU batches at once.
+- Cache keys are hashes. Only query vectors are cached, never personalized
+  answers or student records. Vectors belong to a fixed model instance and do not
+  need invalidation when document contents change.
+- The spelling repair remains the working question for optimization, retrieval,
+  reranking and generation. The original displayed/persisted question is kept.
+- The existing 15-document context window and multilingual/multipart variants are
+  preserved. Reranking remains disabled by default; enabling it needs a new load
+  test and answer-quality comparison.
 
-One question, traced through `rag/chain.py`:
+## Shared state and streaming
 
-| Phase | Wall clock | Resource | Still there with reranking off? |
-|---|---|---|---|
-| Optimizer LLM rewrite | 0 s, or ≤2.5 s | network | yes |
-| Query embedding (MiniLM, once per probe) | ~20–60 ms × probes | **CPU** | **yes** |
-| Pinecone hybrid fan-out (parallel probes) | ~0.5–1 s | network | yes |
-| **Cross-encoder rerank** | **~3–4 s** (up to ~16 s multi-part) | **CPU** | **no — removed** |
-| Prompt assembly, DynamoDB reads | ~0.2 s | network | yes |
-| LLM streaming, first token to last | ~2–8 s | network | yes |
-| **Total** | **~3–8 s off / ~6–12 s on** | | |
+`rag/chat_runtime.py` uses SQLite/WAL for cross-worker leases and temporary guest
+history. `SC_RUNTIME_DB=/tmp/sc-assistant-runtime.sqlite3` is shared by the three
+workers inside the container, not by separate servers. Worker recycling retains
+guest history; replacing the container does not unless this path is mounted.
+Guest history defaults to a 2-hour TTL, 300 sessions and 20 recent messages, with a
+per-session byte budget. These are temporary sessions, not durable accounts.
 
-The optimizer row is 0 s for a self-contained question because `rag/latency.py`
-skips it — see the "Answer speed" section of the README.
+Authenticated conversations remain in DynamoDB and are explicitly supplied to
+each graph invocation. The graph no longer keeps an unbounded, process-local
+checkpoint copy of every conversation, document context and uploaded image.
 
-Almost every row is a socket wait, which is why the `Dockerfile` runs
-`--threads 4`: a thread parked on a Pinecone read costs nothing, and without
-threads a few slow answers would occupy every worker and queue everyone else at
-the front door.
+Admin stores use consistent reads and conditional revisions, retrying mutations
+on conflicts. Existing unversioned records are upgraded on their next write.
+File-mode mutations have cross-process locks and unique atomic temporary files.
+Read failures/corrupt stores cannot be treated as empty stores during mutation.
+Whole-blob DynamoDB storage still has a 400 KB item limit; oversized writes fail
+rather than silently discarding additional history. Moving high-volume stores to
+individual DynamoDB rows is future work, not part of this same-box change.
 
-**The embedding row is easy to miss.** It survives `RERANKER_ENABLED=false`,
-because the dense half of hybrid retrieval has to turn the query into a vector
-locally, and `multi_query_retrieve()` fans out up to 8 probes concurrently
-(`max_workers=min(len(queries), 8)`) across the dictation repair, the
-Tagalog/Waray variants and the paraphrase. Tens of milliseconds each is
-negligible against an LLM stream, but it is not zero, and it is the reason the
-torch thread pinning below still matters in the shipped configuration.
+SSE `done` is emitted only after a nonempty, completed answer and successful
+history persistence. Mid-stream failures retain visible partial text but send an
+error, not a successful completion. The client also detects missing completion.
+Disconnects signal cancellation and release admission only when associated work
+has finished. A write already in flight cannot be rolled back by disconnecting.
 
-With the cross-encoder gone, the per-question CPU cost falls from ~3.5 s to
-well under 0.5 s, and throughput stops being a function of core count. That is
-the whole of the 2–4 → 20–40 change.
+## Deployment precautions
 
+- Gunicorn has `--timeout 120` and `--graceful-timeout 120`. The first is a worker
+  liveness timeout, not a per-request deadline. The graceful timeout allows the
+  normal 90-second response budget during worker recycling.
+- The Docker image defaults `WEB_INDEXING_ENABLED=false`. Uploads get a clear 503
+  while paused, so OCR/indexing does not compete with the beta. Enable it outside
+  testing hours; this is an operator setting, not a durable indexing queue.
+- Retain proxy streaming settings: no response buffering/transformation and an
+  idle timeout longer than the heartbeat interval. Never deploy during a test.
+- Both configured answer models currently use OpenRouter. A fallback model does
+  not bypass the gateway's shared quota or account balance.
+- The SQLite admission/history design is single-container. Multiple independent
+  replicas require a shared admission/session design before claiming one global
+  30-question limit. Durable admin state must still use `STORE_BACKEND=dynamodb`.
 
----
+## Regression tests
 
-## Why memory, not CPU, fixes the worker count
-
-Each gunicorn worker loads its own copy of every model:
-
-| Component | Reranker ON | Reranker OFF (shipped) |
-|---|---|---|
-| PyTorch + transformers runtime | ~700 MB–1 GB | **~700 MB–1 GB — unchanged** |
-| MiniLM-L6 embeddings (384-d) | ~120 MB | ~120 MB |
-| `ettin-reranker-32m` cross-encoder | ~180 MB | **0 — skipped** |
-| Flask, LangChain, boto3, Pinecone client | ~250 MB | ~250 MB |
-| **Per worker** | **~1.3–1.6 GB** | **~1.1–1.4 GB** |
-
-### Turning the reranker off does *not* give the torch memory back
-
-This is worth stating plainly, because the opposite was written in this document
-once and a worker count was sized from it.
-
-`rag/reranker.py` genuinely returns from `_load_model()` before constructing the
-`CrossEncoder`, so the 180 MB of cross-encoder weights are never allocated. But
-`rag/chain.py` does this at **module scope**, in every worker, before any of that
-runs:
-
-```python
-embeddings = get_local_embeddings()   # HuggingFaceEmbeddings(all-MiniLM-L6-v2)
+```powershell
+python run_tests.py
 ```
 
-`HuggingFaceEmbeddings` *is* sentence-transformers, which *is* torch. The ~1 GB
-runtime is resident whether the flag is on or off. What the flag saves is the
-~3.5 s of CPU per question — which is the thing that actually mattered — plus
-180 MB, not 1 GB.
+The runner includes bounded-pool/cache tests, actual chat-route tests with fake
+external dependencies,30-request admission/isolation checks, real multi-process
+file/guest-store tests, conflicting DynamoDB-write tests, and SSE-parser checks.
+It also retains the spelling, freshness, citations, streaming and admin suites.
+These establish application behavior, not deployed model throughput.
 
-So the worker budget: **3 × ~1.3 GB ≈ 3.9 GB**, leaving ~4 GB of headroom on an
-8 GB box for page cache, the SSE buffers and ordinary drift. 4 workers (~5.2 GB)
-is survivable on a quiet day and puts an OOM kill mid-answer within reach on a
-busy one, which is the single worst failure mode available here — the student
-sees a dead connection, not a slow answer.
+## Offline HTTP load test
 
-**Why 3 and not 2.** While reranking was on, a third process was actively
-harmful: it competed for the same 2 cores during a 3.5 s cross-encoder batch and
-made every concurrent answer slower. With that phase gone the remaining work is
-nearly all socket wait, so the third worker buys queue headroom instead of
-contention. That is why this number moved when the flag flipped, and why it
-should move back to 2 if the flag is ever flipped back.
+Install Locust in an isolated development environment, not the production image:
 
-**`--max-requests 400 --max-requests-jitter 50`** rides along with the third
-worker. torch's allocator does not return freed memory to the OS, so a
-long-lived worker's RSS drifts upward and never comes back down; with less
-headroom than before, periodic recycling turns that drift into a non-event. The
-jitter matters as much as the limit — without it all three workers reach 400 at
-roughly the same moment and restart together, turning a rolling refresh into a
-brief total outage.
-
----
-
-## The fixes applied
-
-### 1. torch threads pinned to 1
-
-`torch` starts one compute thread per core, per process. Three workers on two
-cores therefore ask for **six** compute threads, and a measurable slice of every
-batch goes to context switching rather than arithmetic. Worse, it is
-*load-dependent* — invisible with one developer asking one question, and at its
-worst exactly when the system is busiest.
-
-This applies in the shipped, reranker-off configuration too: the MiniLM
-embeddings are torch, and the retrieval fan-out embeds once per probe.
-
-
-Set in two places, deliberately:
-
-- `Dockerfile` — `ENV OMP_NUM_THREADS=1` (plus MKL/OpenBLAS). These must be read
-  **before** torch is imported, and an env var baked into the image is the only
-  place guaranteed to precede that.
-- `rag/reranker.py` — `os.environ.setdefault(...)` at module scope, and
-  `torch.set_num_threads()` at load. Belt and braces for anyone running
-  `python run.py` locally, without the Dockerfile's env.
-
-This makes a single isolated rerank slightly *slower* and the box meaningfully
-faster under concurrency. That is the correct trade for a shared tool.
-
-### 2. A bounded queue in front of the model
-
-`rag/reranker.py` now routes both `predict()` call sites through `_predict()`,
-which holds one of `RERANKER_CONCURRENCY` (default **2**) slots.
-
-Without it, load does not degrade gracefully — it degrades *uniformly*:
-
-```
-2 questions arrive -> 2 batches x ~3.5 s CPU on 2 cores -> both finish in ~4 s
-8 questions arrive -> 8 batches fighting over 2 cores   -> ALL finish in ~14 s
+```powershell
+python -m pip install -r requirements-dev.txt
 ```
 
-The second case does no more work than the first. The only thing that changed is
-that every student now waits for the slowest one. A semaphore turns that into a
-queue: the first few run at full speed, the rest wait briefly for a slot. The
-median student is strictly better off, and the waiting is already honestly
-reported — `rag/progress.py` is showing "Reading the most relevant pages" while
-this blocks, so the caption stays true.
+Start the test-only server in a separate terminal:
 
-**The wait is bounded.** After `RERANKER_QUEUE_TIMEOUT` (default 20 s) with no
-slot, the request proceeds *without* reranking. A worse answer is a better
-outcome than no answer, and it is the same graceful degradation the module
-already had for a missing model. The release is in a `finally`, because a slot
-leaked on an exception would permanently shrink capacity: after two failures the
-reranker would be off for the life of the process, with nothing in the log
-saying so.
-
-### 3. `--worker-tmp-dir /dev/shm`
-
-gunicorn heartbeats through a temp file. On an EBS-backed instance under load,
-`/tmp` can stall long enough for the arbiter to decide a busy-but-healthy worker
-has hung and kill it **mid-answer**. `/dev/shm` is memory, so the heartbeat
-cannot be delayed by disk.
-
----
-
-## The `flex` caveat — and why it stopped mattering
-
-`m7i-flex` is not a fixed-performance instance. It is sized for workloads that
-average **up to ~40% CPU**, bursting to 100% when needed.
-
-With reranking **on**, this app violated that profile: the cross-encoder pinned
-both vCPUs at 100% for seconds at a time, and during an enrollment-week rush
-sustained demand could be pulled back toward baseline — at which point every
-figure in the first table roughly halved.
-
-With reranking **off**, which is how this ships, the remaining CPU work is query
-embedding measured in tens of milliseconds. The box now sits comfortably inside
-the burst profile, so **`m7i-flex.large` is the right instance for this workload
-rather than something to migrate off.** That is a real benefit of the switch and
-not an incidental one.
-
-If reranking is ever switched back on, the caveat returns with it, and the way
-out is in order of preference:
-
-1. `m7i.large` — same 2 vCPU / 8 GB, fixed performance, no burst profile to
-   exceed.
-2. `m7i.xlarge` — 4 vCPU / 16 GB. Roughly doubles the capacity table and leaves
-   room for a fourth worker, which the 8 GB budget above does not.
-
----
-
-## Turning the knobs
-
-Everything is an env var, so a rush can be handled with `docker run -e` and no
-rebuild.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `RERANKER_ENABLED` | `false` | Off in the shipped image. `true` restores ranking quality at ~3.5 s CPU per question — see below. |
-| `RERANKER_CONCURRENCY` | `2` | Requests allowed inside the model at once. Only applies when ranking is on. |
-
-| `RERANKER_QUEUE_TIMEOUT` | `20` | Seconds to wait for a slot before answering from retrieval order. |
-| `RERANKER_TORCH_THREADS` | `1` | Per-process compute threads. Raise only with fewer workers. |
-| `RERANKER_MAX_TOTAL_WINDOWS` | `220` | **The biggest lever.** Total (query, window) pairs scored per request. |
-| `RERANKER_MAX_PAIRS` | `40` | Candidates scored at all; the rest keep retrieval order. |
-
-**Enrollment-week configuration**, roughly halving CPU per question for a small
-ranking-quality cost:
-
-```bash
-docker run -e RERANKER_MAX_TOTAL_WINDOWS=120 \
-           -e RERANKER_MAX_PAIRS=20 \
-           ...
+```powershell
+python tests/fixtures/chat_load_stub.py --port 8765 --first-token-delay 0.15 --done-delay 0.25
 ```
 
-Worth knowing before reaching for that: `rerank_multi()` already divides the
-window budget by the number of asks, so a three-part question does **not** cost
-three times a single one (48 s → 16 s when that was fixed). The budget above is
-per request, not per ask.
+Then run one synchronized question from each of 30 independent sessions:
 
----
-
-## Reranking off: what it bought, and what it did not
-
-`RERANKER_ENABLED=false` removes the only CPU-bound phase in the table above.
-This is the configuration the image ships with, and it is the single largest
-lever in this document:
-
-| | Reranker ON | Reranker OFF (shipped) |
-|---|---|---|
-| Simultaneous questions | 2–4 | **20–40** |
-| CPU per question | ~3.5 s | **< 0.5 s** |
-| RSS per worker | ~1.3–1.6 GB | ~1.1–1.4 GB (**not** 350 MB — see below) |
-| Workers that fit in 8 GB | 2 | **3** |
-| Answer latency | ~6–12 s | **~3–8 s** |
-| `m7i-flex` burst profile | exceeded during a rush | comfortably inside |
-
-`_load_model()` returns `None` before constructing the `CrossEncoder`, so
-`rerank()` and `rerank_multi()` take the same degradation path they already take
-for a missing model: documents come back in hybrid-retrieval order, unscored,
-and nothing raises.
-
-**The memory row deserves its correction in writing.** An earlier version of
-this document claimed ~350 MB per worker "because torch is never imported", and
-a worker count was sized from that claim. It is wrong: `rag/chain.py` builds
-`HuggingFaceEmbeddings` at module scope, which imports sentence-transformers and
-therefore torch, in every worker, regardless of this flag. What is saved is the
-cross-encoder's ~180 MB and — the part that actually matters — its CPU time. The
-per-worker footprint stays north of 1 GB, which is why the worker count went to
-3 rather than the 4–6 that the false figure would have allowed.
-
-
-### What the evidence says
-
-`tools/eval_retrieval.py` was run with reranking off and **every variant
-passed** — all gold markers still reached the top-12 on every phrasing. That is
-what makes this a supported configuration rather than a foot-gun, and the credit
-belongs to the chunking, the hybrid weights and `multi_query_retrieve()`: the
-retrieval layer is strong enough to find the evidence on its own.
-
-### What that evidence does *not* say
-
-That eval measures **recall** — whether the right chunk is in the pool. It does
-not measure **order within the pool**, and the LLM reads the context top-down.
-Two specific things are given up, both of them documented measurements from this
-repo:
-
-- **Window-level ranking.** The chunk containing the full program list scores
-  `-9.842` as a whole chunk and `+8.711` on its `COURSE OFFERING` window, because
-  its first 2000 characters are a reference list and classroom rules. With
-  reranking off, that chunk is ordered by embedding similarity over the whole
-  chunk.
-- **Multi-aspect round-robin.** `rerank_multi()` exists because a three-part
-  question pushed its minority ask (CITAS) to rank 13, just past a 12-slot
-  cutoff. That merge is part of the reranker; off means off.
-
-So: reach for this when the box is the problem, not as a default. If answers get
-vaguer after flipping it, this is the first thing to flip back.
-
-### Telling it apart from a broken model
-
-A deliberate switch-off and missing weights produce **identical behaviour**, so
-the startup log distinguishes them explicitly:
-
-```
-[startup] Reranker DISABLED (RERANKER_ENABLED=false) — answers keep hybrid
-          retrieval order and carry no score.
+```powershell
+python -m locust -f tools/loadtest_chat.py --headless -u 30 -r 30 --run-time 30s --host http://127.0.0.1:8765 --chat-guest
 ```
 
-versus the existing `[startup] WARNING: reranker OFF ... fix: python
-download_model.py`. One is a configuration, the other is a fault. `docker logs`
-should never leave anyone guessing which.
+This is **transport/tool validation only**, not a benchmark of Flask/Gunicorn
+with real embeddings, Pinecone or an LLM. The fixture health marker reports
+distinct sessions, peak active requests and completed responses. Modes such as
+`--mode missing-done`, `--mode error` and `--mode disconnect` must fail the test,
+even when the HTTP status is 200. `--chunk-size 3` tests split frames.
 
-Accepted false values are `false`, `0`, `no`, `off` (any case, surrounding
-whitespace ignored). **Anything else leaves reranking on**, including typos —
-the safe direction, since the alternative is someone believing they disabled a
-3.5 s CPU phase that is in fact still running on every question.
+Use the `SSE /chat/get complete` metric for completed answers and `SSE-TTFT` for
+first-answer-token latency. `AUTH` is separate. Locust's Aggregate combines these
+different measurements and is not answer throughput. Each user asks once by
+default; the run then exits automatically. `--chat-turns 2` makes 60 requests and
+exercises paired followups. Questions, credentials and answer text are not logged.
 
----
+## Authorized live rehearsal
 
-## Beyond one box
+Live testing is deliberately blocked unless `ALLOW_LIVE=1` is explicitly set.
+Even localhost must expose the fixture marker unless live mode is authorized.
+Real remote targets require HTTPS. Use pre-existing, distinct test accounts via
+`--chat-accounts` and an external JSON file containing `email`/`password` entries;
+never commit credentials or use real student records. Do not run the generator
+on the small production EC2 instance itself.
 
-The ceiling here is one CPU-bound phase sharing a machine with a web server. In
-rough order of effort:
-
-1. **Move the reranker out of the request path** — its own service, its own
-   instance, scaled independently. `rerank()` is already a pure function of
-   (queries, docs), so this is an HTTP boundary and nothing more.
-2. **Two app containers behind a load balancer.** `/health` already answers
-   `200 OK` for the target group. Note the prerequisite: `STORE_BACKEND=dynamodb`,
-   or admin decisions apply to only half the traffic — see
-   [SHARED_STORAGE.md](SHARED_STORAGE.md), which exists because that silently
-   happened.
-3. **Cache answers to repeated questions.** During enrollment week the same
-   handful of questions dominate, and `rag/analytics.py` already knows which.
-
----
-
-## What is tested
-
-`tests/test_capacity.py` (in `python run_tests.py`) covers the properties above
-with a fake model, so it needs no weights, no network and no AWS:
-
-- concurrent scoring never exceeds `RERANKER_CONCURRENCY`, via both `rerank()`
-  and `rerank_multi()` — the two independent `predict()` call sites
-- a queued request is served, not dropped
-- a full queue returns retrieval order after the timeout instead of hanging
-- slots survive repeated inference failures, so capacity cannot bleed away
-- `RERANKER_ENABLED` defaults to **off**, matching the `Dockerfile` and this
-  document — the three drifted apart once and the test is what catches it
-- every accepted false spelling (`false`/`0`/`no`/`off`) disables it and every
-  unrecognised value does not, so an explicit `RERANKER_ENABLED=true` cannot be
-  defeated by a typo
-- torch is imported even when reranking is disabled, pinning the memory claim
-  above to something executable rather than to a comment
-
-- disabled returns retrieval order, reaches no model, takes no semaphore slot and
-  leaves no `rerank_score` behind — `n/a` in the log is true, `0.0` would not be
-- the startup banner distinguishes a deliberate switch-off from broken weights
-- the `Dockerfile` still agrees with the code about threads, workers,
-  `--max-requests` and `/dev/shm`
-
-
-That last one exists because this class of bug is a disagreement between a
-config file and an assumption in code, and nothing else in the suite would
-notice. Every other suite asks one question at a time — which is also how
-development happens, and why unbounded concurrent scoring was invisible until it
-was deployed.
+After approval, test 5, 10, 20, then 30 sessions; repeat with varied questions, both
+cold and warm caches, and followups. Require completed streams, correct session
+isolation, intact feedback/history, no unexpected worker restarts, and acceptable
+p95 first-token and completion times. Inspect CPU/RAM and 429/5xx responses.
+Do not substitute `/health` checks or repeated identical cached queries for this
+rehearsal. Real LLM calls consume account quota and may incur costs.

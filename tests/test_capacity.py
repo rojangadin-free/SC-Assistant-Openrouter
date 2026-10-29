@@ -368,6 +368,14 @@ check(
     "gunicorn runs 3 workers (memory ceiling on an 8 GB box)",
     '"--workers", "3"' in dockerfile,
 )
+check("gthread has 36 HTTP slots without extra model processes",
+      '"--worker-class", "gthread"' in dockerfile and '"--threads", "12"' in dockerfile)
+check("all workers share the 30-turn admission budget",
+      "CHAT_MAX_ACTIVE=30" in dockerfile and "SC_RUNTIME_DB=/tmp/sc-assistant-runtime.sqlite3" in dockerfile)
+check("graceful restarts allow the normal request deadline",
+      '"--graceful-timeout", "120"' in dockerfile and "CHAT_TIMEOUT_SECONDS=90" in dockerfile)
+check("expensive web indexing is paused in the beta image",
+      "WEB_INDEXING_ENABLED=false" in dockerfile)
 # The worker count is a memory budget, and the budget only holds because every
 # worker is ~1.3 GB. If reranking is ever switched back on in the image, the
 # 3.5 s CPU phase returns and 3 processes on 2 cores start fighting — so these

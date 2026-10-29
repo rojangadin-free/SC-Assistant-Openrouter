@@ -157,9 +157,9 @@ def create_app():
                 print(
                     "[startup] Reranker DISABLED (RERANKER_ENABLED=false) — answers "
                     "keep hybrid retrieval order and carry no score.\n"
-                    "           capacity : higher (no CPU-bound phase, torch not loaded)\n"
+                    "           capacity : reranking cost removed; CPU embeddings remain\n"
                     "           quality  : ordering within the top-K is unranked\n"
-                    "           re-enable: unset RERANKER_ENABLED, see docs/CAPACITY.md"
+                    "           re-enable: set RERANKER_ENABLED=true; load-test before use"
                 )
                 return
 

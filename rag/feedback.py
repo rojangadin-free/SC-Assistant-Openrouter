@@ -202,8 +202,7 @@ def record_vote(
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     try:
-        with _lock:
-            store = _load()
+        def update(store):
             votes = store.setdefault("votes", {})
 
             votes[msg_id] = {
@@ -229,8 +228,8 @@ def record_vote(
                     topics[key] = _rebuild_topic(key, store["votes"])
             store["topics"] = topics
 
-            _save(store)
             return topics.get(topic_key)
+        return _store().mutate(update, return_result=True)
     except Exception as e:
         print(f"  [feedback] could not record vote (non-fatal): {e}")
         return None
@@ -327,8 +326,7 @@ def regression_questions(min_upvotes: int = 1) -> List[dict]:
 
 def delete_topic(key: str) -> bool:
     """Drop a topic and its votes (test traffic, spam)."""
-    with _lock:
-        store = _load()
+    def update(store):
         votes = store.get("votes", {})
         doomed = [mid for mid, v in votes.items() if v.get("topic_key") == key]
         if not doomed and key not in store.get("topics", {}):
@@ -337,5 +335,5 @@ def delete_topic(key: str) -> bool:
             del votes[mid]
         store.get("topics", {}).pop(key, None)
         store["votes"] = votes
-        _save(store)
         return True
+    return _store().mutate(update, return_result=True)

@@ -108,6 +108,11 @@ def upload_file():
     """
     if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
+    if os.getenv("WEB_INDEXING_ENABLED", "true").strip().lower() not in ("1", "true", "yes", "on"):
+        return jsonify({
+            "success": False,
+            "message": "Document indexing is paused during the beta. Enable WEB_INDEXING_ENABLED outside testing hours.",
+        }), 503
     if "files[]" not in request.files:
         return jsonify({"success": False, "message": "No file part"}), 400
 

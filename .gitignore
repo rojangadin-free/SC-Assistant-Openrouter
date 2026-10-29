@@ -101,6 +101,9 @@ coverage.xml
 *.py.cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
+*.json.lock
+*.sqlite3*
 cover/
 
 # Translations

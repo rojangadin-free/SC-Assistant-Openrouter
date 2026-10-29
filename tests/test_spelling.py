@@ -513,7 +513,7 @@ def score(pairs, **kwargs):
 
 
 namespace = {
-    "re": re, "concurrent": concurrent, "datetime": datetime,
+    "os": os, "re": re, "concurrent": concurrent, "datetime": datetime,
     "List": list, "Dict": dict, "Optional": Optional, "ChatState": dict,
     "StateGraph": _Graph, "END": None, "InMemorySaver": lambda: None,
     "HumanMessage": SimpleNamespace, "SystemMessage": SimpleNamespace,
@@ -524,8 +524,9 @@ namespace = {
     "retriever": SimpleNamespace(invoke=fetch),
     "rerank": reranker.rerank, "rerank_multi": reranker.rerank_multi,
     "summarizer": SimpleNamespace(invoke=optimize),
-    "source_priority": lambda *args: {}, "doc_key": lambda source: source,
-    "authority_block": lambda *args: "", "freshness_block": lambda *args: "",
+    "source_priority": lambda *args, **kwargs: {}, "doc_key": lambda source: source,
+    "get_doc_dates": lambda: {},
+    "authority_block": lambda *args: "", "freshness_block": lambda *args, **kwargs: "",
     "calendar_block": lambda *args: "", "announcement_block": lambda **kwargs: "",
     "resolve_role": lambda *args, **kwargs: "student",
     "announcement_audience": lambda role: "students", "role_block": lambda role: "",
@@ -534,6 +535,10 @@ namespace = {
     "build_citations": lambda docs: [doc.metadata["chunk_id"] for doc in docs],
     "print": lambda *args, **kwargs: None,
 }
+from rag import runtime  # noqa: E402
+for name in ("CapacityError", "RequestBudget", "env_int", "retrieval_pool",
+             "preparation_pool", "optimizer_pool"):
+    namespace[name] = getattr(runtime, name)
 exec(compile(ast.Module(body=selected, type_ignores=[]), "rag/chain.py", "exec"), namespace)
 # A single answer slot makes primary-query contamination impossible to hide
 # behind a large context window; production uses the same selection logic.

@@ -7,7 +7,6 @@ from langchain_openai import ChatOpenAI
 from config import OPENROUTER_API_KEY, CHAT_MODEL_NAME
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, List, Dict, Optional
 from pinecone import Pinecone
 
@@ -19,7 +18,7 @@ from src.helper import get_local_embeddings
 from src.prompt import system_prompt
 from rag.reranker import rerank, rerank_multi
 from rag.conflicts import authority_block
-from rag.freshness import freshness_block, source_priority, doc_key
+from rag.freshness import freshness_block, source_priority, doc_key, get_doc_dates
 
 from rag.citations import build_citations
 
@@ -30,6 +29,11 @@ from rag.roles import resolve_role, announcement_audience, role_block
 from rag.language import language_variants
 from rag.dictation import dictation_variants
 from rag.spelling import correct_query, spelling_variants, misspellings
+from rag.query_embeddings import CachedQueryEmbeddings
+from rag.runtime import (
+    CapacityError, RequestBudget, env_int, retrieval_pool, preparation_pool,
+    optimizer_pool,
+)
 
 from rag.latency import (
     should_optimize, pick_search_query, Deadline, Timings,
@@ -56,7 +60,7 @@ from config import (
 from aws.students import get_student_by_uid, get_student_by_email, format_student_context
 
 # ====== Setup ======
-embeddings = get_local_embeddings()
+embeddings = CachedQueryEmbeddings(get_local_embeddings())
 pinecone = Pinecone(api_key=PINECONE_API_KEY)
 index = pinecone.Index(INDEX_NAME)
 
@@ -367,7 +371,7 @@ def split_question(question: str) -> List[str]:
 
 
 
-def multi_query_retrieve(query: str, extra_queries: List[str] = None) -> list:
+def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=None) -> list:
 
     """
     Fan out to companion queries and merge results, de-duplicated, preserving
@@ -384,27 +388,23 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None) -> list:
         if q and q not in queries:
             queries.append(q)
 
-    # Each query is a network round-trip to Pinecone (two, actually — sparse and
-    # dense). Sequentially that is ~0.5-1 s each and it dominated the multi-part
-    # path; issuing them concurrently makes the fan-out nearly free.
-    result_lists = [None] * len(queries)
-
-    def fetch(i, q):
+    # Reuse the bounded per-worker pool. Two probes per request at a time keep
+    # a multipart question from monopolizing it while preserving every phrasing.
+    def fetch(q):
         try:
-            return i, retriever.invoke(q)
+            return retriever.invoke(q)
+        except (CapacityError, TimeoutError):
+            raise
         except Exception as e:
             print(f"  Retrieval failed for '{q[:48]}...' (non-fatal): {e}")
-            return i, []
+            return []
 
-    if len(queries) == 1:
-        result_lists = [fetch(0, queries[0])[1]]
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(queries), 8)
-        ) as pool:
-            for i, docs in pool.map(lambda a: fetch(*a), list(enumerate(queries))):
-                result_lists[i] = docs
-        result_lists = [r for r in result_lists if r]
+    result_lists = retrieval_pool.map_ordered(
+        fetch, queries,
+        timeout=timeout if timeout is not None else env_int("RETRIEVAL_TIMEOUT_SECONDS", 30),
+        in_flight=2,
+    )
+    result_lists = [r for r in result_lists if r]
 
 
     merged = []
@@ -433,6 +433,7 @@ def retrieve_documents(
     late_query=None,
     timings=None,
     progress=None,
+    request_budget=None,
 ) -> list:
 
 
@@ -537,9 +538,12 @@ def retrieve_documents(
         initial_docs = multi_query_retrieve(
             primary,
             extra_queries=phrasings[1:] + aspects,
+            timeout=request_budget.remaining(30) if request_budget else None,
         )
         if verbose:
             print(f"  RRF + expansion returned {len(initial_docs)} candidates")
+    except (CapacityError, TimeoutError):
+        raise
     except Exception as e:
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
@@ -621,7 +625,8 @@ primary_model = ChatOpenAI(
         }
     },
     timeout=10,
-    max_retries=2
+    max_retries=1,
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=8192),
 )
 
 fallback_model = ChatOpenAI(
@@ -640,7 +645,8 @@ fallback_model = ChatOpenAI(
         }
     },
     timeout=10,
-    max_retries=2
+    max_retries=1,
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=8192),
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -687,15 +693,18 @@ def stream_answer(messages):
                     continue
                 produced = True
                 yield text
+            if not produced:
+                raise RuntimeError("The provider returned no answer text.")
             return  # finished cleanly
         except Exception as e:
             last_error = e
             if produced:
                 # Mid-stream failure. The student already has part of the answer;
                 # swapping models now would splice two different answers
-                # together. Stop and let the caller keep what arrived.
+                # together. Signal failure so the route keeps the partial text
+                # visible but never saves it as a successfully completed answer.
                 print(f"  [{label}] failed mid-stream, keeping partial answer: {e}")
-                return
+                raise
             print(f"  [{label}] refused before the first token, trying next: {e}")
 
     raise last_error if last_error else RuntimeError("No model produced a response.")
@@ -711,7 +720,8 @@ summarizer = ChatOpenAI(
         "reasoning": {"enabled": False}
     },
     timeout=15,
-    max_retries=2
+    max_retries=1,
+    max_tokens=1024,
 )
 
 # ====== Chat State ======
@@ -755,7 +765,7 @@ class ChatState(TypedDict):
 
 
 
-def docs_to_context(docs) -> str:
+def docs_to_context(docs, dates=None) -> str:
     """
     Flatten the selected documents into the prompt's context block, labelling
     which of them supersedes the others.
@@ -780,7 +790,8 @@ def docs_to_context(docs) -> str:
     model is being given evidence rather than an instruction to trust.
     """
     priority = source_priority(
-        *{(getattr(d, "metadata", None) or {}).get("source", "") for d in docs}
+        *{(getattr(d, "metadata", None) or {}).get("source", "") for d in docs},
+        dates=dates,
     )
 
     context_parts = []
@@ -837,6 +848,8 @@ def create_graph():
 
     def call_llm(state: ChatState, config=None):
         try:
+            request_budget = (config or {}).get("configurable", {}).get("budget") or RequestBudget()
+            request_budget.remaining()
             user_text  = state["input"]
             # Use one repaired question for optimization, retrieval, ranking,
             # and generation. An extra probe alone leaves the typo in control
@@ -876,7 +889,7 @@ def create_graph():
                 ])
                 try:
                     desc = summarizer.invoke([vision_msg]).content
-                    print(f"Image Analysis: {desc}")
+                    print("  Image analysis completed.")
                     return desc
                 except Exception as e:
                     print(f"Image analysis failed (non-fatal): {e}")
@@ -903,7 +916,7 @@ def create_graph():
                             )
                         
                         # Full context if consent is enabled
-                        print(f"  Student record fetched: {student.get('full_name')} | balance: PHP {student.get('balance', 'N/A')}")
+                        print("  Student record fetched.")
                         return format_student_context(student)
                     else:
                         print("  No student record found for this user.")
@@ -981,15 +994,15 @@ def create_graph():
 
             # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
             #
-            # `with` is NOT used here. A ThreadPoolExecutor context manager joins
-            # every worker on exit, which would put the optimizer's round-trip
-            # back in front of retrieval — exactly the wait this change removes.
-            # The pool is shut down without waiting instead, and the rewrite is
-            # collected later (or abandoned) by the callback below.
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+            # Pools are shared and bounded across this worker's requests. The
+            # optional optimizer has its own small pool and never queues behind
+            # another student's slow rewrite. Do not join these pools per turn.
+            executor = preparation_pool
+            budget = Deadline()
+            future_img = future_student = future_query = None
             try:
-                future_img     = executor.submit(task_image_analysis)
-                future_student = executor.submit(task_student_fetch)
+                future_img = executor.submit(task_image_analysis) if image_data else None
+                future_student = executor.submit(task_student_fetch) if uid else None
 
                 # The rewrite is only worth waiting for when the question cannot
                 # be searched as typed — a follow-up, or too thin. For a
@@ -997,9 +1010,11 @@ def create_graph():
                 # and the literal words retrieve the same documents. The decision
                 # lives in rag/latency.py so it is testable without a network.
                 wants_rewrite = should_optimize(user_text, history)
-                future_query = (
-                    executor.submit(task_query_optimization) if wants_rewrite else None
-                )
+                if wants_rewrite:
+                    try:
+                        future_query = optimizer_pool.submit(task_query_optimization)
+                    except CapacityError:
+                        wants_rewrite = False
 
                 # Only claimed when the rewrite is genuinely running. On the
                 # skip path this phase does not exist, and showing it anyway
@@ -1014,8 +1029,9 @@ def create_graph():
                 # allowed to say, so proceeding without them would produce a
                 # different (wrong) answer rather than a slower one. Only the
                 # rewrite is optional, because it only affects recall.
-                image_description = future_img.result()
-                student_context   = future_student.result()
+                image_description = future_img.result(timeout=request_budget.remaining(30)) if future_img else None
+                student_context = future_student.result(timeout=request_budget.remaining(15)) if future_student else ""
+                request_budget.remaining()
 
                 if future_query is None:
                     timings.note("optimizer", "skipped")
@@ -1025,7 +1041,6 @@ def create_graph():
                         return ""
                 else:
                     standalone_query = user_text
-                    budget = Deadline()
 
                     def late_rewrite():
                         """
@@ -1040,7 +1055,7 @@ def create_graph():
                         """
                         try:
                             rewritten = future_query.result(
-                                timeout=budget.remaining()
+                                timeout=min(budget.remaining(), request_budget.remaining())
                             )
                         except concurrent.futures.TimeoutError:
                             timings.note("optimizer", "too-late")
@@ -1064,19 +1079,21 @@ def create_graph():
                 final_docs = retrieve_documents(
                     standalone_query,
                     top_k=FINAL_TOP_K,
-                    verbose=True,
+                    verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
                     user_question=user_text,
                     late_query=late_rewrite,
                     timings=timings,
                     progress=progress,
+                    request_budget=request_budget,
                 )
 
                 timings.stop("retrieval+rerank")
             finally:
-                # Non-blocking: a rewrite still in flight is allowed to finish on
-                # its own thread and be discarded. Joining here would reintroduce
-                # the wait for a result nobody is going to read.
-                executor.shutdown(wait=False)
+                # Cancel work that has not started. Running calls keep their
+                # pool slot until completion; cancellation never creates capacity.
+                for future in (future_img, future_student, future_query):
+                    if future is not None:
+                        future.cancel()
 
             # Retrieval is done; everything from here to the answer call is
             # prompt assembly — verified facts, document dates, calendar,
@@ -1098,13 +1115,16 @@ def create_graph():
             standalone_query = pick_search_query(user_text, standalone_query)
 
 
-            context_str = docs_to_context(final_docs)
+            request_budget.remaining()
+            dates = get_doc_dates()
+            context_str = docs_to_context(final_docs, dates=dates)
 
 
             # === STEP 3: Handle Conversation Summary ===
             if len(history) > 10:
                 try:
-                    summary = summarize_history(history[:-6])
+                    summary_future = optimizer_pool.submit(summarize_history, history[:-6])
+                    summary = summary_future.result(timeout=request_budget.remaining(3))
                     history = [
                         {"role": "system",
                          "content": f"Previous conversation summary: {summary}"}
@@ -1135,7 +1155,8 @@ def create_graph():
             # question pays nothing.
             document_dates = freshness_block(
                 *{(getattr(d, "metadata", None) or {}).get("source", "")
-                  for d in final_docs}
+                  for d in final_docs},
+                dates=dates,
             )
             if document_dates:
                 print(f"  Applied document dates:\n{document_dates}")
@@ -1205,6 +1226,7 @@ def create_graph():
 
 
             # === STEP 4: Assemble Messages for Flask Streaming ===
+            request_budget.remaining()
             messages = [SystemMessage(content=final_system_prompt)]
 
             if image_data:
@@ -1247,6 +1269,8 @@ def create_graph():
     graph.add_node("llm", call_llm)
     graph.set_entry_point("llm")
     graph.add_edge("llm", END)
-    return graph.compile(checkpointer=InMemorySaver())
+    # Chat passes history explicitly from shared storage. Retaining checkpoints
+    # here duplicates documents/images indefinitely and makes guests worker-local.
+    return graph.compile()
 
 app_graph = create_graph()

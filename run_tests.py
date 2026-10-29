@@ -113,6 +113,10 @@ SUITES = [
     # happens, which is why unbounded concurrent scoring on a 2-vCPU box was
     # invisible until it was deployed. See docs/CAPACITY.md.
     ("Reranker concurrency (load)",      "test_capacity.py"),
+    ("Bounded RAG pools and query cache", "test_runtime.py"),
+    ("Cross-worker storage transactions", "test_storage_concurrency.py"),
+    ("Concurrent chat and admission",     "test_chat_concurrency.py"),
+    ("SSE load-test protocol and safety", "test_loadtest_chat.py"),
 
 
     # Last of the query-path unit suites, and deliberately after them: it decides

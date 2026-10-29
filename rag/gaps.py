@@ -357,8 +357,7 @@ def record_gap(
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
-        with _lock:
-            store = _load()
+        def update(store):
             gaps = store.setdefault("gaps", {})
             entry = gaps.get(key)
 
@@ -402,8 +401,8 @@ def record_gap(
 
             gaps[key] = entry
             store["gaps"] = _prune(gaps)
-            _save(store)
             return entry
+        return _store().mutate(update, return_result=True)
     except Exception as e:
         print(f"  [gaps] could not record gap (non-fatal): {e}")
         return None
@@ -441,8 +440,7 @@ def set_gap_status(key: str, status: str, *, resolved_by: str = "", note: str = 
     """Mark a topic resolved (document uploaded) or reopen it."""
     if status not in ("open", "resolved"):
         return None
-    with _lock:
-        store = _load()
+    def update(store):
         entry = store.get("gaps", {}).get(key)
         if not entry:
             return None
@@ -456,16 +454,15 @@ def set_gap_status(key: str, status: str, *, resolved_by: str = "", note: str = 
         if note:
             entry["note"] = note.strip()[:500]
         store["gaps"][key] = entry
-        _save(store)
         return entry
+    return _store().mutate(update, return_result=True)
 
 
 def delete_gap(key: str) -> bool:
     """Remove a topic entirely (e.g. spam or a test question)."""
-    with _lock:
-        store = _load()
+    def update(store):
         if key in store.get("gaps", {}):
             del store["gaps"][key]
-            _save(store)
             return True
-    return False
+        return False
+    return _store().mutate(update, return_result=True)

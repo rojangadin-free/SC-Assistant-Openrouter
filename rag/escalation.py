@@ -186,8 +186,7 @@ def create_escalation(
     esc_id = str(uuid.uuid4())
 
     try:
-        with _lock:
-            store = _load()
+        def update(store):
             items = store.setdefault("items", {})
             items[esc_id] = {
                 "id": esc_id,
@@ -212,9 +211,8 @@ def create_escalation(
                 "created_at": now,
             }
             store["items"] = _prune(items)
-            _save(store)
-
             return store["items"].get(esc_id)
+        return _store().mutate(update, return_result=True)
     except Exception as e:
         print(f"  [escalation] could not create (non-fatal): {e}")
         return None
@@ -262,8 +260,7 @@ def answer_escalation(esc_id: str, reply: str, *, answered_by: str = "") -> Opti
     reply = " ".join((reply or "").split())
     if not reply:
         return None
-    with _lock:
-        store = _load()
+    def update(store):
         item = store.get("items", {}).get((esc_id or "").strip())
         if not item:
             return None
@@ -275,8 +272,8 @@ def answer_escalation(esc_id: str, reply: str, *, answered_by: str = "") -> Opti
         # on create) means an edited or re-sent answer re-notifies the student,
         # which is the behaviour they would expect from a message.
         item["read_at"] = ""
-        _save(store)
         return item
+    return _store().mutate(update, return_result=True)
 
 
 # ============================================================
@@ -350,8 +347,7 @@ def mark_escalation_read(esc_id: str, *, student_email: str = "", contact: str =
     if not ident:
         return False
 
-    with _lock:
-        store = _load()
+    def update(store):
         item = store.get("items", {}).get((esc_id or "").strip())
         if not item:
             return False
@@ -360,16 +356,15 @@ def mark_escalation_read(esc_id: str, *, student_email: str = "", contact: str =
         if item.get("read_at"):
             return True
         item["read_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        _save(store)
         return True
+    return _store().mutate(update, return_result=True)
 
 
 def set_status(esc_id: str, status: str) -> Optional[dict]:
     """Dismiss spam, or push a row back into the queue."""
     if status not in STATUSES:
         return None
-    with _lock:
-        store = _load()
+    def update(store):
         item = store.get("items", {}).get((esc_id or "").strip())
         if not item:
             return None
@@ -379,15 +374,14 @@ def set_status(esc_id: str, status: str) -> Optional[dict]:
             item["answered_by"] = ""
             item["answered_at"] = ""
 
-        _save(store)
         return item
+    return _store().mutate(update, return_result=True)
 
 
 def delete_escalation(esc_id: str) -> bool:
-    with _lock:
-        store = _load()
+    def update(store):
         if (esc_id or "").strip() in store.get("items", {}):
             del store["items"][esc_id.strip()]
-            _save(store)
             return True
-    return False
+        return False
+    return _store().mutate(update, return_result=True)

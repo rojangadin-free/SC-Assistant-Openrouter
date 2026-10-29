@@ -67,7 +67,7 @@ class FakeTable:
         self.writes = 0
         self.fail_next_read = False
 
-    def get_item(self, Key):
+    def get_item(self, Key, **kwargs):
         self.reads += 1
         if self.fail_next_read:
             self.fail_next_read = False
@@ -75,7 +75,7 @@ class FakeTable:
         item = self.items.get(Key["store"])
         return {"Item": item} if item else {}
 
-    def put_item(self, Item):
+    def put_item(self, Item, **kwargs):
         self.writes += 1
         self.items[Item["store"]] = dict(Item)
 

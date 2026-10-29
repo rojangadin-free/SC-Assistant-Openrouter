@@ -1,13 +1,11 @@
-import boto3
 import datetime
 import uuid
 from boto3.dynamodb.conditions import Key
-from config import AWS_REGION
+from aws.dynamodb_access import ThreadLocalTable
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
-files_table         = dynamodb.Table("Files")
-conversations_table = dynamodb.Table("Conversations")
-reports_table       = dynamodb.Table("SCAssistantReports")
+files_table = ThreadLocalTable("Files")
+conversations_table = ThreadLocalTable("Conversations")
+reports_table = ThreadLocalTable("SCAssistantReports")
 
 
 # ── Files ────────────────────────────────────────────────────
@@ -51,7 +49,7 @@ def list_conversations(uid):
 
 def get_conversation(uid, conv_id):
     """Retrieves a specific conversation from DynamoDB."""
-    resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid})
+    resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid}, ConsistentRead=True)
     return resp.get("Item")
 
 

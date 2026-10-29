@@ -69,20 +69,18 @@ client = read("sc_assistant/static/js/chat.js")
 # -- 1. captions are streamed WHILE the pipeline runs ----------------------
 check(
     "the pipeline runs on a worker thread",
-    "threading.Thread(" in server and "app_graph.invoke(input_payload" in server,
+    "answer_pool.submit(run_pipeline)" in server and "app_graph.invoke(input_payload" in server,
 )
 check(
     "the generator polls for captions while the pipeline runs",
-    bool(re.search(r"while not \w+\.wait\(", server)),
+    "while not finished.is_set() or not chunks.empty():" in server,
 )
 check(
     "captions are drained inside that loop, not only after the answer",
-    bool(
-        re.search(
-            r"while not \w+\.wait\([^)]*\):\s*\n\s*for event in progress\.drain\(\)",
-            server,
-        )
-    ),
+    "progress.drain()" in server[
+        server.find("while not finished.is_set()"):
+        server.find("# Anything published between")
+    ],
 )
 check(
     "a failure on the worker thread still reaches the browser as an error event",

@@ -54,20 +54,26 @@ network round-trip instead of a scan, and it preserves the "load the dict, mutat
 save the dict" pattern the callers already use, so aggregate rebuilds
 (`_rebuild_topic()`) keep working untouched.
 
-The cost is the 400 KB item limit and last-writer-wins between two simultaneous
-admins. Both are acceptable here: 400 KB is far beyond the row caps, and two
-admins resolving the *same* key in the same second is a coin flip either way —
-what matters is that neither of them silently loses the *other* key's decision,
-which per-item storage guarantees and a shared file does not.
+Mutations use consistent reads and conditional revisions, retrying a callback
+against fresh data on conflict. File mutations lock across processes. Plain
+load/save is explicit replacement, not a read-modify-write transaction. The
+400 KB DynamoDB item limit still matters: row caps do NOT guarantee it fits;
+oversized writes are rejected rather than silently pruning additional records.
 """
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import os
+import random
+import tempfile
 import threading
-from typing import Callable, Optional
+import time
+import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 
 # The switch. Read at call time rather than import time so a test can flip it.
 _BACKEND_ENV = "STORE_BACKEND"
@@ -91,27 +97,58 @@ def _utcnow() -> str:
 # RAG pipeline — and every test that touches it — depend on boto3 being installed
 # and credentials being present, to support a backend most runs do not use.
 # ---------------------------------------------------------------------------
-_ddb_lock = threading.Lock()
-_ddb_table = None
+_file_locks = {}
+_file_locks_guard = threading.Lock()
 
 
 def _table():
-    global _ddb_table
-    with _ddb_lock:
-        if _ddb_table is None:
-            import boto3  # noqa: WPS433 — deliberately deferred, see above
-            from config import AWS_REGION
-
-            name = os.getenv(_TABLE_ENV) or _DEFAULT_TABLE
-            _ddb_table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(name)
-        return _ddb_table
+    from aws.dynamodb_access import get_table
+    return get_table(os.getenv(_TABLE_ENV) or _DEFAULT_TABLE)
 
 
 def reset_cache() -> None:
     """Drop the memoized table handle (tests that switch backends mid-run)."""
-    global _ddb_table
-    with _ddb_lock:
-        _ddb_table = None
+    from aws.dynamodb_access import reset_tables
+    reset_tables()
+
+
+@contextmanager
+def _file_transaction(path):
+    path = os.path.abspath(path)
+    with _file_locks_guard:
+        lock = _file_locks.setdefault(path, threading.RLock())
+    if not lock.acquire(timeout=8):
+        raise TimeoutError("Storage is busy.")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "a+b") as handle:
+            # Windows byte-range locks may extend past EOF. Writing a marker
+            # first races with another process already holding that byte's lock.
+            deadline = time.monotonic() + 8
+            while True:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Storage is busy.") from None
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock.release()
 
 
 class JsonBlobStore:
@@ -141,15 +178,18 @@ class JsonBlobStore:
             return self._load_ddb()
         return self._load_file()
 
-    def _load_file(self) -> dict:
+    def _load_file(self, strict=False) -> dict:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
                 if isinstance(data, dict):
                     return data
+                raise ValueError("Store must contain a JSON object.")
         except FileNotFoundError:
             pass
         except Exception as e:
+            if strict:
+                raise
             # A corrupt or half-written file must not take the app down: the
             # assistant answering questions matters more than an admin's
             # bookkeeping, and returning the default degrades to "no decisions
@@ -159,13 +199,13 @@ class JsonBlobStore:
 
     def _load_ddb(self) -> dict:
         try:
-            resp = _table().get_item(Key={"store": self.name})
+            resp = _table().get_item(Key={"store": self.name}, ConsistentRead=True)
             item = resp.get("Item")
             if item and item.get("payload"):
                 data = json.loads(item["payload"])
                 if isinstance(data, dict):
                     return data
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - read-only lookup degrades gracefully
             # Same reasoning as above, one step more important: a DynamoDB
             # throttle or a dropped connection must not turn into a failed answer.
             print(f"  [store:{self.name}] DynamoDB read failed: {e}")
@@ -177,42 +217,101 @@ class JsonBlobStore:
         if _backend() == "dynamodb":
             self._save_ddb(data)
         else:
-            self._save_file(data)
+            with _file_transaction(self.path):
+                self._save_file(data)
 
     def _save_file(self, data: dict) -> None:
         # Write-then-rename: a crash mid-write leaves the previous good file
         # rather than a truncated one.
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        parent = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(parent, exist_ok=True)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=parent,
+                prefix=os.path.basename(self.path) + ".", suffix=".tmp", delete=False,
+            ) as fh:
+                tmp = fh.name
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
 
-    def _save_ddb(self, data: dict) -> None:
+    def _save_ddb(self, data: dict, **conditions) -> None:
         # Stored as a JSON string rather than a native map. DynamoDB rejects empty
         # strings in some contexts, coerces numbers to Decimal, and would force
         # every caller to sanitise its dict before saving; a blob round-trips
         # byte-for-byte, which is what "the file used to work like this" requires.
+        payload = json.dumps(data, ensure_ascii=False)
+        if len(payload.encode("utf-8")) > 390 * 1024:
+            raise ValueError("Store exceeds the safe DynamoDB item-size budget.")
         _table().put_item(Item={
             "store": self.name,
-            "payload": json.dumps(data, ensure_ascii=False),
+            "payload": payload,
             "updated_at": data["updated_at"],
-        })
+            "revision": uuid.uuid4().hex,
+        }, **conditions)
 
     # -- convenience ------------------------------------------------------
-    def mutate(self, fn: Callable[[dict], Optional[bool]]) -> dict:
+    def mutate(self, fn: Callable[[dict], object], *, return_result=False):
         """
-        load -> fn(store) -> save, under this process's lock.
+        Cross-process transaction. DynamoDB conflicts rerun fn on fresh data.
 
         `fn` may return False to abort the write, which is how "delete something
         that was not there" avoids an unnecessary round-trip while still being
         idempotent for the caller.
         """
-        with self.lock:
-            data = self.load()
-            if fn(data) is False:
-                return data
-            self.save(data)
-            return data
+        if _backend() != "dynamodb":
+            with _file_transaction(self.path):
+                data = self._load_file(strict=True)
+                before = copy.deepcopy(data)
+                result = fn(data)
+                if result is not False and data != before:
+                    data["updated_at"] = _utcnow()
+                    self._save_file(data)
+                return result if return_result else data
+
+        deadline = time.monotonic() + 8
+        for attempt in range(30):
+            # Never use load() here: its graceful read fallback must not turn a
+            # throttle or corrupt document into an empty store that overwrites data.
+            item = _table().get_item(Key={"store": self.name}, ConsistentRead=True).get("Item")
+            data = json.loads(item["payload"]) if item is not None else self._default()
+            if not isinstance(data, dict):
+                raise TypeError("Store must contain a JSON object.")
+            before = copy.deepcopy(data)
+            result = fn(data)
+            if result is False or data == before:
+                return result if return_result else data
+            data["updated_at"] = _utcnow()
+            if item is None:
+                conditions = {"ConditionExpression": "attribute_not_exists(#pk)",
+                              "ExpressionAttributeNames": {"#pk": "store"}}
+            elif "revision" in item:
+                conditions = {"ConditionExpression": "#rev = :rev",
+                              "ExpressionAttributeNames": {"#rev": "revision"},
+                              "ExpressionAttributeValues": {":rev": item["revision"]}}
+            else:
+                # Upgrade existing, unversioned records without a migration or
+                # overwriting a concurrent legacy edit made after our read.
+                conditions = {
+                    "ConditionExpression": "attribute_not_exists(#rev) AND #payload = :payload",
+                    "ExpressionAttributeNames": {"#rev": "revision", "#payload": "payload"},
+                    "ExpressionAttributeValues": {":payload": item["payload"]},
+                }
+            try:
+                self._save_ddb(data, **conditions)
+                return result if return_result else data
+            except Exception as error:
+                code = getattr(error, "response", {}).get("Error", {}).get("Code")
+                if code != "ConditionalCheckFailedException":
+                    raise
+                if attempt == 29 or time.monotonic() >= deadline:
+                    raise TimeoutError("Store changed repeatedly; please retry.") from error
+                time.sleep(random.uniform(0.001, min(0.15, 0.005 * (attempt + 1))))
 
 
 def describe_backend() -> dict:

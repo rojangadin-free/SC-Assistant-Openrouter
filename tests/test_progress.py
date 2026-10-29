@@ -393,7 +393,7 @@ check(
 # invoked out in the route, after the graph has returned.
 check(
     "the route itself announces 'writing' before the first token",
-    "'phase': 'writing'" in chat_src,
+    'progress.publish("writing")' in chat_src,
 )
 
 

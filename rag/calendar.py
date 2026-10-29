@@ -295,8 +295,7 @@ def set_period(
         return None
 
     key = label.lower()
-    with _lock:
-        store = _load()
+    def update(store):
         existing = store.setdefault("periods", {}).get(key, {})
         # A correction keeps the capitalisation the admin originally typed. Only
         # a genuinely different label (not just a different case) replaces it.
@@ -316,8 +315,8 @@ def set_period(
             "set_by": set_by or existing.get("set_by", ""),
             "set_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
-        _save(store)
         return store["periods"][key]
+    return _store().mutate(update, return_result=True)
 
 
 
@@ -329,13 +328,12 @@ def list_periods() -> List[dict]:
 
 
 def delete_period(key: str) -> bool:
-    with _lock:
-        store = _load()
+    def update(store):
         if (key or "").strip().lower() in store.get("periods", {}):
             del store["periods"][key.strip().lower()]
-            _save(store)
             return True
-    return False
+        return False
+    return _store().mutate(update, return_result=True)
 
 
 # ---------------------------------------------------------------------------
