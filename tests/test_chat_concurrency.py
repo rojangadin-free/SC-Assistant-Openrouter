@@ -2,6 +2,7 @@
 
 import ast
 import concurrent.futures
+import copy
 import datetime
 import json
 import multiprocessing
@@ -12,6 +13,7 @@ import threading
 import time
 import unittest
 import uuid
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -96,13 +98,23 @@ class ChatTests(unittest.TestCase):
             "app_graph": SimpleNamespace(invoke=invoke), "stream_answer": stream,
             "looks_unanswered": lambda _: False, "record_gap": lambda *a, **k: None,
             "get_conversation": lambda uid, cid: {"messages": self.saved.get((uid, cid), [])},
+            "list_conversations": lambda uid: [],
             "upsert_conversation": save,
         }
         source = ast.parse(Path("sc_assistant/chat.py").read_text(encoding="utf-8"))
         functions = [n for n in source.body if isinstance(n, ast.FunctionDef)
-                     and n.name in ("_is_guest", "chat")]
+                     and n.name in ("_is_guest", "chat", "conversations", "conversation")]
+        helpers = ast.parse(Path("sc_assistant/utils.py").read_text(encoding="utf-8"))
+        functions.extend(n for n in helpers.body if isinstance(n, ast.FunctionDef)
+                         and n.name == "json_safe_sets")
+        reports = ast.parse(Path("sc_assistant/admin_reports.py").read_text(encoding="utf-8"))
+        functions.extend(n for n in reports.body if isinstance(n, ast.FunctionDef)
+                         and n.name in ("_require_admin", "api_get_reported_conversation"))
+        self.ns["bp_reports"] = Blueprint("reports", __name__, url_prefix="/admin/reports")
+        self.ns["is_admin"] = lambda: session.get("role") == "admin"
         exec(compile(ast.Module(body=functions, type_ignores=[]), "sc_assistant/chat.py", "exec"), self.ns)  # noqa: S102
         app.register_blueprint(bp)
+        app.register_blueprint(self.ns["bp_reports"])
         self.app = app
 
     def client(self, ident, guest=True):
@@ -234,6 +246,70 @@ class ChatTests(unittest.TestCase):
             _, text = self.ask("save-failed")
         self.assertIn('"type": "error"', text)
         self.assertNotIn('"type": "done"', text)
+
+    def test_history_endpoints_serialize_nested_dynamodb_sets(self):
+        record = {
+            "conv_id": "history-1", "uid": "reader", "title": "School offices",
+            "tags": {"school", "offices"}, "rating": Decimal("1.50"),
+            "messages": [
+                {"role": "user", "content": "List the school offices."},
+                {"role": "assistant", "content": "See the handbook.", "citations": [
+                    {"source": "handbook.pdf", "pages": {Decimal(10), Decimal(2), Decimal(1)},
+                     "sections": {"Registrar", "Admissions"}},
+                ]},
+            ],
+        }
+        original = copy.deepcopy(record)
+        self.ns["list_conversations"] = lambda uid: [record] if uid == "reader" else []
+        self.ns["get_conversation"] = lambda uid, cid: record if (uid, cid) == ("reader", "history-1") else None
+        client = self.client("reader", guest=False)
+        for path in ("/chat/conversations", "/chat/conversation/history-1"):
+            with self.subTest(path=path):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200)
+                result = response.get_json()
+                item = result[0] if isinstance(result, list) else result
+                self.assertEqual(item["tags"], ["offices", "school"])
+                citation = item["messages"][1]["citations"][0]
+                self.assertEqual(citation["pages"], ["1", "2", "10"])
+                self.assertEqual(citation["sections"], ["Admissions", "Registrar"])
+                self.assertEqual(item["rating"], "1.50")
+        self.assertEqual(record, original)
+        self.assertIsInstance(record["tags"], set)
+
+    def test_history_permissions_and_missing_conversations_are_unchanged(self):
+        for client in (self.app.test_client(), self.client("guest-reader")):
+            self.assertEqual(client.get("/chat/conversations").get_json(), [])
+            self.assertEqual(client.get("/chat/conversation/other").status_code, 401)
+        self.ns["get_conversation"] = lambda uid, cid: None
+        self.assertEqual(self.client("reader", guest=False).get("/chat/conversation/missing").status_code, 404)
+
+    def test_reported_history_uses_the_same_safe_response_boundary(self):
+        self.ns["get_conversation"] = lambda uid, cid: {
+            "conv_id": cid, "uid": uid, "messages": [], "tags": {"office", "policy"},
+        }
+        path = "/admin/reports/api/conversation/reader/history-1"
+        self.assertEqual(self.client("reader", guest=False).get(path).status_code, 403)
+        admin = self.client("admin", guest=False)
+        with admin.session_transaction() as sess:
+            sess["role"] = "admin"
+        response = admin.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["tags"], ["office", "policy"])
+
+    def test_json_collection_conversion_keeps_lists_and_scalars_intact(self):
+        source = {"messages": ["second", "first"], "empty": set(), "frozen": frozenset({"b", "a"}),
+                  "tuple": ({"nested": {3, 1}},), "nothing": None, "flag": False,
+                  "precise": Decimal("0.1000000000000000001")}
+        converted = self.ns["json_safe_sets"](source)
+        self.assertEqual(converted["messages"], ["second", "first"])
+        self.assertEqual(converted["empty"], [])
+        self.assertEqual(converted["frozen"], ["a", "b"])
+        self.assertEqual(converted["tuple"], [{"nested": [1, 3]}])
+        self.assertIsNone(converted["nothing"])
+        self.assertIs(converted["flag"], False)
+        self.assertIs(converted["precise"], source["precise"])
+        self.assertIsInstance(source["tuple"][0]["nested"], set)
 
     def test_guest_history_is_shared_between_processes_and_expires(self):
         context = multiprocessing.get_context("spawn")

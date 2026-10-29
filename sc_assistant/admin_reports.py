@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, session, render_template, redirect, url_for
-from .utils import is_admin
+from .utils import is_admin, json_safe_sets
 from aws.dynamodb import list_reports, update_report_status, get_conversation
 
 bp_reports = Blueprint('reports', __name__, url_prefix='/admin/reports')
@@ -53,4 +53,4 @@ def api_get_reported_conversation(reporter_uid, conv_id):
     if not conv:
         return jsonify({"error": "Conversation context not found"}), 404
         
-    return jsonify(conv)
+    return jsonify(json_safe_sets(conv))

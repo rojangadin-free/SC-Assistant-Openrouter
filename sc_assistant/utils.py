@@ -2,6 +2,19 @@ from flask import session
 from jose import jwt
 import uuid
 
+
+def json_safe_sets(value):
+    """Copy nested DynamoDB sets to JSON arrays; leave scalar handling to Flask."""
+    if isinstance(value, dict):
+        return {key: json_safe_sets(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        # DynamoDB string/number sets are homogeneous and have no stored order.
+        value = sorted(value)
+    if isinstance(value, (list, tuple)):
+        return [json_safe_sets(item) for item in value]
+    return value
+
+
 def is_admin():
     """Checks if current user is an admin."""
     return session.get("role") == "admin"

@@ -37,7 +37,7 @@ from rag.escalation import (
     valid_contact,
 )
 
-from .utils import get_session_id, is_admin
+from .utils import get_session_id, is_admin, json_safe_sets
 from src.helper import encode_image
 
 
@@ -798,7 +798,7 @@ def clear_memory():
 def conversations():
     if not session.get("user") or _is_guest():
         return jsonify([])
-    return jsonify(list_conversations(session.get("uid")))
+    return jsonify(json_safe_sets(list_conversations(session.get("uid"))))
 
 
 @bp.route("/conversation/<conv_id>", methods=["GET"])
@@ -808,7 +808,7 @@ def conversation(conv_id):
     conv = get_conversation(session.get("uid"), conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(conv)
+    return jsonify(json_safe_sets(conv))
 
 
 @bp.route("/conversation/<conv_id>/restore", methods=["POST"])
