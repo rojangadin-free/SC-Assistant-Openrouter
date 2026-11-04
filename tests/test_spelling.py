@@ -536,6 +536,8 @@ namespace = {
     "print": lambda *args, **kwargs: None,
 }
 from rag import runtime  # noqa: E402
+from src import prompt as answer_prompts  # noqa: E402
+namespace["response_language_prompt"] = answer_prompts.response_language_prompt
 for name in ("CapacityError", "RequestBudget", "env_int", "retrieval_pool",
              "preparation_pool", "optimizer_pool"):
     namespace[name] = getattr(runtime, name)
@@ -600,6 +602,52 @@ with patch.object(reranker, "_load_model", return_value=None):
         unchanged, _ = chat_snapshot(question)
         check(f"chat keeps non-typos unchanged: {question!r}",
               unchanged["messages"][-1] == question)
+
+
+# ============================================================
+section("11. Reply-language instructions follow the latest user, not the context")
+# ============================================================
+# This checks the actual graph's prompt contract, not a simulated LLM's language.
+# Do not use the retrieval dictionary as a language detector: English "may" is
+# also a Tagalog search term, and translated probes are not the student's words.
+local_history = [
+    {"role": "user", "content": "Magkano ang tuition?"},
+    {"role": "assistant", "content": "Narito ang impormasyon tungkol sa matrikula."},
+]
+english_history = [
+    {"role": "user", "content": "How much is the tuition fee?"},
+    {"role": "assistant", "content": "Here are the tuition details."},
+]
+language_cases = [
+    ("How much is the tuition fee?", local_history, None),
+    ("May I enroll in May?", local_history, None),
+    ("What does Waray mean?", local_history, None),
+    ("Magkano ang tuition?", english_history, None),
+    ("Pila an bayad sa enrollment?", english_history, None),
+    ("How much ang tuition fee?", english_history, None),
+    ("Explain it in Tagalog.", english_history, None),
+    ("How much is the tuition fee?", local_history, "test-image"),
+    ("Pila an bayad sa enrollment?", english_history, "test-image"),
+    ("", local_history, "test-image"),
+]
+language_policy = namespace["response_language_prompt"]
+with patch.object(reranker, "_load_model", return_value=None):
+    with patch.dict(namespace, {
+        "system_prompt": answer_prompts.system_prompt,
+        "announcement_block": lambda **kwargs: "<announcements>Walang pasok bukas.</announcements>",
+    }):
+        for question, prior, image in language_cases:
+            snapshot, state = chat_snapshot(question, prior, image)
+            label = f"{question!r} (image={bool(image)})"
+            check(f"language policy is last in the system prompt: {label}",
+                  bool(language_policy) and snapshot["messages"][0].endswith(language_policy))
+            text = snapshot["messages"][-1]
+            if image:
+                text = text[0]["text"].split("\n\n[System Note - Image Analysis Provided]:", 1)[0]
+            check(f"language source is the user's question, not a translated probe: {label}",
+                  len(snapshot["messages"]) == 2 and text == question)
+            check(f"language handling does not rewrite stored input/history: {label}",
+                  state["input"] == question and state["chat_history"] == prior)
 
 
 print(f"\n{'='*60}")

@@ -247,6 +247,32 @@ for question, must_contain in CASES:
     check(f"{question[:38]:<38} -> '{must_contain}'", must_contain in eng, eng)
 
 
+# ============================================================
+section("7. Reply language is independent of retrieval language")
+# ============================================================
+from src.prompt import response_language_prompt, system_prompt  # noqa: E402
+
+check("English answers have an explicit English-only rule",
+      "English input: answer entirely in English" in response_language_prompt)
+check("Tagalog and Waray still have matching-language rules",
+      "Tagalog input: answer in Tagalog" in response_language_prompt
+      and "Waray-Waray input: answer in Waray-Waray" in response_language_prompt)
+check("a clear latest question overrides earlier language",
+      "clear latest question overrides the language of earlier turns" in response_language_prompt)
+check("explicit translation requests and mixed-language input remain supported",
+      "explicit reply-language or translation request" in response_language_prompt
+      and "Mixed input: mirror" in response_language_prompt)
+check("image analysis cannot choose the reply language",
+      "not text in the image" in response_language_prompt)
+check("ambiguous input falls back to the user, not the assistant",
+      "most recent identifiable USER language" in response_language_prompt
+      and "Never inherit the assistant's previous language" in response_language_prompt)
+check("official quotations and citation tags remain unchanged",
+      "required verbatim quotations unchanged" in response_language_prompt)
+check("the main prompt agrees with the per-turn rule",
+      "MATCH THE LATEST USER MESSAGE, ON EVERY TURN" in system_prompt)
+
+
 print(f"\n{'='*60}")
 print(f"  {_passed} passed, {_failed} failed")
 print("=" * 60)

@@ -15,7 +15,7 @@ from langchain_classic.retrievers import EnsembleRetriever
 from pinecone_text.sparse import BM25Encoder
 
 from src.helper import get_local_embeddings
-from src.prompt import system_prompt
+from src.prompt import system_prompt, response_language_prompt
 from rag.reranker import rerank, rerank_multi
 from rag.conflicts import authority_block
 from rag.freshness import freshness_block, source_priority, doc_key, get_doc_dates
@@ -626,7 +626,7 @@ primary_model = ChatOpenAI(
     },
     timeout=10,
     max_retries=1,
-    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=8192),
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=9216),
 )
 
 fallback_model = ChatOpenAI(
@@ -646,7 +646,7 @@ fallback_model = ChatOpenAI(
     },
     timeout=10,
     max_retries=1,
-    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=8192),
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=9216),
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -1227,7 +1227,9 @@ def create_graph():
 
             # === STEP 4: Assemble Messages for Flask Streaming ===
             request_budget.remaining()
-            messages = [SystemMessage(content=final_system_prompt)]
+            # Keep the latest user's language authoritative after the potentially
+            # multilingual history/context, for both primary and fallback models.
+            messages = [SystemMessage(content=f"{final_system_prompt}\n\n{response_language_prompt}")]
 
             if image_data:
                 # 🚀 Inject the parallel-processed image description so the LLM is aware of it
