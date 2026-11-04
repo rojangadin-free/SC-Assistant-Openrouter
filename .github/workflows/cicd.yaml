@@ -90,6 +90,8 @@ jobs:
             -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
             -e RERANKER_BACKEND \
             -e RERANKER_ENABLED \
+            -e OPENROUTER_RERANKER_MODEL_NAME \
+            -e RAG_DEBUG \
             -e COGNITO_USER_POOL_ID="${{ secrets.COGNITO_USER_POOL_ID }}" \
             -e COGNITO_CLIENT_ID="${{ secrets.COGNITO_CLIENT_ID }}" \
             -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
