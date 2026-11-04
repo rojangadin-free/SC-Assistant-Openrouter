@@ -33,6 +33,10 @@ Import it first, before any repo import:
 import os
 import sys
 
+# Standalone unit scripts must not inherit an operator's live API backend.
+# The OpenRouter suite explicitly selects it only after installing a fake client.
+os.environ["RERANKER_BACKEND"] = "local"
+
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TESTS_DIR)
 

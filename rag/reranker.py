@@ -2,6 +2,10 @@
 """
 Lightweight local cross-encoder reranker (sentence-transformers).
 
+RERANKER_BACKEND=openrouter selects the optional API adapter instead. Both
+backends honor RERANKER_ENABLED; API failures retain retrieval order without
+loading the local model or selecting a different, potentially paid model.
+
 Why a reranker?
 ---------------
 Hybrid retrieval (BM25 + dense) is a *recall* device: it is good at making sure
@@ -93,6 +97,7 @@ logger = logging.getLogger(__name__)
 # nothing.
 DEFAULT_RERANKER_MODEL = "cross-encoder/ettin-reranker-32m-v1"
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", DEFAULT_RERANKER_MODEL)
+RERANKER_BACKEND = os.getenv("RERANKER_BACKEND", "local").strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +272,10 @@ def _load_model():
     """Load (once) and return the CrossEncoder, or None if unavailable."""
     global _model, _load_failed, _load_error
 
+    # API selection must never download/load its 1.7B model as a CrossEncoder.
+    if RERANKER_BACKEND != "local":
+        return None
+
 
     if _model is not None:
         return _model
@@ -340,8 +349,14 @@ def _load_model():
 def warmup() -> bool:
     """
     Eagerly load the model (e.g. at app start) so the first user question does
-    not pay the one-time load cost. Returns True when the model is ready.
+    not pay the one-time load cost. For OpenRouter this only checks configuration,
+    never performs inference, and does not establish provider availability.
     """
+    if RERANKER_BACKEND == "openrouter":
+        from rag.openrouter_reranker import configuration_error
+        # Configuration check only. Startup must not send document data or spend
+        # free-model quota; a successful API call is the actual availability test.
+        return RERANKER_ENABLED and not configuration_error()
     return _load_model() is not None
 
 
@@ -353,7 +368,10 @@ def available() -> bool:
     retrieval log) can report the current state without paying for it or
     changing it.
     """
-    return _model is not None
+    if RERANKER_BACKEND == "openrouter":
+        from rag.openrouter_reranker import available as api_available
+        return RERANKER_ENABLED and api_available()
+    return RERANKER_BACKEND == "local" and _model is not None
 
 
 def unavailable_reason() -> str:
@@ -369,10 +387,15 @@ def unavailable_reason() -> str:
     without this distinction the only way to tell a deliberate
     RERANKER_ENABLED=false from missing weights is to go and read the config.
     """
-    if _model is not None:
-        return ""
     if not RERANKER_ENABLED:
         return "disabled by RERANKER_ENABLED"
+    if RERANKER_BACKEND == "openrouter":
+        from rag.openrouter_reranker import unavailable_reason as api_reason
+        return api_reason()
+    if RERANKER_BACKEND != "local":
+        return "RERANKER_BACKEND must be local or openrouter"
+    if _model is not None:
+        return ""
     if _load_failed:
         return _load_error or "load failed"
     return "not loaded yet"
@@ -483,6 +506,7 @@ def rerank(
     top_k: Optional[int] = None,
     max_pairs: int = MAX_PAIRS,
     queries: Optional[Sequence[str]] = None,
+    request_budget=None,
 ) -> List:
     """
     Reorder `docs` by cross-encoder relevance to `query`.
@@ -532,6 +556,15 @@ def rerank(
     """
     if not docs:
         return []
+
+    if RERANKER_BACKEND == "openrouter":
+        from rag.openrouter_reranker import rerank_queries, without_scores
+        if not RERANKER_ENABLED:
+            return without_scores(docs, top_k)
+        return rerank_queries(
+            [query, *(queries or [])], docs, top_k=top_k, max_pairs=max_pairs,
+            request_budget=request_budget,
+        )
 
     # Assemble the phrasings to score against, de-duplicated, order preserved.
     all_queries: List[str] = []
@@ -612,6 +645,7 @@ def rerank_multi(
     docs: Sequence,
     top_k: Optional[int] = None,
     max_pairs: int = MAX_PAIRS,
+    request_budget=None,
 ) -> List:
     """
     Rank for a question that asks about SEVERAL things at once, guaranteeing
@@ -653,6 +687,15 @@ def rerank_multi(
     if not docs:
         return []
 
+    if RERANKER_BACKEND == "openrouter":
+        from rag.openrouter_reranker import rerank_queries, without_scores
+        if not RERANKER_ENABLED:
+            return without_scores(docs, top_k)
+        return rerank_queries(
+            aspects, docs, top_k=top_k, max_pairs=max_pairs, diversify=True,
+            request_budget=request_budget,
+        )
+
     clean = []
     for a in aspects or []:
         a = (a or "").strip()
@@ -664,7 +707,7 @@ def rerank_multi(
 
     # Single aspect -> ordinary rerank (no merging needed).
     if len(clean) == 1:
-        return rerank(clean[0], docs, top_k=top_k, max_pairs=max_pairs)
+        return rerank(clean[0], docs, top_k=top_k, max_pairs=max_pairs, request_budget=request_budget)
 
     # ----------------------------------------------------------------------
     # One batched forward pass, not one per aspect.
@@ -784,6 +827,4 @@ def rerank_multi(
             break
 
     return merged[:top_k] if top_k else merged
-
-
 

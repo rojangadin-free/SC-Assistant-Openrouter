@@ -65,6 +65,74 @@ timeouts and retries. Provider retries are reduced to avoid retry amplification.
   preserved. Reranking remains disabled by default; enabling it needs a new load
   test and answer-quality comparison.
 
+## Optional OpenRouter reranking
+
+The API backend uses OpenRouter's dedicated `POST /api/v1/rerank`, not chat
+completions. Its default model is exactly
+`nvidia/llama-nemotron-rerank-vl-1b-v2:free`. This integration ranks text passages;
+it does not upload images or download the NVIDIA model to the server.
+
+Reranking remains disabled by default. To opt in for suitable, non-sensitive data,
+set these in the local runtime environment or local `.env`, then restart:
+
+```dotenv
+RERANKER_BACKEND=openrouter
+RERANKER_ENABLED=true
+```
+
+The existing `OPENROUTER_API_KEY` is reused. Never commit an API key. In GitHub
+Actions, set repository **variables** `RERANKER_BACKEND=openrouter` and
+`RERANKER_ENABLED=true`; the workflow passes them with safe `local`/`false`
+defaults and reuses the existing API-key secret. A `.env` on your computer is
+not included in the Docker image.
+
+`RERANKER_BACKEND=local` retains the existing CPU cross-encoder. Setting
+`RERANKER_ENABLED=false` disables either backend. `RERANKER_MODEL_NAME` remains
+the local model setting; the separate `OPENROUTER_RERANKER_MODEL_NAME` can
+explicitly override the API model, whose default is the requested free variant.
+No API failure triggers a local-model load or an automatic paid-model fallback.
+
+| API limit | Default | Scope |
+|---|---|---|
+| `OPENROUTER_RERANKER_CONCURRENCY` | 4 | Per process, no waiting queue |
+| `OPENROUTER_RERANKER_TIMEOUT_SECONDS` | 6 | Shared stage budget across selected query variants/aspects |
+| `OPENROUTER_RERANKER_MAX_DOCUMENTS` | 40 | Candidate cap, also bounded by the caller's `max_pairs` |
+| `OPENROUTER_RERANKER_MAX_QUERIES` | 4 | One HTTP request per distinct selected phrasing/aspect |
+| `OPENROUTER_RERANKER_DOCUMENT_CHARS` | 6000 | Per passage, also capped at 8192 UTF-8 bytes |
+
+Queries are capped at 2048 UTF-8 bytes and responses at 1 MiB. The stage deadline
+is checked before requests and while receiving data, with bounded socket
+timeouts; an in-flight socket operation cannot be forcibly stopped at the exact
+deadline. Concurrency remains occupied until that operation exits.
+
+Ordinary query variants use each document's best relevance score. Multi-part
+questions merge per-aspect rankings round-robin. Incomplete/invalid results,
+network errors, exhausted budgets and busy slots retain hybrid retrieval order.
+All selected aspects must succeed before scores are applied. Returned document
+text is ignored in favor of the original retrieved text, and input documents
+are not mutated. Successful results carry `rerank_score`, `rerank_backend` and
+`rerank_model` metadata. Startup checks configuration only; it sends no inference
+request and does not claim the provider is available.
+
+**Privacy:** NVIDIA's free-endpoint notice prohibits confidential/personal data
+and says inputs are logged. The adapter sends only query text and selected
+passage text/section headings, never the separate student-record, history, UID,
+email or image fields. However, queries, rewrites and passages can themselves
+contain sensitive information. This is NOT a PII filter; do not enable this free
+endpoint for such data. The default off switch is intentionally preserved.
+
+**Quota:** OpenRouter currently documents 20 requests/minute for `:free` models,
+and 50/day below 10 purchased credits or 1000/day at/above 10 credits. Provider and
+account limits can also apply. A multi-query turn uses more than one request,
+so this free backend cannot promise reranking for 30 simultaneous questions.
+HTTP 429/auth/budget errors and 5xx responses start a process-local cooldown;
+`Retry-After` is honored when present. Requests are not automatically retried or
+put to sleep in the chat worker, and answers remain available without reranking.
+
+References: [model and privacy notice](https://openrouter.ai/nvidia/llama-nemotron-rerank-vl-1b-v2:free/api),
+[rerank API](https://openrouter.ai/docs/api/api-reference/rerank/submit-a-rerank-request),
+[free-model limits](https://openrouter.ai/docs/api_reference/limits).
+
 ## Shared state and streaming
 
 `rag/chat_runtime.py` uses SQLite/WAL for cross-worker leases and temporary guest

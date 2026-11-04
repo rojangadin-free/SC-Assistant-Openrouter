@@ -141,11 +141,29 @@ def create_app():
     def _warm_reranker():
         try:
             from rag.reranker import (
+                RERANKER_BACKEND,
                 RERANKER_MODEL_NAME,
                 disabled,
                 unavailable_reason,
                 warmup,
             )
+
+            if RERANKER_BACKEND == "openrouter" and not disabled():
+                from rag.openrouter_reranker import MODEL_NAME, configuration_error
+                error = configuration_error()
+                if error:
+                    print(f"[startup] WARNING: OpenRouter reranker unavailable: {error}; keeping retrieval order.")
+                else:
+                    print(
+                        f"[startup] OpenRouter reranker configured: {MODEL_NAME}\n"
+                        "           availability: not probed at startup; no local reranker is loaded\n"
+                        "           privacy: use only non-sensitive query/document text\n"
+                        "           throttling/errors: keep hybrid retrieval order"
+                    )
+                return
+            if RERANKER_BACKEND not in ("local", "openrouter") and not disabled():
+                print("[startup] WARNING: RERANKER_BACKEND must be local or openrouter; keeping retrieval order.")
+                return
 
             # Off on purpose. Reported as information, not as a warning with a
             # fix, because there is nothing to fix — and reported at all because

@@ -106,6 +106,7 @@ SUITES = [
     # and ranking degrades to raw retrieval order, on every machine except the
     # one whose HuggingFace cache happens to hold the right weights.
     ("Reranker model wiring (one id)",   "test_reranker_model.py"),
+    ("OpenRouter reranker (offline)",   "test_openrouter_reranker.py"),
 
     # Straight after it: same component, but the question is what happens when
     # SEVERAL students ask at once. Nothing else in this list exercises that —
@@ -186,7 +187,12 @@ SUITES = [
 #
 # Suites that set STORE_BACKEND themselves are unaffected — this only supplies the
 # value for the ones that assumed a `file` default.
-CHILD_ENV = {**os.environ, "STORE_BACKEND": "file"}
+CHILD_ENV = {
+    **os.environ, "STORE_BACKEND": "file",
+    # API-specific tests install a fake transport explicitly. Never let a local
+    # developer's enabled API configuration turn this runner into live traffic.
+    "RERANKER_BACKEND": "local", "RERANKER_ENABLED": "false",
+}
 
 results = []
 for label, script in SUITES:

@@ -565,6 +565,7 @@ def retrieve_documents(
             initial_docs,
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
+            request_budget=request_budget,
         )
     else:
         final_docs = rerank(
@@ -573,6 +574,7 @@ def retrieve_documents(
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
             queries=phrasings[1:],
+            request_budget=request_budget,
         )
 
     if verbose:
