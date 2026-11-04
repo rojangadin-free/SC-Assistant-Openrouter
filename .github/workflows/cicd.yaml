@@ -72,8 +72,9 @@ jobs:
 
       - name: Run New Docker Container
         env:
-          RERANKER_BACKEND: ${{ vars.RERANKER_BACKEND || 'local' }}
-          RERANKER_ENABLED: ${{ vars.RERANKER_ENABLED || 'false' }}
+          RERANKER_BACKEND: ${{ vars.RERANKER_BACKEND || 'openrouter' }}
+          RERANKER_ENABLED: ${{ vars.RERANKER_ENABLED || 'true' }}
+          RAG_DEBUG: ${{ vars.RAG_DEBUG || 'false' }}
         run: |
           CONTAINER_NAME="rag-app-container"
           IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest"
