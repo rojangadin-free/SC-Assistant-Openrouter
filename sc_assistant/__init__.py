@@ -9,6 +9,11 @@ def create_app():
     """
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app.secret_key = FLASK_SECRET_KEY
+    app.config.update(
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 
     # ----------------------------------------------------------------------- #
     # Static asset cache-busting

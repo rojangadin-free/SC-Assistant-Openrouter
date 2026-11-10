@@ -1,0 +1,9 @@
+{% macro college_brand(extra_class='', href=none) -%}
+<a class="college-brand {{ extra_class }}" href="{{ href or url_for('chat.chat_page') }}" aria-label="Samar College Assistant">
+  <img class="college-brand-mark" src="{{ url_for('static', filename='images/logo.png') }}" alt="" width="40" height="40">
+  <span class="college-brand-copy">
+    <strong class="college-brand-name">Samar College</strong>
+    <span class="college-brand-product">Assistant</span>
+  </span>
+</a>
+{%- endmacro %}

@@ -67,7 +67,9 @@ bp_pwa = Blueprint("pwa", __name__)
 # toggle server-side from the session, so a stale-while-revalidated /settings
 # showed the toggle in its previous position until the user reloaded — the same
 # class of bug as the '/files' one below, with the same fix.
-CACHE_VERSION = "sc-assistant-v5"
+# v6 excludes signup/verification pages, which now contain session-bound state.
+# v7 keeps the new recovery/verification state out of browser caches.
+CACHE_VERSION = "sc-assistant-v7"
 
 
 
@@ -194,6 +196,9 @@ const SHELL = %(shell)s;
    page where "what I just changed" must be what I see. */
 const NEVER_CACHE = [
   '/chat', '/api/', '/admin', '/auth', '/logout', '/health',
+  '/signup', '/confirm-signup', '/resend-signup-code', '/login',
+  '/forgot-password', '/reset-password',
+  '/password-reset', '/verify-reset-code',
   '/files', '/upload', '/dashboard', '/delete', '/settings'
 ];
 

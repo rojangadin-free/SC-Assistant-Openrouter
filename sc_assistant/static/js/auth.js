@@ -1,451 +1,572 @@
 $(document).ready(function() {
-    // DOM Elements
-    const loginForm = $('#loginForm');
-    const signupForm = $('#signupForm');
-    const forgotPasswordForm = $('#forgotPasswordForm');
-    const resetFlowForm = $('#resetFlowForm'); // The new merged form
+    const forms = {
+        login: $('#loginForm'),
+        signup: $('#signupForm'),
+        verify: $('#signupVerifyForm'),
+        reset: $('#resetFlowForm')
+    };
+    const allForms = $('#loginForm, #signupForm, #signupVerifyForm, #resetFlowForm');
+    const navigation = $('#switchToSignup, #switchToLogin, #forgotPasswordLink, #backToLoginFromReset, #backToLoginFromVerify, #refreshResetLink');
+    const body = $('body');
     const formTitle = $('#formTitle');
     const formSubtitle = $('#formSubtitle');
-    const toggleLink = $('#toggleLink');
-    const themeToggle = $('#themeToggle');
-    const body = $('body');
-    const passwordToggle = $('#passwordToggle');
-    const passwordInput = $('#password');
-    const signupPasswordToggle = $('#signupPasswordToggle');
-    const signupPasswordInput = $('#signupPassword');
-    const newPasswordToggle = $('#newPasswordToggle');
-    const newPasswordInput = $('#newPassword');
-    const confirmPasswordToggle = $('#confirmPasswordToggle');
-    const confirmPasswordInput = $('#confirmPassword');
-    const customCheckbox = $('#customCheckbox');
-    const rememberMeCheckbox = $('#rememberMe');
+    const signupEmail = $('#signupEmail');
+    const signupUsername = $('#signupUsername');
+    const studentId = $('#signupStudentId');
+    const signupPassword = $('#signupPassword');
+    const signupConfirmPassword = $('#signupConfirmPassword');
+    const signupCode = $('#signupCode');
+    const signupConsent = $('#signupDataConsent');
+    const newPassword = $('#newPassword');
+    const confirmPassword = $('#confirmPassword');
+    const resetEmail = $('#resetEmail');
+    const resetCode = $('#resetVerificationCode');
     const notification = $('#notification');
-    const strengthBar = $('#strengthBar');
-    const strengthText = $('#strengthText');
-    const passwordMatch = $('#passwordMatch');
-    const codeInputs = $('.code-input'); // Still used in the new form
-    const resendCodeLink = $('#resendCodeLink');
+    const authMessage = $('#authMessage');
+    const eulaModal = document.getElementById('eulaModal');
+    let activeView = '';
+    let requestPending = false;
+    let redirectPending = false;
+    let pendingSignupEmail = forms.verify.attr('data-signup-email') || '';
+    let signupResendAt = 0;
+    let resetResendAt = 0;
+    let resetExpiresAt = 0;
+    let resetStage = 'expired';
+    let pendingResetEmail = '';
+    let cooldownTimer;
+    let notificationTimer;
+    let eulaOpener;
 
-    // ── End User / Data Access Agreement gate ───────────────────────
-    // Used on both forms: the checkbox is what enables the submit button.
-    // The link just opens the full agreement text to read; agreeing there
-    // checks whichever form's box was used to open it.
-    const eulaModal = $('#eulaModal');
-    const btnAcceptEula = $('#btnAcceptEula');
-    const btnDeclineEula = $('#btnDeclineEula');
+    function isBusy() {
+        return requestPending || redirectPending;
+    }
 
-    function makeEulaGate(checkboxSelector, customBoxSelector, buttonSelector, linkSelector) {
-        const checkbox = $(checkboxSelector);
-        const customBox = $(customBoxSelector);
-        const button = $(buttonSelector);
+    function clearNotification() {
+        clearTimeout(notificationTimer);
+        notification.removeClass('show');
+        authMessage.empty().removeClass('success error');
+    }
 
-        function setChecked(isChecked) {
-            checkbox.prop('checked', isChecked);
-            customBox.toggleClass('checked', isChecked);
-            button.prop('disabled', !isChecked);
+    function showNotification(message, type = 'success', inline = false) {
+        clearNotification();
+        if (inline || ['signup', 'verify', 'reset'].includes(activeView)) {
+            authMessage.addClass(type).text(message);
+            return;
         }
-
-        customBox.on('click', function() {
-            setChecked(!checkbox.prop('checked'));
-        });
-
-        checkbox.on('change', function() {
-            setChecked($(this).prop('checked'));
-        });
-
-        $(linkSelector).on('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation(); // Don't let the click bubble into the <label> and toggle the checkbox
-            activeEulaGate = gate;
-            eulaModal.fadeIn('fast');
-        });
-
-        const gate = { checkbox, setChecked };
-        return gate;
+        notification.removeClass('success error').addClass(type);
+        notification.find('.notification-title').text(type === 'success' ? 'Success' : 'Error');
+        notification.find('.notification-message').text(message);
+        notification.find('.notification-icon i').attr('class', type === 'success' ? 'fas fa-check' : 'fas fa-exclamation-triangle');
+        notification.addClass('show');
+        notificationTimer = setTimeout(() => notification.removeClass('show'), type === 'error' ? 5000 : 3000);
     }
 
-    let activeEulaGate = null;
-    const loginEulaGate = makeEulaGate('#loginDataConsent', '#loginCustomCheckbox', '#loginButton', '#openEulaLinkLogin');
-    const signupEulaGate = makeEulaGate('#signupDataConsent', '#signupCustomCheckbox', '#signupButton', '#openEulaLink');
+    function updateCooldowns() {
+        const now = Date.now();
+        if (resetExpiresAt && now >= resetExpiresAt && !isBusy()) {
+            resetExpiresAt = 0;
+            resetStage = 'expired';
+            clearSensitiveFields(forms.reset);
+            if (activeView === 'reset') {
+                showNotification('This OTP request has expired. Send a new OTP to continue.', 'error');
+            }
+        }
+        const seconds = Math.max(0, Math.ceil((signupResendAt - now) / 1000));
+        $('#resendSignupCodeButton').prop('disabled', isBusy() || activeView !== 'verify' || seconds > 0);
+        $('#signupResendStatus').text(seconds > 0
+            ? `You can request another code in ${seconds} seconds.`
+            : 'You can now request a new code.');
+        const resetSeconds = Math.max(0, Math.ceil((resetResendAt - now) / 1000));
+        const processing = resetStage === 'sending' || resetStage === 'writing';
+        const emailChanged = pendingResetEmail && resetEmail.val().trim().toLowerCase() !== pendingResetEmail;
+        $('#sendCodeButton').prop('disabled', isBusy() || activeView !== 'reset' || processing || resetSeconds > 0);
+        if (!isBusy()) $('#sendCodeButton').text(hasActiveReset() ? 'Resend OTP' : 'Send OTP');
+        $('#resetButton').prop('disabled', isBusy() || activeView !== 'reset' || !hasActiveReset());
+        $('#resetResendStatus').text(resetSeconds > 0
+            ? `${emailChanged ? 'Email changed. ' : ''}You can request another OTP in ${resetSeconds} seconds.`
+            : hasActiveReset() ? 'Enter the latest OTP from your email.'
+            : emailChanged
+                ? 'Email changed. Send an OTP for this address.' : 'Send an OTP to this email to continue.');
+        $('#resetProgressNotice').prop('hidden', activeView !== 'reset' || !processing);
+        if (seconds === 0 && resetSeconds === 0 && now >= resetExpiresAt) {
+            clearInterval(cooldownTimer);
+            cooldownTimer = null;
+        }
+    }
 
-    btnAcceptEula.on('click', function() {
-        eulaModal.fadeOut('fast');
-        if (activeEulaGate) activeEulaGate.setChecked(true);
+    function syncSignupState(response) {
+        const state = response && response.signup_state;
+        if (!state) return;
+        if (typeof state.email === 'string') {
+            pendingSignupEmail = state.email;
+            $('#signupVerificationEmail').text(state.email || 'your email');
+        }
+        if (Number.isFinite(state.resend_available_at) && Number.isFinite(state.server_now)) {
+            // Offset against the server clock. A page visit never issues a code
+            // or grants a fresh 30 seconds; only server state moves this deadline.
+            signupResendAt = Date.now() + Math.max(0, state.resend_available_at - state.server_now);
+            updateCooldowns();
+            if (!cooldownTimer && Date.now() < signupResendAt) cooldownTimer = setInterval(updateCooldowns, 1000);
+        }
+    }
+
+    function hasActiveReset() {
+        return resetStage === 'code' && Date.now() < resetExpiresAt
+            && resetEmail.val().trim().toLowerCase() === pendingResetEmail;
+    }
+
+    function syncResetState(response) {
+        const state = response && response.reset_state;
+        if (!state || typeof state !== 'object' || Array.isArray(state)
+            || !['code', 'sending', 'failed', 'expired', 'writing'].includes(state.stage)) return;
+        resetStage = state.stage;
+        if (typeof state.email === 'string') {
+            pendingResetEmail = state.email;
+        }
+        const now = Date.now();
+        if (Number.isFinite(state.resend_available_at) && Number.isFinite(state.server_now)) {
+            resetResendAt = now + Math.max(0, state.resend_available_at - state.server_now);
+        }
+        resetExpiresAt = Number.isFinite(state.expires_at) && Number.isFinite(state.server_now)
+            && !['failed', 'expired'].includes(state.stage)
+            ? now + Math.max(0, state.expires_at - state.server_now) : 0;
+        if (!cooldownTimer && (now < resetResendAt || now < resetExpiresAt)) {
+            cooldownTimer = setInterval(updateCooldowns, 1000);
+        }
+    }
+
+    function handleResetFailure() {
+        if (activeView !== 'reset') return;
+        if (!hasActiveReset()) {
+            clearSensitiveFields(forms.reset);
+        }
+    }
+
+    function updateControls() {
+        const busy = isBusy();
+        allForms.each(function() {
+            $(this).find('input, button').prop('disabled', busy || this.hidden);
+        });
+        allForms.attr('aria-busy', busy ? 'true' : null);
+        navigation.attr('aria-disabled', busy ? 'true' : null);
+        $('#loginButton').prop('disabled', busy || activeView !== 'login');
+        $('#signupButton').prop('disabled', busy || activeView !== 'signup' || !signupConsent.prop('checked'));
+        forms.reset.find('input, button').prop('disabled', busy || activeView !== 'reset'
+            || ['sending', 'writing'].includes(resetStage));
+        updateCooldowns();
+    }
+
+    function clearSensitiveFields(form) {
+        form.find('input[autocomplete="current-password"], input[autocomplete="new-password"], input[autocomplete="one-time-code"]').val('');
+        form.find('.password-toggle').each(function() {
+            $('#' + this.getAttribute('aria-controls')).attr('type', 'password');
+            $(this).attr({ 'aria-pressed': 'false', 'aria-label': 'Show password' }).find('i').attr('class', 'fas fa-eye');
+        });
+        form.find('input').each(function() {
+            this.setCustomValidity('');
+            $(this).removeAttr('aria-invalid');
+        });
+    }
+
+    function showView(view, focus = true) {
+        if (isBusy() || !forms[view]) return;
+        if (activeView && activeView !== view) clearSensitiveFields(forms[activeView]);
+        activeView = view;
+        allForms.prop('hidden', true);
+        forms[view].prop('hidden', false);
+        $('#guestSection').prop('hidden', view !== 'login');
+        $('#toggleLink').prop('hidden', view !== 'login' && view !== 'signup');
+        $('#signupEntry').prop('hidden', view !== 'login');
+        $('#loginEntry').prop('hidden', view !== 'signup');
+        $('#resetPasswordNavigation').prop('hidden', view !== 'reset');
+        const headings = {
+            login: ['Sign in', 'Use your username or email to continue.'],
+            signup: ['Create account', 'Choose a username and enter your account details.'],
+            verify: ['Verify your email', 'Confirm your email before signing in.'],
+            reset: ['Reset password', 'Send an OTP to your email and set a new password.']
+        };
+        formTitle.text(headings[view][0]);
+        formSubtitle.text(headings[view][1]);
+        document.title = headings[view][0] + ' - Samar College Assistant';
+        if (view === 'reset') window.history.replaceState(null, '', '/password-reset');
+        clearNotification();
+        updateControls();
+        if (focus) formTitle.trigger('focus');
+    }
+
+    // Capture the payload before disabling controls. One lock covers every auth
+    // action, including guest/resend, and blocks edits or navigation mid-request.
+    function postForm(form, button, url, data, loadingText, onSuccess) {
+        if (isBusy() || form.prop('hidden')) return;
+        const buttonContent = button.html();
+        clearNotification();
+        requestPending = true;
+        updateControls();
+        button.html('<span class="loading" aria-hidden="true"></span>').append(document.createTextNode(loadingText));
+        const headers = ['/signup', '/confirm-signup', '/resend-signup-code', '/restart-signup',
+            '/forgot-password', '/reset-password'].includes(url)
+            ? { 'X-Auth-CSRF': body.attr('data-auth-csrf') || '' } : {};
+        $.ajax({ url, method: 'POST', data, headers, dataType: 'json', timeout: 30000 })
+            .always(function() {
+                requestPending = false;
+                button.html(buttonContent);
+            })
+            .done(function(response) {
+                syncSignupState(response);
+                syncResetState(response);
+                if (response && response.success === true) {
+                    updateControls();
+                    onSuccess(response);
+                }
+                else {
+                    handleResetFailure();
+                    showNotification(response && response.message || 'The request could not be completed. Please try again.', 'error');
+                }
+                updateControls();
+            })
+            .fail(function(xhr) {
+                syncSignupState(xhr.responseJSON);
+                syncResetState(xhr.responseJSON);
+                handleResetFailure();
+                const message = xhr.responseJSON && xhr.responseJSON.message;
+                showNotification(message || 'The request could not be completed. Check your connection and try again.', 'error');
+                updateControls();
+            });
+    }
+
+    navigation.on('click', function(event) {
+        if (isBusy()) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+    });
+    // Signup and recovery remain real entry navigations so the server decides
+    // which pending stage and absolute resend deadline can be resumed.
+    $('#switchToLogin, #backToLoginFromReset, #backToLoginFromVerify').on('click', function(event) {
+        event.preventDefault();
+        showView('login');
+        window.history.replaceState(null, '', '/auth');
     });
 
-    btnDeclineEula.on('click', function() {
-        eulaModal.fadeOut('fast');
-        // Just closes the modal — reading it without checking the box
-        // leaves the submit button disabled, same as never opening it.
+    $('#openEulaLink').on('click', function() {
+        if (isBusy()) return;
+        eulaOpener = this;
+        eulaModal.showModal();
+        $('#eulaTitle').trigger('focus');
     });
-    
-    // Mirrors aws.cognito._looks_like_email — kept simple on purpose, since the
-    // server does the authoritative resolution and this only decides whether a
-    // value is safe to carry into a type="email" field.
-    function looksLikeEmail(value) {
-        const at = (value || '').lastIndexOf('@');
-        return at > 0 && value.slice(at + 1).includes('.');
-    }
+    signupConsent.on('change', updateControls);
+    $('#btnAcceptEula').on('click', function() {
+        if (!isBusy() && activeView === 'signup') signupConsent.prop('checked', true).trigger('change');
+        eulaModal.close();
+    });
+    $('#btnDeclineEula').on('click', function() { eulaModal.close(); });
+    $(eulaModal).on('close', function() {
+        if (eulaOpener && $(eulaOpener).is(':visible')) eulaOpener.focus();
+    });
+    $(eulaModal).on('keydown', function(event) {
+        if (event.key !== 'Tab') return;
+        const controls = $(this).find('button:not(:disabled), a[href], [tabindex="0"]')
+            .filter(':visible').toArray();
+        if (!controls.length) return;
+        const current = controls.indexOf(document.activeElement);
+        if (event.shiftKey && current <= 0) {
+            event.preventDefault();
+            controls[controls.length - 1].focus();
+        } else if (!event.shiftKey && (current < 0 || current === controls.length - 1)) {
+            event.preventDefault();
+            controls[0].focus();
+        }
+    });
 
-    // Load remembered identifier (email or username — the storage key predates
-    // usernames being accepted here, and is left alone so anyone who ticked
-    // "Remember me" before this change still gets their value back).
-    const savedEmail = localStorage.getItem('rememberedEmail');
-    if (savedEmail) {
-        $('#email').val(savedEmail);
-        rememberMeCheckbox.prop('checked', true);
-        customCheckbox.addClass('checked');
-    }
-    
-    // Theme toggle functionality
+    $('.password-toggle').on('click', function() {
+        if (isBusy()) return;
+        const input = $('#' + this.getAttribute('aria-controls'));
+        const reveal = input.attr('type') === 'password';
+        input.attr('type', reveal ? 'text' : 'password');
+        $(this).attr({ 'aria-pressed': String(reveal), 'aria-label': reveal ? 'Hide password' : 'Show password' });
+        $(this).find('i').attr('class', reveal ? 'fas fa-eye-slash' : 'fas fa-eye');
+    });
+
     function setTheme(theme) {
-        if (theme === 'dark') {
-            body.attr('data-theme', 'dark');
-            themeToggle.html('<i class="fas fa-sun"></i>');
-            localStorage.setItem('theme', 'dark');
-        } else {
-            body.removeAttr('data-theme');
-            themeToggle.html('<i class="fas fa-moon"></i>');
-            localStorage.setItem('theme', 'light');
-        }
+        const dark = theme === 'dark';
+        body.attr('data-theme', dark ? 'dark' : null);
+        $('#themeToggle').attr({ title: dark ? 'Switch to light mode' : 'Switch to dark mode', 'aria-label': dark ? 'Switch to light mode' : 'Switch to dark mode' })
+            .html(dark ? '<i class="fas fa-sun" aria-hidden="true"></i>' : '<i class="fas fa-moon" aria-hidden="true"></i>');
+        try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (error) { /* Storage can be disabled. */ }
     }
-    
-    const savedTheme = localStorage.getItem('theme') || 'light';
+    let savedTheme = 'light';
+    try {
+        savedTheme = localStorage.getItem('theme') || 'light';
+        const savedIdentifier = localStorage.getItem('rememberedEmail');
+        if (savedIdentifier) {
+            $('#email').val(savedIdentifier);
+            $('#rememberMe').prop('checked', true);
+        }
+    } catch (error) { /* Authentication does not require local storage. */ }
     setTheme(savedTheme);
-    
-    themeToggle.on('click', function() {
-        const currentTheme = body.attr('data-theme') === 'dark' ? 'dark' : 'light';
-        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        setTheme(newTheme);
-    });
-    
-    // Password visibility toggles
-    passwordToggle.click(function() {
-        const type = passwordInput.attr('type') === 'password' ? 'text' : 'password';
-        passwordInput.attr('type', type);
-        $(this).toggleClass('fa-eye fa-eye-slash');
-    });
-    
-    signupPasswordToggle.click(function() {
-        const type = signupPasswordInput.attr('type') === 'password' ? 'text' : 'password';
-        signupPasswordInput.attr('type', type);
-        $(this).toggleClass('fa-eye fa-eye-slash');
-    });
+    $('#themeToggle').on('click', function() { setTheme(body.attr('data-theme') === 'dark' ? 'light' : 'dark'); });
 
-    newPasswordToggle.click(function() {
-        const type = newPasswordInput.attr('type') === 'password' ? 'text' : 'password';
-        newPasswordInput.attr('type', type);
-        $(this).toggleClass('fa-eye fa-eye-slash');
-    });
-    
-    confirmPasswordToggle.click(function() {
-        const type = confirmPasswordInput.attr('type') === 'password' ? 'text' : 'password';
-        confirmPasswordInput.attr('type', type);
-        $(this).toggleClass('fa-eye fa-eye-slash');
-    });
-    
-    // Custom checkbox
-    customCheckbox.click(function() {
-        const isChecked = rememberMeCheckbox.prop('checked');
-        rememberMeCheckbox.prop('checked', !isChecked);
-        $(this).toggleClass('checked', !isChecked);
-    });
-    
-    rememberMeCheckbox.change(function() {
-        customCheckbox.toggleClass('checked', $(this).prop('checked'));
-    });
-    
-    // Switch between login and signup
-    $(document).on('click', '#switchToSignup', function(e) {
-        e.preventDefault();
-        loginForm.hide();
-        resetFlowForm.hide();
-        signupForm.show();
-        formTitle.text("Create Account");
-        formSubtitle.text("Sign up to start using Samar College Assistant");
-        toggleLink.html('Already have an account? <a href="#" id="switchToLogin">Login here</a>');
-    });
-    
-    $(document).on('click', '#switchToLogin', function(e) {
-        e.preventDefault();
-        showLoginForm();
-    });
-    
-    // Show forgot password form
-    $(document).on('click', '#forgotPasswordLink', function(e) {
-        e.preventDefault();
-        loginForm.hide();
-        signupForm.hide();
-        resetFlowForm.hide();
-        forgotPasswordForm.show();
-        formTitle.text("Forgot Password");
-        formSubtitle.text("We'll send you a code to reset your password");
-        toggleLink.hide();
-        
-        // The sign-in field accepts an email OR a username; this one is a real
-        // type="email" input, so only carry the value over when it is an email.
-        // Prefilling a username here would make the field invalid on arrival.
-        const loginEmail = $('#email').val();
-        if (loginEmail && looksLikeEmail(loginEmail)) {
-            $('#resetEmail').val(loginEmail);
+    forms.signup.add(forms.verify).find('input').on('input change', function() {
+        this.setCustomValidity('');
+        $(this).removeAttr('aria-invalid');
+        if (this === signupPassword[0]) {
+            signupConfirmPassword[0].setCustomValidity('');
+            signupConfirmPassword.removeAttr('aria-invalid');
         }
     });
-
-    // Back to login from any reset step
-    $(document).on('click', '#backToLoginFromForgot, #backToLoginFromReset', function(e) {
-        e.preventDefault();
-        showLoginForm();
+    resetCode.on('input change', function() { setValidity(resetCode, ''); });
+    resetEmail.on('input', function() {
+        setValidity(resetEmail, '');
+        if (pendingResetEmail && resetEmail.val().trim().toLowerCase() !== pendingResetEmail) {
+            clearSensitiveFields(forms.reset);
+            clearNotification();
+        }
+        updateControls();
     });
-    
-    function showLoginForm() {
-        forgotPasswordForm.hide();
-        signupForm.hide();
-        resetFlowForm.hide();
-        loginForm.show();
-        formTitle.text("Welcome Back");
-        formSubtitle.text("Sign in to access Samar College Assistant");
-        toggleLink.html('Don\'t have an account? <a href="#" id="switchToSignup">Sign up here</a>').show();
+    resetEmail.on('keydown', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            requestResetCode();
+        }
+    });
+    signupEmail.on('blur', function() {
+        if (!isBusy()) $(this).val($(this).val().trim().toLowerCase());
+    });
+
+    function setValidity(input, message) {
+        input[0].setCustomValidity(message);
+        input.attr('aria-invalid', message ? 'true' : null);
     }
-    
-    // Code input handling for the new form
-    codeInputs.on('input', function() {
-        const index = parseInt($(this).data('index'));
-        const value = $(this).val();
-        if (value.length === 1 && index < 5) {
-            codeInputs.eq(index + 1).focus();
+
+    function validateSignupEmail(input) {
+        const email = input.val().trim().toLowerCase();
+        input.val(email);
+        const parts = email.split('@');
+        const local = parts[0];
+        let emailError = '';
+        if (!email) emailError = 'Enter an email address you can access.';
+        else if (parts.length !== 2 || /\s/.test(email) || !local || local.length > 64 || email.length > 254 || local.startsWith('.') || local.endsWith('.') || local.includes('..')) {
+            emailError = 'Enter a valid email address without spaces or extra dots.';
+        } else if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(parts[1])) {
+            emailError = 'Enter a valid email domain, such as gmail.com or your email provider.';
         }
-    });
-    
-    codeInputs.on('keydown', function(e) {
-        const index = parseInt($(this).data('index'));
-        if (e.key === 'Backspace' && $(this).val() === '' && index > 0) codeInputs.eq(index - 1).focus();
-        if (e.key === 'ArrowLeft' && index > 0) codeInputs.eq(index - 1).focus();
-        if (e.key === 'ArrowRight' && index < 5) codeInputs.eq(index + 1).focus();
+        setValidity(input, emailError);
+    }
+
+    function validateSignup() {
+        validateSignupEmail(signupEmail);
+        signupUsername.val(signupUsername.val().trim());
+        setValidity(signupUsername, !/^[A-Za-z0-9_.-]{1,64}$/.test(signupUsername.val())
+            ? 'Use 1-64 letters, numbers, periods, underscores or hyphens for your username.' : '');
+        studentId.val(studentId.val().trim());
+        setValidity(studentId, !/^[0-9]{1,64}$/.test(studentId.val())
+            ? 'Enter your ID number using 1-64 digits (0-9) only.' : '');
+        setValidity(signupPassword, signupPassword.val().length < 8 || signupPassword.val().length > 256
+            ? 'Use a password between 8 and 256 characters.' : '');
+        setValidity(signupConfirmPassword, signupConfirmPassword.val() && signupConfirmPassword.val() !== signupPassword.val()
+            ? 'Passwords do not match.' : '');
+        return forms.signup[0].reportValidity();
+    }
+
+    function returnToSignIn(email, message) {
+        clearSensitiveFields(allForms);
+        forms.signup[0].reset();
+        pendingSignupEmail = '';
+        signupResendAt = 0;
+        showView('login');
+        $('#email').val(email);
+        window.history.replaceState(null, '', '/auth');
+        showNotification(message || 'Email verified. You can now sign in.', 'success', true);
+    }
+
+    forms.signup.on('submit', function(event) {
+        event.preventDefault();
+        if (isBusy() || activeView !== 'signup') return;
+        if (!signupConsent.prop('checked')) {
+            showNotification('Please accept the End User Agreement to continue.', 'error');
+            signupConsent.trigger('focus');
+            return;
+        }
+        if (!validateSignup()) return;
+        const email = signupEmail.val();
+        postForm(forms.signup, $('#signupButton'), '/signup', forms.signup.serialize(), 'Creating Account...', function(response) {
+            const normalizedEmail = typeof response.email === 'string' ? response.email : email;
+            clearSensitiveFields(forms.signup);
+            if (response.requires_confirmation === false) {
+                returnToSignIn(normalizedEmail, response.message || 'Account created. Please sign in.');
+                return;
+            }
+            pendingSignupEmail = normalizedEmail;
+            $('#signupVerificationEmail').text(pendingSignupEmail);
+            signupCode.val('');
+            showView('verify');
+            showNotification(response.message || 'Check your email for a verification code, or request a new code below.', response.delivery_pending ? 'error' : 'success');
+        });
     });
 
-    // Handle initial "Send Code" submission
-    forgotPasswordForm.on('submit', function(e) {
-        e.preventDefault();
-        const sendCodeButton = $('#sendCodeButton');
-        sendCodeButton.prop('disabled', true).html('<span class="loading"></span>Sending...');
-        
-        $.post("/forgot-password", forgotPasswordForm.serialize(), function(response) {
-            sendCodeButton.prop('disabled', false).html('Send Code');
-            if (response.success) {
-                showNotification("Verification code sent to your email!", 'success');
-                forgotPasswordForm.hide();
-                resetFlowForm.show();
-                formTitle.text("Reset Your Password");
-                formSubtitle.text("Enter the code and your new password below");
-                // Pass the email to the new combined form
-                $('#resetFlowEmail').val($('#resetEmail').val());
-                codeInputs.first().focus();
-            } else {
-                showNotification(response.message, 'error');
-            }
-        }).fail(function() {
-            sendCodeButton.prop('disabled', false).html('Send Code');
-            showNotification("Network error. Please try again.", 'error');
+    forms.verify.on('submit', function(event) {
+        event.preventDefault();
+        if (isBusy() || activeView !== 'verify') return;
+        const code = signupCode.val();
+        setValidity(signupCode, /^[0-9]{6}$/.test(code) ? '' : 'Enter the 6-digit code from your email.');
+        if (!forms.verify[0].reportValidity()) return;
+        const email = pendingSignupEmail;
+        postForm(forms.verify, $('#confirmSignupButton'), '/confirm-signup', { code }, 'Verifying...', function(response) {
+            returnToSignIn(email, response.message);
         });
     });
-    
-    // Resend code
-    resendCodeLink.on('click', function(e) {
-        e.preventDefault();
-        resendCodeLink.css('pointer-events', 'none').text('Sending...');
-        // Use the email from the hidden field in the reset flow form
-        $.post("/forgot-password", { email: $('#resetFlowEmail').val() }, function(response) {
-            if (response.success) {
-                showNotification("A new verification code has been sent.", 'success');
-                codeInputs.val('');
-                codeInputs.first().focus();
-            } else {
-                showNotification(response.message, 'error');
-            }
-        }).fail(function() {
-            showNotification("Network error. Please try again.", 'error');
-        }).always(function() {
-             setTimeout(() => {
-                resendCodeLink.css('pointer-events', 'auto').text('Resend Code');
-            }, 30000); // 30 seconds cooldown
+    $('#resendSignupCodeButton').on('click', function() {
+        if (isBusy() || activeView !== 'verify' || Date.now() < signupResendAt) return;
+        // Account identity comes only from the server's signed pending session.
+        postForm(forms.verify, $(this), '/resend-signup-code', '', 'Sending...', function(response) {
+            signupCode.val('');
+            setValidity(signupCode, '');
+            showNotification(response.message || 'A new code has been requested. Check your email.');
+            signupCode.trigger('focus');
         });
     });
-    
-    // Password strength/match checkers (no changes here)
+
+    $('#restartSignupButton').on('click', function() {
+        if (isBusy() || activeView !== 'verify') return;
+        postForm(forms.verify, $(this), '/restart-signup', '', 'Opening Signup...', function() {
+            forms.signup[0].reset();
+            clearSensitiveFields(allForms);
+            pendingSignupEmail = '';
+            signupResendAt = 0;
+            forms.verify.attr('data-signup-email', '');
+            $('#signupState').text('{}');
+            showView('signup');
+            window.history.replaceState(null, '', '/signup');
+            studentId.trigger('focus');
+        });
+    });
+
+    forms.login.on('submit', function(event) {
+        event.preventDefault();
+        if (isBusy() || activeView !== 'login') return;
+        try {
+            if ($('#rememberMe').prop('checked')) localStorage.setItem('rememberedEmail', $('#email').val());
+            else localStorage.removeItem('rememberedEmail');
+        } catch (error) { /* Remembering an identifier is optional. */ }
+        postForm(forms.login, $('#loginButton'), '/login', forms.login.serialize(), 'Signing In...', function(response) {
+            redirectPending = true;
+            updateControls();
+            window.location.href = response.redirect;
+        });
+    });
+    $('#guestButton').on('click', function() {
+        postForm(forms.login, $(this), '/guest', '', 'Entering as Guest...', function(response) {
+            redirectPending = true;
+            updateControls();
+            window.location.href = response.redirect;
+        });
+    });
+
+    function requestResetCode() {
+        if (isBusy() || activeView !== 'reset' || Date.now() < resetResendAt
+            || ['sending', 'writing'].includes(resetStage)) return;
+        validateSignupEmail(resetEmail);
+        if (!resetEmail[0].reportValidity()) return;
+        const email = resetEmail.val();
+        // Requesting an OTP must never submit password drafts or validate other fields.
+        postForm(forms.reset, $('#sendCodeButton'), '/forgot-password', { email }, 'Sending...', function(response) {
+            if (!response.reset_state || response.reset_state.stage !== 'code'
+                || response.reset_state.email !== email || !hasActiveReset()) {
+                handleResetFailure();
+                showNotification('An OTP could not be requested. Please try again.', 'error');
+                return;
+            }
+            resetCode.val('');
+            setValidity(resetCode, '');
+            showNotification(response.message || 'Check your email for the OTP.');
+            resetCode.trigger('focus');
+        });
+    }
+    $('#sendCodeButton').on('click', requestResetCode);
     function checkPasswordStrength(password) {
-        let strength = 0;
         const requirements = {
-            length: password.length >= 8, uppercase: /[A-Z]/.test(password),
-            lowercase: /[a-z]/.test(password), number: /[0-9]/.test(password),
+            length: password.length >= 8,
+            uppercase: /[A-Z]/.test(password),
+            lowercase: /[a-z]/.test(password),
+            number: /[0-9]/.test(password),
             special: /[!@#$%^&*(),.?":{}|<>]/.test(password)
         };
-        Object.keys(requirements).forEach(key => {
-            const reqEl = $(`#${key}Req`); const iconEl = reqEl.find('i');
-            if (requirements[key]) {
-                reqEl.addClass('valid').removeClass('invalid');
-                iconEl.removeClass('fa-circle').addClass('fa-check-circle');
-                strength++;
-            } else {
-                reqEl.addClass('invalid').removeClass('valid');
-                iconEl.removeClass('fa-check-circle').addClass('fa-circle');
-            }
+        let strength = 0;
+        Object.keys(requirements).forEach(function(key) {
+            const valid = requirements[key];
+            const requirement = $('#' + key + 'Req');
+            requirement.toggleClass('valid', valid).toggleClass('invalid', !valid);
+            requirement.find('i').attr('class', valid ? 'fas fa-check-circle' : 'fas fa-circle');
+            if (valid) strength++;
         });
-        const percentage = (strength / 5) * 100;
-        strengthBar.css('width', percentage + '%');
-        if (strength < 2) {
-            strengthBar.css('background', 'var(--error)');
-            strengthText.text('Weak').css('color', 'var(--error)');
-        } else if (strength < 4) {
-            strengthBar.css('background', 'var(--warning)');
-            strengthText.text('Medium').css('color', 'var(--warning)');
-        } else {
-            strengthBar.css('background', 'var(--success)');
-            strengthText.text('Strong').css('color', 'var(--success)');
-        }
+        const color = strength < 2 ? 'var(--ui-danger-ink)' : strength < 4 ? 'var(--ui-warn-ink)' : 'var(--ui-success-ink)';
+        $('#strengthBar').css({ width: (strength / 5 * 100) + '%', background: color });
+        $('#strengthText').text(password ? strength < 2 ? 'Weak' : strength < 4 ? 'Medium' : 'Strong' : '').css('color', color);
         return strength;
     }
-    
+
     function checkPasswordMatch() {
-        const password = newPasswordInput.val(); const confirmPassword = confirmPasswordInput.val();
-        if (confirmPassword.length > 0) {
-            passwordMatch.show();
-            if (password === confirmPassword) {
-                passwordMatch.removeClass('invalid').addClass('valid');
-                passwordMatch.find('i').removeClass('fa-times-circle').addClass('fa-check-circle');
-                passwordMatch.find('span').text('Passwords match');
-                return true;
-            } else {
-                passwordMatch.removeClass('valid').addClass('invalid');
-                passwordMatch.find('i').removeClass('fa-check-circle').addClass('fa-times-circle');
-                passwordMatch.find('span').text('Passwords do not match');
-                return false;
-            }
-        } else { passwordMatch.hide(); return false; }
+        const hasConfirmation = confirmPassword.val().length > 0;
+        const matches = newPassword.val() === confirmPassword.val();
+        $('#passwordMatch').prop('hidden', !hasConfirmation).toggleClass('valid', matches).toggleClass('invalid', !matches);
+        $('#passwordMatch i').attr('class', matches ? 'fas fa-check-circle' : 'fas fa-times-circle');
+        $('#passwordMatch span').text(matches ? 'Passwords match' : 'Passwords do not match');
+        return hasConfirmation && matches;
     }
-    
-    newPasswordInput.on('input', function() {
-        checkPasswordStrength($(this).val());
-        if (confirmPasswordInput.val()) checkPasswordMatch();
-    });
-    confirmPasswordInput.on('input', checkPasswordMatch);
-    
-    // Notification function (no changes here)
-    let notificationTimer;
-    function showNotification(message, type = 'success') {
-        clearTimeout(notificationTimer);
-        const notificationTitle = type.charAt(0).toUpperCase() + type.slice(1);
-        const notificationIcon = type === 'success' ? 'fa-check' : 'fa-exclamation-triangle';
-        notification.removeClass('success error').addClass(type);
-        notification.find('.notification-icon i').attr('class', `fas ${notificationIcon}`);
-        notification.find('.notification-title').text(notificationTitle);
-        notification.find('.notification-message').text(message);
-        notification.removeClass('show');
-        setTimeout(() => { notification.addClass('show'); }, 10);
-        const duration = type === 'error' ? 5000 : 3000;
-        notificationTimer = setTimeout(() => { notification.removeClass('show'); }, duration);
-    }
-    
-    // Handle login submission
-    loginForm.on('submit', function(e) {
-        e.preventDefault();
-
-        if (!loginEulaGate.checkbox.prop('checked')) {
-            showNotification('Please agree to the End User Agreement to sign in.', 'error');
-            activeEulaGate = loginEulaGate;
-            eulaModal.fadeIn('fast');
+    newPassword.on('input', function() { checkPasswordStrength($(this).val()); checkPasswordMatch(); });
+    confirmPassword.on('input', checkPasswordMatch);
+    forms.reset.on('submit', function(event) {
+        event.preventDefault();
+        if (isBusy() || activeView !== 'reset') return;
+        if (!hasActiveReset()) {
+            handleResetFailure();
+            showNotification('Send an OTP to the email address shown before resetting your password.', 'error');
             return;
         }
-
-        if (rememberMeCheckbox.is(':checked')) {
-            localStorage.setItem('rememberedEmail', $('#email').val());
-        } else {
-            localStorage.removeItem('rememberedEmail');
-        }
-        const loginButton = $('#loginButton');
-        loginButton.prop('disabled', true).html('<span class="loading"></span>Signing In...');
-        $.post("/login", loginForm.serialize(), function(response) {
-            if (response.success) {
-                showNotification("Login successful! Redirecting...", 'success');
-                setTimeout(() => window.location.href = response.redirect, 1200);
-            } else {
-                loginButton.prop('disabled', false).html('Sign In');
-                showNotification(response.message, 'error');
-            }
-        }).fail(function() {
-            loginButton.prop('disabled', false).html('Sign In');
-            showNotification("Network error. Please try again.", 'error');
-        });
-    });
-    
-    // Handle signup submission
-    signupForm.on('submit', function(e) {
-        e.preventDefault();
-
-        if (!signupEulaGate.checkbox.prop('checked')) {
-            showNotification('Please review and accept the Data Access Agreement to continue.', 'error');
-            activeEulaGate = signupEulaGate;
-            eulaModal.fadeIn('fast');
-            return;
-        }
-
-        const signupButton = $('#signupButton');
-        signupButton.prop('disabled', true).html('<span class="loading"></span>Creating Account...');
-        $.post("/signup", signupForm.serialize(), function(response) {
-            if (response.success) {
-                showNotification("Signup successful! Redirecting...", 'success');
-                setTimeout(() => window.location.href = response.redirect, 1200);
-            } else {
-                signupButton.prop('disabled', false).html('Sign Up');
-                showNotification(response.message, 'error');
-            }
-        }).fail(function() {
-            signupButton.prop('disabled', false).html('Sign Up');
-            showNotification("Network error. Please try again.", 'error');
-        });
-    });
-    
-    // Handle the NEW combined reset flow submission
-    resetFlowForm.on('submit', function(e) {
-        e.preventDefault();
-        
-        let code = '';
-        codeInputs.each(function() { code += $(this).val(); });
-        
-        if (code.length < 6) {
-            showNotification('Please enter the 6-digit verification code.', 'error');
-            return;
-        }
-
-        if (checkPasswordStrength(newPasswordInput.val()) < 3) {
+        const code = resetCode.val().trim();
+        setValidity(resetCode, /^[0-9]{6}$/.test(code) ? '' : 'Enter the 6-digit reset code from your email.');
+        if (!forms.reset[0].reportValidity()) return;
+        if (newPassword.val().length < 8 || checkPasswordStrength(newPassword.val()) < 3) {
             showNotification('Please choose a stronger password.', 'error');
             return;
         }
         if (!checkPasswordMatch()) {
             showNotification('Passwords do not match.', 'error');
+            confirmPassword.trigger('focus');
             return;
         }
-        
-        const resetButton = $('#resetButton');
-        resetButton.prop('disabled', true).html('<span class="loading"></span>Resetting...');
-        
-        // Serialize the form and add the code to it
-        const formData = resetFlowForm.serialize() + '&code=' + code;
-
-        $.post("/reset-password", formData, function(response) {
-            if (response.success) {
-                showNotification("Password reset successful! You can now log in.", 'success');
-                setTimeout(() => {
-                    showLoginForm();
-                }, 2000);
-            } else {
-                showNotification(response.message, 'error');
-            }
-        }).fail(function() {
-            showNotification("Network error. Please try again.", 'error');
-        }).always(function() {
-            resetButton.prop('disabled', false).html('Reset Password');
+        const email = resetEmail.val().trim().toLowerCase();
+        const data = { email, code, password: newPassword.val(), confirmPassword: confirmPassword.val() };
+        postForm(forms.reset, $('#resetButton'), '/reset-password', data, 'Resetting...', function(response) {
+            resetStage = 'expired';
+            resetResendAt = 0;
+            resetExpiresAt = 0;
+            pendingResetEmail = '';
+            $('#resetState').text('{}');
+            $('#resetEmail').val('');
+            returnToSignIn(email, response.message || 'Password reset successful! You can now sign in.');
         });
     });
-    
-    $('#email').focus();
+
+    $(window).on('pagehide', function() { clearSensitiveFields(allForms); });
+    $(window).on('pageshow', function(event) {
+        // Back/forward cache must not restore a stale reset request or a
+        // form left disabled while its previous request was navigating away.
+        if (event.originalEvent && event.originalEvent.persisted) window.location.reload();
+    });
+    const initialView = body.attr('data-initial-view');
+    try { syncSignupState({ signup_state: JSON.parse($('#signupState').text() || '{}') }); }
+    catch (error) { /* Missing state must not invent a new resend request. */ }
+    try { syncResetState({ reset_state: JSON.parse($('#resetState').text() || '{}') }); }
+    catch (error) { /* Missing state cannot replace Cognito's code verification. */ }
+    showView(['signup', 'verify', 'reset'].includes(initialView) ? initialView : 'login', false);
+    if (activeView === 'reset') {
+        if (pendingResetEmail) $('#resetEmail').val(pendingResetEmail);
+        updateControls();
+        if (['failed', 'expired'].includes(resetStage) && pendingResetEmail) {
+            showNotification('This reset request is no longer valid. Request a new code to continue.', 'error');
+        }
+    }
+    if (activeView === 'login') $('#email').trigger('focus');
+    checkPasswordMatch();
 });

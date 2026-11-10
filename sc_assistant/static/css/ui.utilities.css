@@ -1,0 +1,2 @@
+/*! tailwindcss v4.3.4 | MIT License | https://tailwindcss.com */
+@layer theme{:root,:host{--ui-spacing:.25rem}}@layer utilities{.ui\:grid{display:grid}.ui\:gap-2{gap:calc(var(--ui-spacing) * 2)}}

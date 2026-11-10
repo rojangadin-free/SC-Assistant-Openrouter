@@ -42,6 +42,7 @@ from rag.spelling import (
     SPELL_VOCAB_FILE,
     learn_terms,
     misspellings,
+    spelling_candidates,
     reload_vocabulary,
     vocabulary_size,
 )
@@ -144,10 +145,13 @@ def main() -> int:
               f"({SPELL_VOCAB_FILE})")
         repairs = misspellings(args.check)
         if not repairs:
-            print(f"'{args.check}' -> no corrections (every word is known)")
+            print(f"'{args.check}' -> no confident local correction; contextual interpretation may still be needed")
         else:
             for typed, meant in repairs:
                 print(f"'{args.check}' -> {typed!r} looks like {meant!r}")
+        hints = spelling_candidates(args.check)
+        if hints:
+            print(f"Contextual spelling candidates (not automatic replacements): {hints}")
         return 0
 
     print(f"Reading documents from {args.path}/ ...")

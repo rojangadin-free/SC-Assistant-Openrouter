@@ -28,9 +28,13 @@ import os
 import sys
 import tempfile
 import types
+from unittest.mock import patch
 
 # ---------------------------------------------------------------- temp storage
 _tmp = tempfile.mkdtemp(prefix="scfeedback_")
+os.environ["STORE_BACKEND"] = "file"
+os.environ["SC_RUNTIME_DB"] = os.path.join(_tmp, "chat.sqlite3")
+os.environ["PASSWORD_RESET_STATE_PATH"] = os.path.join(_tmp, "reset.sqlite3")
 os.environ["ANSWER_FEEDBACK_FILE"] = os.path.join(_tmp, "answer_feedback.json")
 os.environ["ESCALATIONS_FILE"] = os.path.join(_tmp, "escalations.json")
 os.environ["CONTENT_GAPS_FILE"] = os.path.join(_tmp, "content_gaps.json")
@@ -173,7 +177,7 @@ def section(title):
 
 
 app = create_app()
-app.config.update(TESTING=True)
+app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
 
 
 def client_as(email=None, is_admin=False, guest=False):
@@ -555,6 +559,70 @@ check("its votes are gone too", all(
 check("non-admin cannot delete", stud.post("/admin/feedback/api/delete", json={
     "key": "anything"}).status_code == 403)
 
+
+# ============================================================
+section("12. Toggling a vote off persists and keeps aggregates correct")
+# ============================================================
+toggle_question = "Feedback toggle consistency marker 20261109"
+toggle_key = __import__("rag.gaps", fromlist=["x"]).normalize_question(toggle_question)
+before_total = fb.feedback_stats()["total_votes"]
+for mid, verdict in (("toggle-down", "down"), ("toggle-up", "up")):
+    stud.post("/chat/feedback", json={"msg_id": mid, "verdict": verdict,
+        "question": toggle_question, "sources": ["toggle-source.pdf|p.1"]})
+check("toggle setup counts both votes", fb.feedback_stats()["total_votes"] == before_total + 2)
+r = stud.post("/chat/feedback", json={"msg_id": "toggle-down", "verdict": None})
+check("explicit null retracts vote", r.status_code == 200 and r.get_json()["success"])
+check("retracted vote is absent", fb.get_vote("toggle-down") is None)
+check("retraction offers no report sheet", r.get_json()["can_report"] is False)
+topic = next(t for t in fb.list_topics() if t["key"] == toggle_key)
+check("remaining topic is rebuilt", topic["up"] == 1 and topic["down"] == 0 and topic["total"] == 1, topic)
+check("removed sources leave suspect list", topic["suspect_sources"] == [])
+check("removed vote is absent after batch reload", stud.post("/chat/feedback/batch", json={
+    "msg_ids": ["toggle-down", "toggle-up"]}).get_json()["votes"] == {"toggle-up": "up"})
+check("clearing twice is harmless", stud.post("/chat/feedback", json={
+    "msg_id": "toggle-down", "verdict": None}).status_code == 200)
+other = client_as("another-student@sc.edu.ph")
+check("another student cannot retract my vote", other.post("/chat/feedback", json={
+    "msg_id": "toggle-up", "verdict": None}).status_code == 403)
+check("unauthorized removal keeps the vote", fb.get_vote("toggle-up")["verdict"] == "up")
+check("missing verdict is not a retraction", stud.post("/chat/feedback", json={
+    "msg_id": "toggle-up"}).status_code == 400)
+check("invalid verdict type is refused", stud.post("/chat/feedback", json={
+    "msg_id": "toggle-up", "verdict": []}).status_code == 400)
+check("invalid message id type is refused", stud.post("/chat/feedback", json={
+    "msg_id": 42, "verdict": None}).status_code == 400)
+check("invalid JSON body type is refused", stud.post("/chat/feedback", json=["not", "an", "object"]).status_code == 400)
+with patch.object(fb._store(), "mutate", side_effect=OSError("simulated storage failure")):
+    r = stud.post("/chat/feedback", json={"msg_id": "toggle-up", "verdict": None})
+check("failed removal is not reported as saved", r.status_code == 500 and r.get_json()["success"] is False)
+check("storage failure retains the vote", fb.get_vote("toggle-up")["verdict"] == "up")
+stud.post("/chat/feedback", json={"msg_id": "toggle-up", "verdict": None})
+check("last removal drops the empty topic", not any(t["key"] == toggle_key for t in fb.list_topics()))
+check("headline count returns to baseline", fb.feedback_stats()["total_votes"] == before_total)
+
+section("13. Guest ownership and filed reports survive toggle handling")
+guest.post("/chat/feedback", json={"msg_id": "toggle-guest", "verdict": "down", "question": "Guest toggle marker"})
+check("guest vote has a session owner", bool(fb.get_vote("toggle-guest").get("guest_session_id")))
+check("guest owner marker is not returned to clients", "guest_session_id" not in stud.get(
+    "/chat/feedback/toggle-guest").get_json()["vote"])
+other_guest = client_as(guest=True)
+check("a different guest cannot remove the vote", other_guest.post("/chat/feedback", json={
+    "msg_id": "toggle-guest", "verdict": None}).status_code == 403)
+check("original guest can remove the vote", guest.post("/chat/feedback", json={
+    "msg_id": "toggle-guest", "verdict": None}).status_code == 200)
+fb.record_vote("legacy-guest", "down", question="Legacy guest marker", voter="guest")
+check("unowned legacy guest votes cannot be claimed for deletion", other_guest.post("/chat/feedback", json={
+    "msg_id": "legacy-guest", "verdict": None}).status_code == 403)
+check("anonymous removal remains forbidden", app.test_client().post("/chat/feedback", json={
+    "msg_id": "legacy-guest", "verdict": None}).status_code == 401)
+
+stud.post("/chat/feedback", json={"msg_id": "toggle-reported", "verdict": "down", "question": "Reported toggle marker"})
+stud.post("/chat/report", json={"msg_id": "toggle-reported", "reason": "Wrong information",
+    "question": "Reported toggle marker", "msg_snippet": "An answer that was already reported."})
+reports_before_retraction = list(_filed_reports)
+stud.post("/chat/feedback", json={"msg_id": "toggle-reported", "verdict": None})
+check("retracting the vote does not retract its report", _filed_reports == reports_before_retraction)
+check("reported answer's vote was still removed", fb.get_vote("toggle-reported") is None)
 
 # ============================================================
 print("\n" + "=" * 46)

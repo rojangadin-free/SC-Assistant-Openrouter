@@ -1,0 +1,11 @@
+{
+  "name": "sc-assistant-ui-tools",
+  "private": true,
+  "scripts": {
+    "build:ui": "tailwindcss -i sc_assistant/static/css/ui.input.css -o sc_assistant/static/css/ui.utilities.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.4",
+    "tailwindcss": "4.3.4"
+  }
+}

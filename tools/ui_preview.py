@@ -33,8 +33,8 @@ import time
 # The harness lives in tools/, the app lives one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, Response, jsonify, render_template  # noqa: E402
-from jinja2 import ChainableUndefined  # noqa: E402
+from flask import Flask, Response, jsonify, render_template, request
+from jinja2 import ChainableUndefined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.join(os.path.dirname(HERE), "sc_assistant")
@@ -79,6 +79,7 @@ USER = {
     "role": "admin",
 }
 GUEST = {"username": "Guest", "email": "", "is_guest": True, "avatar_url": "", "role": "guest"}
+STUDENT = {**USER, "role": "student"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ GUEST = {"username": "Guest", "email": "", "is_guest": True, "avatar_url": "", "
 @app.route("/")
 @app.route("/chat", endpoint="chat.chat_page")
 def index():
-    return render_template("chat.html", user=USER, start_new="true")
+    return render_template("chat.html", user=STUDENT, start_new="true")
 
 
 app.add_url_rule("/", endpoint="chat.index", view_func=index)
@@ -101,6 +102,21 @@ def guest_chat():
 @app.route("/login", endpoint="auth.auth_page")
 def login():
     return render_template("auth.html")
+
+
+@app.get("/signup", endpoint="auth.signup")
+def signup():
+    return render_template("auth.html", initial_view="signup")
+
+
+@app.get("/password-reset", endpoint="auth.password_reset_page")
+def password_reset():
+    return render_template("auth.html", initial_view="reset", reset_state={})
+
+
+@app.get("/__ui_preview__/health")
+def preview_health():
+    return jsonify(fixture="ui-preview", external_services=False)
 
 
 @app.route("/logout", endpoint="auth.logout")
@@ -197,13 +213,14 @@ def clear():
 @app.get("/api/announcements")
 def announcements():
     return jsonify({
+        "success": True,
         "viewer": "student",
         "announcements": [{
             "key": "a1",
-            "kind": "important",
-            "title": "Enrollment for 2nd Semester is ongoing",
-            "body": "Walk-in enrollment runs until 12 September at the Registrar's Office.",
-            "until": "Until 12 September 2026",
+            "priority": "info",
+            "title": "Prepare your enrollment documents",
+            "body": "Check the required documents before visiting the Registrar's Office.",
+            "expires_on": None,
         }],
     })
 
@@ -251,26 +268,34 @@ def chat_get():
 # Dashboard JSON, so the admin screen is not a wall of spinners.
 @app.get("/api/dashboard/attention")
 def attention():
-    return jsonify({"success": True, "items": [
-        {"kind": "escalations", "count": 3, "label": "students waiting for a reply"},
-        {"kind": "reports", "count": 2, "label": "reports filed by hand"},
+    return jsonify({"success": True, "attention": [
+        {"section": "escalations", "count": 3, "label": "Students waiting for a reply", "icon": "fa-user-tie", "tone": "warn"},
+        {"section": "reports", "count": 2, "label": "Answers reported for review", "icon": "fa-flag", "tone": "bad"},
     ]})
 
 
 @app.get("/api/dashboard/activities")
 def activities():
     return jsonify({"success": True, "activities": [
-        {"kind": "upload", "text": "Samar-College-update.pdf indexed", "when": "2 hours ago"},
-        {"kind": "feedback", "text": "An answer was marked unhelpful", "when": "5 hours ago"},
+        {"kind": "upload", "text": "Samar-College-update.pdf indexed", "time": "2 hours ago", "icon": "fa-file", "tone": "ok"},
+        {"kind": "feedback", "text": "An answer was marked unhelpful", "time": "5 hours ago", "icon": "fa-comment", "tone": "bad"},
     ]})
 
 
 @app.get("/api/dashboard/users")
 def users():
     return jsonify({"success": True, "users": [
-        {"username": "Juan Dela Cruz", "email": "juan@samarcollege.edu.ph", "role": "admin"},
-        {"username": "Maria Santos", "email": "maria@samarcollege.edu.ph", "role": "student"},
+        {"id": "preview-juan", "username": "Juan Dela Cruz", "email": "juan@samarcollege.edu.ph",
+         "role": "admin", "status": "CONFIRMED", "joined": "2026-08-01T08:00:00Z"},
+        {"id": "preview-maria", "username": "Maria Santos", "email": "maria@samarcollege.edu.ph",
+         "role": "user", "status": "UNCONFIRMED", "joined": "2026-09-01T08:00:00Z"},
     ]})
+
+
+@app.post("/api/dashboard/users/update")
+def update_user():
+    return jsonify(success=True, message="Preview user updated.", is_self_update=False,
+                   new_username=request.form.get("username", ""))
 
 
 @app.get("/files")
@@ -345,7 +370,7 @@ def analytics_overview():
     ]
     return jsonify({"success": True, "analytics": {
         "generated_at": "2026-09-03T09:00:00+00:00",
-        "window_days": 30,
+        "window_days": request.args.get("days", 14, type=int),
         "totals": {
             "questions_with_signal": 412, "answered": 366, "unanswered": 46,
             "answered_rate": 0.888, "votes": 132, "up": 108, "down": 24,

@@ -67,7 +67,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap">
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&amp;family=Source+Serif+4:wght@500;600&amp;display=swap">
 
 
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
@@ -75,9 +75,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
 
 
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui.utilities.css') }}">
   <link rel="stylesheet"
-        type="text/css"
-        href="{{ url_for('static', filename='css/main.css') }}"/>
+         type="text/css"
+         href="{{ url_for('static', filename='css/main.css') }}"/>
 
   {% block extra_head %}{% endblock %}
 
@@ -92,15 +93,8 @@
         type="text/css"
         href="{{ url_for('static', filename='css/polish.css') }}"/>
 
-  {# ── Console layer ──────────────────────────────────────────────────────
-     The visual language: white app frame, one rounded content shell inset from
-     it, hairline-bordered cards inside, pill navigation. Below polish.css
-     because it re-shapes some of the same properties (radii on cards and
-     controls, the sidebar active state) and needs to win — again purely on
-     source order, since the selectors have equal specificity.
-
-     It adds no colours of its own: every accent resolves to --sc-green or
-     --sc-yellow. See the header of console.css. #}
+  {# Shared service-portal surfaces, hierarchy, and controls. Page styles retain
+     their layout rules; the polish layer's accessibility safeguards stay loaded. #}
   <link rel="stylesheet"
         type="text/css"
         href="{{ url_for('static', filename='css/console.css') }}"/>

@@ -14,12 +14,14 @@ Read off `aws/cognito.py` and `sc_assistant/auth.py`, not off the console:
 | `ALLOW_REFRESH_TOKEN_AUTH` on the app client | Cognito requires it | Cannot be unticked. |
 | A **client secret** | `get_secret_hash()` sends `SECRET_HASH` | If the client has no secret, every call fails `NotAuthorizedException`. |
 | `AliasAttributes: ['email']` or email sign-in | `resolve_cognito_username()` | Students type an email; the pool must accept the account. |
-| `AutoVerifiedAttributes: ['email']` | `forgot_password()` | The reset code is mailed to the verified address. |
+| `AutoVerifiedAttributes: ['email']` | Signup and native password recovery | Recovery codes are sent to the account's verified email address. |
+| Self-service recovery through verified email | `ForgotPassword` and `ConfirmForgotPassword` | Email recovery must be enabled; an admin-only recovery setting cannot serve this flow. |
 | `custom:role` (string, mutable) | `get_user_role_from_claims()` | `"admin"` unlocks the console; missing reads as `"user"`. |
 | `custom:data_consent` (string, mutable) | `settings.update_consent()`, `auth.login()` | Stores the agreement answer. Value is the string `"true"`/`"false"`. |
+| `custom:student_id` (string, 1-64 characters) | `sign_up_user()` | Stores the numeric school ID independently of the user-chosen Cognito username; String preserves leading zeros. |
 | `name` attribute required | `sign_up_user()` sends it | Cognito rejects sign-up if a required attribute is missing. |
 
-Both custom attributes must be **mutable**. Cognito fixes mutability when the
+The `role` and `data_consent` attributes must be **mutable**. Cognito fixes mutability when the
 attribute is created and there is no way to change it afterwards — an immutable
 `custom:data_consent` makes the Settings toggle fail permanently, and the only
 remedy is a new attribute under a new name.
@@ -34,17 +36,42 @@ Cognito → Create user pool.
 - Email: "Send email with Cognito" is fine for a school project.
 - Self-registration: enabled (the app calls `sign_up`).
 
-## 2. Add the two custom attributes
+## 2. Add the custom attributes
 
-User pool → **Sign-up** → Custom attributes → Add custom attribute. Twice:
+User pool → **Sign-up** → Custom attributes → Add custom attribute for each missing entry:
 
 | Name | Type | Mutable | Min/Max |
 | --- | --- | --- | --- |
 | `role` | String | **yes** | 1 / 16 |
 | `data_consent` | String | **yes** | 1 / 8 |
+| `student_id` | String | **yes** | 1 / 64 |
 
 Type the name as `role`, not `custom:role`. Cognito adds the `custom:` prefix
 itself; typing it yields `custom:custom:role`.
+
+### Separate username and ID rollout
+
+Before deploying the separate-username signup form, an AWS administrator must:
+
+1. Add the missing `student_id` custom attribute using the String settings above.
+   Cognito attribute definitions cannot be deleted or renamed after creation.
+2. Review the existing app client's attribute permissions. If it has an explicit
+   `WriteAttributes` allowlist, add `custom:student_id` while preserving its other
+   permissions and authentication settings. Do not replace the entire app-client
+   configuration or enable all attributes just for this change.
+3. Verify signup and email confirmation in a test environment. The entered
+   username must be Cognito `Username` and the default display `name`; the numeric
+   ID must remain the exact string in `custom:student_id`, including leading zeros.
+
+The 2026-11-08 read-only schema check found only `custom:role` and
+`custom:data_consent`; `custom:student_id` was absent. App-client inspection was
+IAM-denied, so its attribute write permissions have not been verified. No cloud
+configuration was changed. Missing schema/write access returns a configuration
+error rather than silently discarding the ID or using it as the username.
+
+This ID is self-reported profile data, not proof of enrollment. Signup must not
+use it to create, replace, or link authoritative `StudentRecords` entries.
+Existing accounts retain their usernames and do not need this attribute to sign in.
 
 ## 3. Create the app client
 
@@ -88,6 +115,11 @@ cognito-idp:ListUserPoolClients
 Without `DescribeUserPoolClient` you cannot read `ExplicitAuthFlows`, which is
 why `tools/probe_auth_flows.py` has to infer it from error codes.
 
+Keep `cognito-idp:AdminSetUserPassword` in the overall application policy:
+`sc_assistant/settings.py` still uses it for signed-in password changes. Native
+password recovery itself no longer uses this action. Do not grant the app
+IAM-management or pool-configuration permissions to restore recovery.
+
 ## 6. Verify before touching the UI
 
 ```
@@ -111,7 +143,79 @@ MESSAGE: Incorrect username or password.
 `NotAuthorizedException` is the goal. It proves the flow, the client id and the
 SecretHash were all accepted and only the password was refused.
 
-## Current state of this project
+## Password recovery
+
+The one-page reset form uses standard Cognito recovery:
+
+1. Enter the account email and select **Send OTP** beside it. This calls `ForgotPassword` without submitting password drafts.
+2. Submit the six-digit email code, new password, and password confirmation
+   together on the same form using **Reset password**.
+3. After local form validation, the app sends the code and new password to
+   `ConfirmForgotPassword` for the account bound to the request. Cognito validates
+    the code and resets the password atomically, subject to its password policy.
+
+All fields remain on one screen. The email button becomes **Resend OTP** after a
+request and respects the server cooldown. Changing the email clears the sensitive
+draft fields; a reset cannot proceed with a code requested for a different address.
+
+There is no separate `/verify-reset-code` step, `USER_AUTH` / `EMAIL_OTP`
+authentication proof, or `AdminSetUserPassword` call for recovery. Checking the
+number of digits is only form validation, not code verification. Recovery does
+not sign the user in; sign in normally with the new password after success.
+
+### Required administrator setup
+
+1. Confirm self-service recovery is enabled with verified email as a recovery
+   method, and that the account has a verified, eligible recovery email address.
+2. Check delivery quotas for the configured email sender. Cognito's default sender
+   supports this recovery flow; SES and the Essentials/Plus tiers are not required.
+   If SES is already configured, sender verification and existing SES sandbox
+   restrictions still apply. Use SES-verified recipients for sandbox testing.
+3. Keep `ALLOW_USER_PASSWORD_AUTH` for normal login and preserve compatible
+   existing refresh-token settings, including `ALLOW_REFRESH_TOKEN_AUTH` where
+   used. Recovery does not require `ALLOW_USER_AUTH` or `EMAIL_OTP`; already
+   configured authentication flows and SES may remain.
+4. Prefer enabling the app client's user-existence-error prevention setting.
+   Recovery responses do not disclose whether an address is registered.
+
+The previously recorded read-only check found **Essentials**, MFA **OFF**,
+Cognito's default email sender, and only `PASSWORD` in the allowed first factors.
+Reading the app-client configuration was denied to the runtime credentials.
+These observations are not a fresh configuration check, and this recovery update
+does not change AWS settings or require passwordless first factors.
+
+Do not automatically change AWS resources, sender configuration, pool tier, or
+MFA to restore recovery. Recovery-channel eligibility under existing MFA settings
+still matters; resolve a blocked email recovery channel with the pool
+administrator without weakening established MFA requirements. No real reset
+emails or password writes are used by the offline test suite.
+
+### Reset-state protection
+
+Only an opaque reset ID is stored in the signed browser session. A private
+SQLite file lets `ResetFlowStore` coordinate requests across workers in this
+single container.
+`PASSWORD_RESET_STATE_PATH` can explicitly select its location. The default is
+an owner-only directory under the system temporary directory. For deployment,
+keep this path on the private SQLite volume described in the
+[deployment guide](AWS_NEW_ACCOUNT_DEPLOYMENT.md#11-start-application).
+Independent containers would need shared recovery storage. Losing this file,
+including container replacement without persistent storage, invalidates
+outstanding requests and the user must request a new code.
+
+App-side requests expire after **180 seconds** and enforce a **30-second resend
+wait**. The store keeps a stable account binding and protects against duplicate
+submissions; the final submission cannot choose a different target account.
+This is short-lived request coordination, not an OTP-verified admin-write grant.
+The app's request expiry is separate from Cognito's code-validity rules. Cognito
+remains responsible for code validation and the atomic password reset through
+`ConfirmForgotPassword`, including enforcement of its password policy.
+
+Passwords, entered codes, and provider tokens (including Cognito access, ID, and
+refresh tokens) are never stored in recovery state. Recovery pages and endpoints
+are excluded from PWA caching.
+
+## Existing password sign-in status
 
 Resolved. `ALLOW_USER_PASSWORD_AUTH` has been ticked on client `6ql3g39e…`:
 
@@ -220,5 +324,3 @@ bucket names are globally unique. Creating `sc-assistant-bucket` in
 needs its own name (for example `sc-assistant-bucket-apse1`) set in
 `S3_BUCKET_NAME`. Until then admin document uploads and `serve_document()`
 fall back to the local `data/` folder only.
-
-

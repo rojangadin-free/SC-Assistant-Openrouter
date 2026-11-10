@@ -1,373 +1,463 @@
-/* The Inter @import is gone — auth.html now links the font in its own <head>,
-   with preconnects, so it starts loading in the first HTML parse instead of after
-   this file has been fetched and parsed. */
-
-/* CSS Variables for SC Minimal Theme */
-:root {
-    /* ── TYPOGRAPHY ───────────────────────────────────────────────
-       Deliberately duplicated from main.css. auth.html is a standalone page: it
-       does not extend base.html and does not load main.css, because main.css
-       styles `body` as the app shell (flex, 100vh, overflow:hidden) and the login
-       screen is a centred card, not a shell. So the tokens have to exist here
-       too, and the values must be kept identical — a login screen one step off
-       the app's type scale is the first thing a student sees. */
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-                 'Helvetica Neue', Arial, sans-serif;
-
-    --text-xs:   0.75rem;
-    --text-sm:   0.8125rem;
+/* Auth is standalone. Shared colors, identity and radii come from console.css;
+   all layout and form rules here stay within this page. */
+body.auth-body {
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    --text-xs: 0.75rem;
+    --text-sm: 0.8125rem;
     --text-base: 0.875rem;
-    --text-md:   0.9375rem;
-    --text-lg:   1.0625rem;
-    --text-xl:   1.25rem;
-    --text-2xl:  1.625rem;
-
-    --leading-tight:   1.25;
-    --leading-snug:    1.4;
-    --leading-normal:  1.6;
-    --leading-relaxed: 1.7;
-
-    --weight-book:     350;
-    --weight-normal:   400;
-
-
-    --weight-medium:   500;
+    --text-md: 0.9375rem;
+    --text-lg: 1.0625rem;
+    --text-xl: 1.25rem;
+    --text-2xl: 1.625rem;
+    --weight-normal: 400;
+    --weight-medium: 500;
     --weight-semibold: 600;
-    --weight-bold:     700;
-
-    --tracking-tight: -0.011em;
-
-
-    /* Samar College Brand Colors */
+    --weight-bold: 700;
+    --leading-normal: 1.6;
     --sc-green: #0d4503;
-    --sc-green-light: #166107;
+    --sc-green-light: #15520a;
     --sc-yellow: #fbbc05;
-    
-    --bg-main: #f3f4f6; /* Very light gray for body to make the white card pop */
-    --bg-surface: #ffffff; /* Pure white for cards */
-    
-    --text-primary: #111827;
-    --text-secondary: #4b5563;
-    /* 2.41:1 on the page as #9ca3af — below WCAG 2.2 §1.4.3's 4.5:1. Kept in
-       step with main.css, which defines the same token for every other page. */
-    --text-tertiary: #6b7280;
-    
-    --border: #e5e7eb;
-    
-    --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
-    
-    --success: #12783c;
-    --error: #c2262c;
-}
-
-/* Dark theme variables */
-[data-theme="dark"] {
-    --sc-green: #1a7a08;
-    --sc-green-light: #24a10d;
-    --sc-yellow: #fbbc05;
-    
-    --bg-main: #0f1115;
-    --bg-surface: #1f2228;
-    
-    --text-primary: #f9fafb;
-    --text-secondary: #d1d5db;
-    /* Lighter than the light theme's, not darker — see main.css. */
-    --text-tertiary: #a2abb8;
-    
-    --border: #2d3139;
-    --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-}
-
-/* Global styles */
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-body {
-    font-family: var(--font-sans);
-    background: var(--bg-main); /* Reverted to clean light background */
-    color: var(--text-primary);
+    --bg-main: var(--con-canvas);
+    --bg-surface: var(--con-surface);
+    --dur-fast: 120ms;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 28px 16px;
     min-height: 100vh;
+    min-height: 100svh;
+    background: var(--con-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--text-md);
+    line-height: 1.6;
+    color-scheme: light;
+}
+
+body.auth-body[data-theme="dark"] {
+    --sc-green: #295c38;
+    --sc-green-light: #326d44;
+    --ui-success-ink: #b1d4b9;
+    --ui-danger-ink: #e4aaa6;
+    --ui-warn-ink: #ddc28a;
+    color-scheme: dark;
+}
+
+body.auth-body,
+body.auth-body *,
+body.auth-body *::before,
+body.auth-body *::after { box-sizing: border-box; }
+
+body.auth-body :where(h1, h2, p, form) { margin: 0; }
+body.auth-body :where(button, input, select, textarea) { font-family: inherit; color: inherit; }
+
+/* Keep inactive server/JS-selected views hidden despite shared display rules. */
+body.auth-body [hidden] { display: none !important; }
+
+body.auth-body .auth-layout {
+    width: 100%;
+    max-width: 480px;
+    flex-shrink: 0;
+    margin: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--con-r-shell);
+    background: var(--con-surface);
+    box-shadow: 0 12px 36px rgba(14, 40, 23, 0.07);
+}
+
+body.auth-body .auth-masthead {
+    min-width: 0;
+    padding: 28px 32px 18px;
+}
+
+body.auth-body .auth-masthead-top {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    /* Was a hardcoded 14px, which is both off the app's scale (the rest of the UI
-       reads at 15px) and immune to the browser's font-size setting, since px does
-       not respond to it. */
-    font-size: var(--text-base);
-    line-height: var(--leading-normal);
-    padding: 20px;
-    transition: background-color 0.3s ease;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    font-optical-sizing: auto;
+    gap: 16px;
 }
 
-/* Form controls do not inherit the page font in any browser; each field in this
-   file was declaring `font-family: inherit` separately to fix it, and the
-   verification code inputs were never fixed at all — the six digits were being
-   drawn in the browser's default face while the labels above them were Inter. */
-input, select, textarea, button {
-    font-family: inherit;
-    color: inherit;
-}
+body.auth-body .college-brand--auth { flex-direction: column; gap: 10px; text-align: center; }
+body.auth-body .college-brand--auth .college-brand-mark { width: 56px; height: 56px; }
+body.auth-body .college-brand--auth .college-brand-name { font-size: 1.25rem; }
+body.auth-body .college-brand--auth .college-brand-product { font-size: var(--text-sm); }
 
-
-
-/* Login container */
-.login-container {
-    width: 100%;
-    max-width: 420px;
-    padding: 2.5rem 2rem;
-    background: var(--bg-surface);
-    border-radius: 16px;
+body.auth-body .theme-toggle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
     border: 1px solid var(--border);
-    /* Subtle Yellow Theme Accent */
-    border-top: 4px solid var(--sc-yellow);
-    box-shadow: var(--shadow-md);
-    animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    margin: 20px 0;
-    position: relative;
-}
-
-@keyframes slideUp {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* Header styles */
-.login-header { text-align: center; margin-bottom: 2rem; position: relative; }
-
-.theme-toggle {
-    position: absolute; top: -10px; right: -10px;
-    background: transparent; border: 1px solid var(--border);
-    color: var(--text-secondary); font-size: 1.1rem; cursor: pointer;
-    width: 36px; height: 36px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    transition: all 0.2s ease; z-index: 10;
-}
-.theme-toggle:hover { background: var(--bg-main); color: var(--sc-yellow); border-color: var(--sc-yellow); }
-
-/* Yellow tinted logo container to add color scheme */
-.logo {
-    width: 75px; height: 75px; margin: 0 auto 1.2rem;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(251, 188, 5, 0.1); 
-    border: 1px solid rgba(251, 188, 5, 0.25);
-    border-radius: 50%; padding: 6px;
-}
-.logo-img { width: 100%; height: 100%; object-fit: contain; }
-
-/* letter-spacing was -0.5px: a fixed value, so at a larger browser font size the
-   tracking stayed half a pixel and the heading grew looser relative to its own
-   size. The token is in em, which tracks whatever size it is applied to. */
-.login-header h1 { font-size: var(--text-xl); font-weight: var(--weight-bold); line-height: var(--leading-tight); letter-spacing: var(--tracking-tight); margin-bottom: 0.5rem; color: var(--text-primary); }
-.login-header p { color: var(--text-secondary); font-size: var(--text-base); }
-
-/* Step indicator */
-.step-indicator { display: flex; justify-content: center; margin-bottom: 1.5rem; }
-.step { display: flex; align-items: center; }
-.step-number { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-main); border: 1px solid var(--border); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-weight: var(--weight-semibold); font-size: var(--text-sm); transition: all 0.3s; }
-.step.active .step-number { background: var(--sc-green); color: white; border-color: var(--sc-green); }
-.step.completed .step-number { background: var(--success); color: white; border-color: var(--success); }
-.step-line { width: 50px; height: 2px; background: var(--border); margin: 0 8px; transition: all 0.3s; }
-.step.completed + .step .step-line { background: var(--success); }
-
-/* Form styles */
-.form-group { margin-bottom: 1.25rem; position: relative; }
-.form-group label { display: block; margin-bottom: 0.5rem; font-weight: 600; color: var(--text-primary); font-size: 0.9rem; }
-.input-wrapper { position: relative; }
-
-.form-input {
-    width: 100%; padding: 12px 16px 12px 42px;
-    background: var(--bg-main); border: 1px solid var(--border);
-    /* 16px, and an absolute px value on purpose. Mobile Safari zooms the entire
-       page in when a focused input's text is under 16px and does not zoom back
-       out afterwards — on the login screen, which is the first thing every
-       student touches, that leaves them pinching the page back into place before
-       they can reach the password field. A rem value would not be safe here: if
-       the user has set a smaller default font size, 1rem computes under 16px and
-       Safari zooms anyway.
-
-       This is not scoped to a media query because 16px is a perfectly good size
-       for a login field on a desktop too. */
-    border-radius: 10px; color: var(--text-primary); font-size: 16px;
-    transition: border-color var(--dur-base, 200ms) ease,
-                box-shadow var(--dur-base, 200ms) ease,
-                background var(--dur-base, 200ms) ease;
-    font-family: inherit;
-}
-.form-input:focus { outline: none; border-color: var(--sc-green); box-shadow: 0 0 0 3px rgba(13, 69, 3, 0.1); background: var(--bg-surface); }
-.form-input::placeholder { color: var(--text-tertiary); }
-
-.input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); font-size: 15px; z-index: 2; transition: color 0.2s; }
-.form-input:focus ~ .input-icon { color: var(--sc-green); }
-
-/* Persistent, non-error helper line under an input — currently the one that
-   tells students the sign-in field takes either an email or a username. Uses
-   --text-secondary rather than --text-tertiary: this is instruction the student
-   needs before they can act, not decoration, and --text-tertiary is reserved
-   for placeholder-weight text here. */
-.field-hint {
-    margin: 0.375rem 0 0;
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal, 1.5);
+    border-radius: var(--con-r-ctl);
+    background: transparent;
     color: var(--text-secondary);
-}
-
-/* Code input styles */
-.code-input-container { display: flex; justify-content: space-between; margin-bottom: 1.5rem; }
-.code-input {
-    width: 48px; height: 48px; text-align: center; font-size: 1.2rem; font-weight: var(--weight-semibold);
-    border-radius: 10px; border: 1px solid var(--border); background: var(--bg-main);
-    color: var(--text-primary); transition: all 0.2s ease;
-    /* Tabular figures so all six boxes look identically filled. With Inter's
-       default proportional digits a "1" sits visibly narrower in its box than a
-       "0", which makes a correctly typed code look misaligned. */
-    font-variant-numeric: tabular-nums;
-}
-.code-input:focus { outline: none; border-color: var(--sc-green); box-shadow: 0 0 0 3px rgba(13, 69, 3, 0.1); background: var(--bg-surface); }
-.code-input.error { border-color: var(--error); animation: shake 0.4s; }
-@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
-
-/* Password visibility toggle */
-/* polish.css raises this to a 44x44 tap target (WCAG 2.2 §2.5.5). An absolutely
-   positioned <i> does not centre its own glyph, so once the box grew from ~15px
-   to 44px the eye stopped sitting at the field's right edge and floated ~28px
-   into the input, overlapping the typed password. Measured in the browser: box
-   right edge 883px against an input right edge of 897px. Centring the glyph in
-   the grown box puts it back on the edge it was designed for while keeping the
-   larger hit area. */
-.password-toggle {
-    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-    color: var(--text-tertiary); cursor: pointer; transition: color 0.2s ease; z-index: 2;
-    display: flex; align-items: center; justify-content: center;
-}
-.password-toggle:hover { color: var(--text-primary); }
-
-/* Form options */
-.form-options { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; font-size: 0.9rem; }
-.checkbox-wrapper { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.custom-checkbox { width: 18px; height: 18px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; }
-.checkbox-wrapper input:checked + .custom-checkbox { background: var(--sc-green); border-color: var(--sc-green); }
-.custom-checkbox i { color: white; font-size: 12px; display: none; }
-.checkbox-wrapper input:checked + .custom-checkbox i { display: block; }
-.checkbox-wrapper input { display: none; }
-.checkbox-wrapper label { color: var(--text-secondary); cursor: pointer; font-weight: 500; }
-.forgot-password { color: var(--sc-green); text-decoration: none; font-weight: 500; transition: color 0.2s ease; }
-.forgot-password:hover { color: var(--sc-green-light); text-decoration: underline; }
-
-/* Button styles */
-.login-button {
-    width: 100%; padding: 12px; background: var(--sc-green); border: none; border-radius: 10px;
-    color: white; font-size: 1rem; font-weight: 600; cursor: pointer;
-    transition: all 0.2s ease; margin-bottom: 1.5rem; font-family: inherit;
-}
-.login-button:hover:not(:disabled) { background: var(--sc-green-light); transform: translateY(-1px); box-shadow: 0 4px 6px rgba(13, 69, 3, 0.15); }
-.login-button:active:not(:disabled) { transform: translateY(0); }
-.login-button:disabled { background: var(--bg-main); color: var(--text-tertiary); border: 1px solid var(--border); cursor: not-allowed; box-shadow: none; }
-
-/* Links */
-.resend-code, .signup-link, .back-to-login { text-align: center; margin-top: 1rem; font-size: 0.9rem; color: var(--text-secondary); }
-.resend-code a, .signup-link a, .back-to-login a { color: var(--sc-green); text-decoration: none; font-weight: 600; transition: color 0.2s ease; }
-.resend-code a:hover, .signup-link a:hover, .back-to-login a:hover { color: var(--sc-green-light); text-decoration: underline; }
-.resend-code a:disabled { color: var(--text-tertiary); cursor: not-allowed; text-decoration: none; }
-
-/* Loading spinner */
-.loading { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-radius: 50%; border-top-color: white; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: text-bottom; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Notification */
-.notification { position: fixed; bottom: 20px; right: 20px; background: var(--bg-surface); border-radius: 8px; padding: 1rem 1.25rem; box-shadow: var(--shadow-md); display: flex; align-items: center; gap: 12px; transform: translateY(100px); opacity: 0; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); z-index: 1001; max-width: 350px; border: 1px solid var(--border); border-left: 4px solid var(--sc-green); }
-.notification.show { transform: translateY(0); opacity: 1; }
-.notification-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 0.9rem; }
-/* These two chips were literal light-mode pastels, and polish.css correctly
-   flips the glyph inside them to the dark-mode inks (#6ee7a0 / #fca5a5). The
-   combination is what breaks: light-mode ink on a light chip is fine, but a
-   dark-mode ink on that same never-changing pastel measured ~1.3:1 — the tick
-   in a success toast was effectively invisible in dark mode.
-
-   An alpha tint of the status colour fixes both themes at once: it composites
-   over whatever --bg-surface currently is, so the chip is a pale green on the
-   white card and a deep green on the dark one, and the glyph keeps its
-   contrast either way. */
-.notification.success .notification-icon { background: rgba(18, 120, 60, 0.12); color: var(--success); }
-.notification.error .notification-icon { background: rgba(194, 38, 44, 0.12); color: var(--error); }
-.notification-title { font-weight: 600; color: var(--text-primary); margin-bottom: 2px; font-size: 0.95rem; }
-.notification-message { font-size: 0.85rem; color: var(--text-secondary); }
-
-/* Mobile */
-@media (max-width: 480px) {
-    body { padding: 0; }
-    .login-container { padding: 2rem 1.5rem; border-radius: 0; border: none; border-top: 5px solid var(--sc-yellow); box-shadow: none; min-height: 100vh; margin: 0; }
-    .theme-toggle { top: 15px; right: 15px; }
-    .login-header h1 { font-size: 1.4rem; }
-
-    /* Six fixed 48px boxes plus their gaps need about 288px of row. On a 320px
-       phone (an SE, or any Android in display-zoom mode) the card's own padding
-       leaves ~272px, so the last box was pushed outside the card. Letting them
-       shrink from 48px keeps all six on one line at any width — they stay square
-       because the height is fixed and the content is one character.
-
-       min-width:0 is required: a flex item will not shrink below its content
-       width without it, and the digit was enough to hold the box open. */
-    .code-input-container { gap: 6px; }
-    .code-input { width: 100%; max-width: 48px; min-width: 0; }
-}
-
-/* ── Signup: Data Access Agreement gate ───────
-   The agreement used to live behind a toggle on the settings page (after
-   account creation). It now lives here, at signup — the checkbox below
-   is what enables the Sign Up button; the link just opens the full text. */
-.eula-gate { justify-content: flex-start; margin-bottom: 1.25rem; }
-.eula-gate .checkbox-wrapper label a {
-    color: var(--sc-green);
-    font-weight: var(--weight-medium);
-    text-decoration: underline;
+    font-size: 1rem;
     cursor: pointer;
 }
-.eula-gate .checkbox-wrapper label a:hover { color: var(--sc-green-light); }
 
-/* ── Data Access Agreement modal ──────────────
-   Moved here from settings.css / settings.html. */
-.eula-overlay {
-    display: none; position: fixed; z-index: 1050; left: 0; top: 0;
-    width: 100%; height: 100%; background-color: rgba(15, 23, 42, 0.6);
-    backdrop-filter: blur(4px);
+body.auth-body .theme-toggle:hover {
+    border-color: var(--con-nav-ink);
+    background: var(--con-tint);
+    color: var(--con-nav-ink);
 }
-.eula-flex-container {
-    display: flex; align-items: center; justify-content: center; height: 100%; padding: 20px;
+
+/* One centered surface for every authentication step; no separate sidebar. */
+body.auth-body .login-container {
+    min-width: 0;
+    padding: 0 32px 28px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
 }
-.eula-modal {
-    background-color: var(--bg-main); width: 100%; max-width: 520px;
-    border-radius: 10px; box-shadow: var(--shadow-md);
-    border: 1px solid var(--border); overflow: hidden;
-    animation: modalSlideUp 0.25s ease-out forwards; display: flex; flex-direction: column;
+
+body.auth-body .login-container > * { max-width: 480px; margin-inline: auto; }
+body.auth-body .login-header { margin-bottom: 24px; text-align: center; }
+body.auth-body .login-header h1 {
+    margin: 0 0 8px;
+    font-size: 1.625rem;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--text-primary);
 }
-@keyframes modalSlideUp {
-    from { opacity: 0; transform: translateY(15px) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+body.auth-body .login-header p { color: var(--text-secondary); font-size: var(--text-base); }
+
+body.auth-body .form-group { position: relative; margin-bottom: 20px; }
+body.auth-body .form-group label {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--text-primary);
+    font-size: var(--text-base);
+    font-weight: 500;
 }
-.eula-header {
-    background-color: var(--bg-surface); padding: 14px 20px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 10px;
+body.auth-body .input-wrapper { position: relative; }
+body.auth-body .login-container .form-input {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--con-r-ctl);
+    background: var(--con-surface);
+    color: var(--text-primary);
+    font-size: max(16px, 1rem);
+    line-height: 1.5;
+    transition: border-color var(--dur-fast) ease;
 }
-.eula-header h3 { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 600; }
-.eula-header i { color: var(--sc-green); font-size: 1.1rem; }
-.eula-body {
-    padding: 16px 20px; color: var(--text-secondary); line-height: 1.5; font-size: 0.85rem;
-    max-height: 50vh; overflow-y: auto;
+body.auth-body .login-container .form-input:focus {
+    border-color: var(--con-nav-ink);
+    outline: 2px solid var(--con-nav-ink);
+    outline-offset: 2px;
+    box-shadow: none;
 }
-.eula-terms-box {
-    margin: 10px 0; background: var(--bg-surface); padding: 10px 10px 10px 28px;
-    border-radius: 6px; border: 1px solid var(--border); color: var(--text-primary);
+body.auth-body .login-container .form-input[aria-invalid="true"] { border-color: var(--ui-danger-ink); }
+body.auth-body .login-container .form-input::placeholder { color: var(--text-tertiary); opacity: 1; }
+body.auth-body .login-container .form-input:disabled { background: var(--con-canvas); color: var(--text-secondary); opacity: 1; }
+body.auth-body .input-wrapper:has(.password-toggle) .form-input { padding-right: 52px; }
+
+body.auth-body .input-wrapper .password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 2px;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--con-r-ctl);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    cursor: pointer;
 }
-.eula-terms-box li { margin-bottom: 4px; }
-.eula-footer {
-    padding: 14px 20px; border-top: 1px solid var(--border); background-color: var(--bg-surface);
-    display: flex; justify-content: flex-end; gap: 10px;
+body.auth-body .password-toggle:hover:not(:disabled) { background: var(--con-tint); color: var(--con-nav-ink); }
+body.auth-body .input-wrapper .password-toggle:active { transform: translateY(-50%); }
+
+body.auth-body .field-hint,
+body.auth-body .signup-verification-note,
+body.auth-body .reset-instructions {
+    margin-top: 6px;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    line-height: 1.6;
 }
-.btn-eula { padding: 6px 14px; border-radius: 6px; font-weight: 500; font-size: 0.85rem; cursor: pointer; border: none; transition: all 0.2s ease; }
-.btn-eula-decline { background-color: var(--bg-main); border: 1px solid var(--border); color: var(--text-primary); }
-.btn-eula-decline:hover { background-color: var(--border); }
-.btn-eula-agree { background-color: var(--sc-green); color: white; }
-.btn-eula-agree:hover:not(:disabled) { background-color: var(--sc-green-light); }
-.btn-eula-agree:disabled { background-color: var(--text-tertiary); cursor: not-allowed; opacity: 0.6; }
+body.auth-body .field-hint,
+body.auth-body .verification-recipient,
+body.auth-body .auth-message,
+body.auth-body .notification-message { overflow-wrap: anywhere; }
+body.auth-body .optional-label { color: var(--text-secondary); font-weight: 400; }
+body.auth-body .signup-verification-note { margin: 0 0 16px; }
+body.auth-body .reset-instructions { margin: -8px 0 20px; }
+
+body.auth-body .form-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px 16px;
+    margin-bottom: 16px;
+    font-size: var(--text-sm);
+}
+body.auth-body .checkbox-wrapper { position: relative; min-width: 0; }
+body.auth-body .checkbox-wrapper input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+body.auth-body .checkbox-wrapper label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding-block: 6px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    cursor: pointer;
+}
+body.auth-body .custom-checkbox {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--text-secondary);
+    border-radius: 4px;
+    background: var(--con-surface);
+}
+body.auth-body .custom-checkbox i { display: none; color: #fff; font-size: 12px; }
+body.auth-body .checkbox-wrapper input:checked + label .custom-checkbox { background: var(--sc-green); border-color: var(--sc-green); }
+body.auth-body .checkbox-wrapper input:checked + label .custom-checkbox i { display: block; }
+body.auth-body .checkbox-wrapper input:focus-visible + label .custom-checkbox { outline: 2px solid var(--con-nav-ink); outline-offset: 3px; }
+body.auth-body .checkbox-wrapper input:disabled + label { cursor: not-allowed; }
+body.auth-body .eula-gate { justify-content: flex-start; gap: 0 4px; margin-bottom: 20px; }
+body.auth-body .eula-gate .agreement-link { flex-shrink: 0; white-space: nowrap; }
+
+body.auth-body .login-button,
+body.auth-body .guest-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 48px;
+    margin: 0;
+    padding: 11px 16px;
+    border: 1px solid transparent;
+    border-radius: var(--con-r-ctl);
+    font-size: var(--text-md);
+    font-weight: 600;
+    line-height: 1.5;
+    box-shadow: none;
+    cursor: pointer;
+    transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+body.auth-body .login-button { background: var(--sc-green); color: #fff; }
+body.auth-body .login-button:hover:not(:disabled) { background: var(--sc-green-light); box-shadow: none; }
+body.auth-body .guest-button { border-color: var(--border); background: transparent; color: var(--con-nav-ink); font-weight: 500; }
+body.auth-body .guest-button:hover:not(:disabled) { border-color: var(--con-nav-ink); background: var(--con-tint); }
+body.auth-body .login-button:disabled,
+body.auth-body .guest-button:disabled,
+body.auth-body .btn-eula:disabled {
+    border: 1px solid var(--border);
+    background: var(--con-canvas);
+    color: var(--text-secondary);
+    opacity: 1;
+    cursor: not-allowed;
+}
+body.auth-body button:not(:disabled):active { transform: none; }
+
+body.auth-body .guest-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+body.auth-body .guest-disclaimer { margin-bottom: 12px; color: var(--text-secondary); font-size: var(--text-sm); }
+
+body.auth-body .forgot-password,
+body.auth-body .signup-link a,
+body.auth-body .back-to-login a,
+body.auth-body .auth-link-button,
+body.auth-body .agreement-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    color: var(--con-nav-ink);
+    font-weight: 500;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+}
+body.auth-body .auth-link-button,
+body.auth-body .agreement-link {
+    min-width: 44px;
+    padding: 8px 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--text-sm);
+    text-align: left;
+    cursor: pointer;
+}
+body.auth-body .auth-link-button:hover:not(:disabled),
+body.auth-body .agreement-link:hover:not(:disabled) { text-decoration-thickness: 2px; }
+body.auth-body .auth-link-button:disabled,
+body.auth-body .agreement-link:disabled { color: var(--text-secondary); opacity: 1; text-decoration: none; cursor: not-allowed; }
+body.auth-body .reset-email-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+body.auth-body .reset-email-row .form-input { min-width: 0; }
+body.auth-body .reset-send-otp {
+    justify-content: center;
+    min-width: 108px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--con-r-ctl);
+    background: var(--con-tint);
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+}
+body.auth-body .reset-send-otp:hover:not(:disabled) { border-color: var(--con-nav-ink); }
+body.auth-body .login-container a[aria-disabled="true"] { color: var(--text-secondary); cursor: wait; }
+body.auth-body .signup-link,
+body.auth-body .back-to-login,
+body.auth-body .resend-code { margin-top: 16px; color: var(--text-secondary); font-size: var(--text-sm); text-align: left; }
+body.auth-body .signup-link { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+body.auth-body .verification-recipient { margin-bottom: 12px; color: var(--text-secondary); font-size: var(--text-sm); }
+body.auth-body .verification-recipient strong { display: block; margin-top: 2px; color: var(--text-primary); font-size: var(--text-md); font-weight: 500; }
+body.auth-body .verification-recipient + .auth-link-button { margin: -4px 0 16px; }
+body.auth-body .login-container .signup-code-input,
+body.auth-body .login-container .reset-code-input { font-variant-numeric: tabular-nums; letter-spacing: 0.25em; }
+body.auth-body .resend-code .field-hint { margin-top: 0; }
+body.auth-body .reset-resend-status { font-variant-numeric: tabular-nums; }
+body.auth-body .reset-resend-status:empty { display: none; }
+
+body.auth-body .auth-message:not(:empty) {
+    margin-bottom: 24px;
+    padding: 12px 14px;
+    border: 1px solid currentColor;
+    border-radius: var(--con-r-card);
+    font-size: var(--text-base);
+    line-height: 1.6;
+}
+body.auth-body .auth-message.error { color: var(--ui-danger-ink); }
+body.auth-body .auth-message.success { color: var(--ui-success-ink); }
+body.auth-body .password-strength { height: 4px; margin-top: 12px; overflow: hidden; border-radius: 2px; background: var(--border); }
+body.auth-body .password-strength-bar { width: 0; height: 100%; }
+body.auth-body .password-strength-text,
+body.auth-body .password-requirements,
+body.auth-body .password-match { margin-top: 8px; font-size: var(--text-sm); }
+body.auth-body .requirement { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+body.auth-body .requirement i { font-size: 10px; }
+body.auth-body .requirement.valid,
+body.auth-body .password-match.valid { color: var(--ui-success-ink); }
+body.auth-body .password-match.invalid { color: var(--ui-danger-ink); }
+body.auth-body .password-match i { margin-right: 6px; }
+
+body.auth-body .loading {
+    display: inline-block;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: auth-spin 0.8s linear infinite;
+}
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+
+body.auth-body .notification {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 1001;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: max-content;
+    max-width: min(400px, calc(100% - 40px));
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--con-r-card);
+    background: var(--con-surface);
+    box-shadow: var(--con-lift);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) ease;
+}
+body.auth-body .notification.show { opacity: 1; animation: none; transform: none; }
+body.auth-body .notification-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 24px; width: 24px; height: 24px; }
+body.auth-body .notification-content { min-width: 0; }
+body.auth-body .notification.success .notification-icon { color: var(--ui-success-ink); }
+body.auth-body .notification.error .notification-icon { color: var(--ui-danger-ink); }
+body.auth-body .notification-title { color: var(--text-primary); font-weight: 600; font-size: var(--text-base); }
+body.auth-body .notification-message { margin-top: 2px; color: var(--text-secondary); font-size: var(--text-sm); }
+
+/* Style the native dialog without overriding its open/closed display state. */
+body.auth-body .eula-dialog {
+    width: calc(100% - 32px);
+    max-width: 560px;
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--con-r-shell);
+    background: var(--con-surface);
+    color: var(--text-primary);
+}
+body.auth-body .eula-dialog::backdrop { background: rgba(10, 24, 15, 0.65); }
+body.auth-body .eula-modal { display: flex; flex-direction: column; max-height: calc(100dvh - 34px); }
+body.auth-body .eula-header { flex-shrink: 0; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+body.auth-body .eula-header h2 { margin: 0; color: var(--text-primary); font-size: var(--text-lg); font-weight: 600; line-height: 1.4; }
+body.auth-body .eula-body { min-height: 0; padding: 20px 24px; overflow-y: auto; color: var(--text-secondary); font-size: var(--text-base); line-height: 1.7; }
+body.auth-body .eula-body p { margin-bottom: 16px; }
+body.auth-body .eula-terms-box { margin: 12px 0 16px; padding: 14px 14px 14px 32px; border: 1px solid var(--border); border-radius: var(--con-r-card); background: var(--con-canvas); color: var(--text-primary); }
+body.auth-body .eula-terms-box li + li { margin-top: 6px; }
+body.auth-body .eula-footer { display: flex; flex-shrink: 0; justify-content: flex-end; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--border); }
+body.auth-body .btn-eula { min-height: 44px; padding: 10px 18px; border: 1px solid transparent; border-radius: var(--con-r-ctl); font-size: var(--text-base); font-weight: 500; cursor: pointer; }
+body.auth-body .btn-eula-decline { border-color: var(--border); background: transparent; color: var(--text-primary); }
+body.auth-body .btn-eula-decline:hover { background: var(--con-tint); }
+body.auth-body .btn-eula-agree { background: var(--sc-green); color: #fff; }
+body.auth-body .btn-eula-agree:hover:not(:disabled) { background: var(--sc-green-light); }
+
+body.auth-body :is(a, button, input, [tabindex]):focus-visible {
+    outline: 2px solid var(--con-nav-ink);
+    outline-offset: 3px;
+    box-shadow: none;
+}
+body.auth-body .eula-body:focus-visible { outline-offset: -3px; }
+
+@media (max-width: 480px) {
+    body.auth-body { padding: 16px 12px; }
+    body.auth-body .auth-masthead { padding: 24px 20px 16px; }
+    body.auth-body .auth-masthead-top { gap: 12px; }
+    body.auth-body .college-brand--auth { gap: 10px; }
+    body.auth-body .college-brand--auth .college-brand-mark { width: 52px; height: 52px; }
+    body.auth-body .college-brand--auth .college-brand-name { font-size: 1.25rem; }
+    body.auth-body .login-container { padding: 0 20px 24px; }
+    body.auth-body .login-header { margin-bottom: 24px; }
+    body.auth-body .login-header h1 { font-size: 1.5rem; }
+    body.auth-body .eula-header,
+    body.auth-body .eula-body,
+    body.auth-body .eula-footer { padding-left: 16px; padding-right: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body.auth-body { --dur-fast: 0ms; }
+    body.auth-body .loading { animation: none; }
+    body.auth-body .notification { transition: none; }
+}

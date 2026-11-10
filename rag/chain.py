@@ -28,7 +28,8 @@ from rag.roles import resolve_role, announcement_audience, role_block
 
 from rag.language import language_variants
 from rag.dictation import dictation_variants
-from rag.spelling import correct_query, spelling_variants, misspellings
+from rag.spelling import correct_query, spelling_variants
+from rag.query_optimizer import optimizer_messages, parse_interpretation, interpretation_guidance
 from rag.query_embeddings import CachedQueryEmbeddings
 from rag.runtime import (
     CapacityError, RequestBudget, env_int, retrieval_pool, preparation_pool,
@@ -36,7 +37,7 @@ from rag.runtime import (
 )
 
 from rag.latency import (
-    should_optimize, pick_search_query, Deadline, Timings,
+    should_optimize, pick_search_query, Deadline, Timings, OPTIMIZER_BUDGET_SECONDS,
 )
 # The captions the student sees while waiting. Published from the real phase
 # boundaries below rather than on a timer in the browser, so "Searching…" is
@@ -149,7 +150,7 @@ def _content_terms(query: str) -> List[str]:
     return [w for w in words if w not in _STOPWORDS and len(w) > 2]
 
 
-def expand_queries(query: str) -> List[str]:
+def expand_queries(query: str, allow_spelling: bool = True) -> List[str]:
     """
     Return [main_query] plus generic paraphrases for thin queries.
 
@@ -195,7 +196,7 @@ def expand_queries(query: str) -> List[str]:
     # mistyped. Additive, like the two repairs around it: their exact wording
     # stays first and is still ranked. See rag/spelling.py.
     corrected = ""
-    for variant in spelling_variants(query):
+    for variant in (spelling_variants(query) if allow_spelling else []):
         if variant not in queries:
             queries.append(variant)
             corrected = corrected or variant
@@ -371,7 +372,8 @@ def split_question(question: str) -> List[str]:
 
 
 
-def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=None) -> list:
+def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=None,
+                         allow_spelling: bool = True) -> list:
 
     """
     Fan out to companion queries and merge results, de-duplicated, preserving
@@ -381,7 +383,7 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=No
     BOTH the user's natural question and the LLM's keyword rewrite, so recall
     never depends on which of the two the rewriter happened to produce.
     """
-    queries = expand_queries(query)
+    queries = expand_queries(query, allow_spelling=allow_spelling)
 
     for q in (extra_queries or []):
         q = (q or "").strip()
@@ -434,6 +436,7 @@ def retrieve_documents(
     timings=None,
     progress=None,
     request_budget=None,
+    allow_spelling: bool = True,
 ) -> list:
 
 
@@ -539,6 +542,7 @@ def retrieve_documents(
             primary,
             extra_queries=phrasings[1:] + aspects,
             timeout=request_budget.remaining(30) if request_budget else None,
+            allow_spelling=allow_spelling,
         )
         if verbose:
             print(f"  RRF + expansion returned {len(initial_docs)} candidates")
@@ -628,7 +632,7 @@ primary_model = ChatOpenAI(
     },
     timeout=10,
     max_retries=1,
-    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=9216),
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=11264),
 )
 
 fallback_model = ChatOpenAI(
@@ -648,7 +652,7 @@ fallback_model = ChatOpenAI(
     },
     timeout=10,
     max_retries=1,
-    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=9216),
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=11264),
 )
 
 chatModel = primary_model.with_fallbacks([fallback_model])
@@ -723,6 +727,18 @@ summarizer = ChatOpenAI(
     },
     timeout=15,
     max_retries=1,
+    max_tokens=1024,
+)
+
+# Keep query interpretation bounded independently of image/history preparation.
+query_optimizer_model = ChatOpenAI(
+    model=SUMMARIZER_MODEL_NAME,
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
+    temperature=0,
+    extra_body={"reasoning": {"enabled": False}},
+    timeout=max(0.1, OPTIMIZER_BUDGET_SECONDS),
+    max_retries=0,
     max_tokens=1024,
 )
 
@@ -852,10 +868,10 @@ def create_graph():
         try:
             request_budget = (config or {}).get("configurable", {}).get("budget") or RequestBudget()
             request_budget.remaining()
-            user_text  = state["input"]
-            # Use one repaired question for optimization, retrieval, ranking,
-            # and generation. An extra probe alone leaves the typo in control
-            # of the candidate order and answer intent. Do not mutate state.
+            original_text = state["input"] or ""
+            user_text = original_text
+            # A conservative fallback/hint, not the authority on intent. The
+            # interpreter also sees the original and can reject a mistaken edit.
             corrected = correct_query(user_text)
             if corrected:
                 print(f"  Spelling repair: {user_text!r} -> {corrected!r}")
@@ -929,70 +945,16 @@ def create_graph():
 
             timings = Timings()
 
-            # 🚀 PARALLEL TASK 3: Query Optimization
-            #
-            # Kicked off with the other two, but NOT waited for here. Retrieval
-            # starts on the student's literal words and this rewrite joins as one
-            # more probe if it lands inside its budget — see rag/latency.py for
-            # why an entire LLM round-trip used to sit in front of every answer.
+            # Interpret the whole question while other preparation runs. The
+            # accepted wording must be collected before retrieval chooses a topic.
             def task_query_optimization():
                 try:
-
-                    recent_history = "\n".join([f"{m['role'].title()}: {m['content']}" for m in history[-6:]]) if history else "No previous history."
-
-                    # What the local repair already worked out, handed to the
-                    # model as a hint rather than applied twice.
-                    #
-                    # "latin honir requirements" is the reason the rule below
-                    # exists: rule 1 alone kept a typo verbatim, because
-                    # preserving the student's wording is normally exactly right.
-                    # For a misspelling it is the one case where it is wrong —
-                    # `honir` matches no document at all, so an "optimized"
-                    # query that repeats it optimizes nothing. The pairs come
-                    # from rag/spelling.py, which only ever suggests words the
-                    # indexed documents contain, so the model is being shown
-                    # evidence instead of being asked to guess.
-                    repairs = misspellings(user_text)
-                    spelling_note = (
-                        "\nLIKELY MISSPELLINGS (already checked against the "
-                        "indexed documents; apply them unless the context says "
-                        "otherwise): "
-                        + ", ".join(f"'{typed}' -> '{meant}'"
-                                    for typed, meant in repairs)
-                        if repairs else ""
+                    response = query_optimizer_model.invoke(
+                        optimizer_messages(original_text, user_text, history)
                     )
-
-                    context_prompt = [
-                        {
-                            "role": "system", 
-                            "content": (
-                                "You are a search query optimizer. Understand the user's intent and the provided context first. Formulate the best search query for RAG that uses sparse and dense retrieval. If you cannot understand the user's intent, return the user's original query.\n"
-                                "CRITICAL SEARCH RULES: \n"
-                                "1. CONTEXT AWARENESS: Only check chat history if the user asks and it is not a complete question.\n"
-                                "2. SPELLING: Fix obvious misspellings of school, academic and program terms so the query uses the words a handbook would use (e.g. 'honir' -> 'honor', 'enrolmnet' -> 'enrollment', 'requirments' -> 'requirements'). Keep correctly spelled words, acronyms and proper nouns exactly as typed.\n"
-                                "3. Do NOT answer the question, just output the optimized search query."
-                            )
-                        },
-                        {"role": "user", "content": f"Chat History:\n{recent_history}\n\nLatest Question: {user_text}{spelling_note}"}
-                    ]
-
-                    
-                    summary_resp = summarizer.invoke(context_prompt).content
-                    
-                    if isinstance(summary_resp, list):
-                        summary_resp = "".join([
-                            part.get("text", "") if isinstance(part, dict) else str(part)
-                            for part in summary_resp
-                        ])
-                    elif not isinstance(summary_resp, str):
-                        summary_resp = str(summary_resp)
-                        
-                    q = summary_resp.strip()
-                    print(f"  Contextualized Query: {q}")
-                    return q
-                except Exception as e:
-                    print(f"  Contextualization failed (non-fatal): {e}")
-                    return user_text
+                    return parse_interpretation(response.content, original_text, history)
+                finally:
+                    timings.stop("optimizer")
 
             # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
             #
@@ -1006,23 +968,22 @@ def create_graph():
                 future_img = executor.submit(task_image_analysis) if image_data else None
                 future_student = executor.submit(task_student_fetch) if uid else None
 
-                # The rewrite is only worth waiting for when the question cannot
-                # be searched as typed — a follow-up, or too thin. For a
-                # self-contained question this skips an entire LLM round-trip,
-                # and the literal words retrieve the same documents. The decision
-                # lives in rag/latency.py so it is testable without a network.
+                # Even a complete sentence of known words can contain a real-word
+                # typo. Only empty/punctuation-only input skips interpretation.
                 wants_rewrite = should_optimize(user_text, history)
-                if wants_rewrite:
+                if wants_rewrite and not budget.expired():
                     try:
+                        timings.start("optimizer")
                         future_query = optimizer_pool.submit(task_query_optimization)
                     except CapacityError:
-                        wants_rewrite = False
+                        timings.stop("optimizer")
+                        timings.note("optimizer", "busy")
 
                 # Only claimed when the rewrite is genuinely running. On the
                 # skip path this phase does not exist, and showing it anyway
                 # would be a caption for work that is not happening — the
                 # precise failure this design is meant to avoid.
-                if wants_rewrite:
+                if future_query is not None:
                     emit_phase(progress, "understanding")
 
 
@@ -1035,58 +996,46 @@ def create_graph():
                 student_context = future_student.result(timeout=request_budget.remaining(15)) if future_student else ""
                 request_budget.remaining()
 
-                if future_query is None:
+                interpretation = None
+                if future_query is not None:
+                    timings.start("await_rewrite")
+                    try:
+                        interpretation = future_query.result(
+                            timeout=min(budget.remaining(), request_budget.remaining())
+                        )
+                        user_text = interpretation.question
+                        timings.note("optimizer", interpretation.status)
+                        print(f"  Interpreted Question: {user_text}")
+                        print(f"  Contextualized Query: {interpretation.search_query}")
+                    except concurrent.futures.TimeoutError:
+                        timings.note("optimizer", "too-late")
+                        print("  Interpretation missed its budget; using conservative fallback.")
+                    except Exception as e:
+                        timings.note("optimizer", "unavailable")
+                        print(f"  Interpretation unavailable (non-fatal): {e}")
+                    finally:
+                        timings.stop("await_rewrite")
+                elif not wants_rewrite:
                     timings.note("optimizer", "skipped")
-                    standalone_query = user_text
 
-                    def late_rewrite():
-                        return ""
-                else:
-                    standalone_query = user_text
-
-                    def late_rewrite():
-                        """
-                        The rewrite, if it arrives in time.
-
-                        Retrieval calls this after it has done its own
-                        preparation, so the round-trip has already been
-                        overlapping useful work. A rewrite later than the budget
-                        is dropped rather than cancelled — the call finishes in
-                        the background, which is cheaper than throwing away
-                        tokens that were nearly ready.
-                        """
-                        try:
-                            rewritten = future_query.result(
-                                timeout=min(budget.remaining(), request_budget.remaining())
-                            )
-                        except concurrent.futures.TimeoutError:
-                            timings.note("optimizer", "too-late")
-                            print("  Rewrite missed its budget; using the "
-                                  "student's own wording.")
-                            return ""
-                        timings.note("optimizer", "used")
-                        # An echo of the input adds a duplicate probe and no
-                        # recall, so it is treated as no rewrite at all.
-                        picked = pick_search_query(user_text, rewritten)
-                        return "" if picked == user_text.strip() else picked
+                standalone_query = pick_search_query(
+                    user_text, interpretation.search_query if interpretation else None,
+                )
 
                 # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
                 #
-                # The literal question leads. The rewrite, when there is one,
-                # joins as an additional phrasing inside retrieve_documents() —
-                # both are used for retrieval AND reranking, because the rewrite
-                # is better at lexical recall while the question is what the
-                # cross-encoder needs to judge "does this passage answer this?".
+                # Both queries now share the accepted intent. Never let the raw
+                # typo compete with it or reach the answer model after correction.
                 timings.start("retrieval+rerank")
-                final_docs = retrieve_documents(
+                final_docs = [] if interpretation and interpretation.status == "clarify" else retrieve_documents(
                     standalone_query,
                     top_k=FINAL_TOP_K,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
                     user_question=user_text,
-                    late_query=late_rewrite,
                     timings=timings,
                     progress=progress,
                     request_budget=request_budget,
+                    allow_spelling=interpretation is None,
                 )
 
                 timings.stop("retrieval+rerank")
@@ -1229,6 +1178,9 @@ def create_graph():
 
             # === STEP 4: Assemble Messages for Flask Streaming ===
             request_budget.remaining()
+            final_system_prompt += interpretation_guidance(
+                interpretation, unavailable=wants_rewrite and interpretation is None,
+            )
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.
             messages = [SystemMessage(content=f"{final_system_prompt}\n\n{response_language_prompt}")]

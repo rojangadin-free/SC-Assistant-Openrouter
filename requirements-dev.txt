@@ -1,3 +1,4 @@
 # Isolated local tooling only; not installed in the production image.
 locust==2.47.0
 ruff==0.17.3
+playwright==1.64.1

@@ -194,6 +194,16 @@ check("guests get the new-student path", "TRANSFEREE" in gue)
 check("guests are not implied to have a record",
       "never imply you can see their grades" in gue)
 check("guests are invited to log in exactly once", "ONCE" in gue)
+check("the applicant path is restricted to admission or enrollment questions",
+      "Only for admission or enrollment questions" in gue
+      and "Treat every process question" not in gue)
+check("guest status cannot change the question's topic",
+      "Do not change the topic" in gue and "Latin honors" in gue)
+
+from src.prompt import system_prompt  # noqa: E402
+check("the answer prompt rejects off-topic evidence rather than changing the ask",
+      "NO TOPIC SUBSTITUTION" in system_prompt
+      and "ask one focused clarification" in system_prompt)
 
 # --------------------------------------------------------------------------- #
 section("7. The faculty block does not become a data-access grant")

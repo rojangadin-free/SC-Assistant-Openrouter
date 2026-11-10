@@ -666,13 +666,12 @@
          role="region" aria-label="Conversation">
 
       <div class="empty-chat-state" id="emptyChatState" style="display: none;">
-        <img src="{{ url_for('static', filename='images/logo.png') }}" alt="SC Logo" class="empty-logo">
-        <h2>Welcome to Samar College</h2>
-        <p>How can I help you today? Try asking one of these:</p>
-        <div class="faq-suggestions">
-          <button class="faq-btn">How do I enroll?</button>
-          <button class="faq-btn">What is the vision and mission of samar college?</button>
-          <button class="faq-btn">Does Samar College have graduate studies?</button>
+        <h2>Ask about Samar College.</h2>
+        <p>Find information about admissions, programs, fees, and school policies.</p>
+        <div class="faq-suggestions ui:grid ui:gap-2">
+          <button type="button" class="faq-btn">How do I enroll?</button>
+          <button type="button" class="faq-btn">What is the college's vision and mission?</button>
+          <button type="button" class="faq-btn">Does Samar College offer graduate studies?</button>
         </div>
       </div>
     </div>
@@ -700,7 +699,7 @@
 
       <form id="messageForm" class="message-form" enctype="multipart/form-data">
         <input aria-label="Attach an image" type="file" id="imageInput" accept="image/*" style="display: none;">
-        <button type="button" class="upload-btn" id="uploadBtn" title="Attach Image">
+        <button type="button" class="upload-btn" id="uploadBtn" title="Attach image" aria-label="Attach image">
           <i class="fas fa-paperclip"></i>
         </button>
         <textarea aria-label="Type your question" id="messageInput"
@@ -716,7 +715,7 @@
                 title="Ask by voice" aria-label="Ask by voice">
           <i class="fas fa-microphone"></i>
         </button>
-        <button type="submit" id="sendButton" class="send-button">
+        <button type="submit" id="sendButton" class="send-button" aria-label="Send message">
 
           <i class="fas fa-paper-plane"></i>
         </button>

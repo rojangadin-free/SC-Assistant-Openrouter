@@ -183,6 +183,7 @@ def record_vote(
     comment: str = "",
     voter: str = "",
     conv_id: str = "",
+    guest_session_id: str = "",
 ) -> Optional[dict]:
     """
     Store one 👍/👎. Returns the updated topic aggregate, or None if the input was
@@ -217,6 +218,8 @@ def record_vote(
                 "conv_id": conv_id,
                 "at": now,
             }
+            if guest_session_id:
+                votes[msg_id]["guest_session_id"] = guest_session_id
 
             store["votes"] = _prune_votes(votes)
 
@@ -232,6 +235,38 @@ def record_vote(
         return _store().mutate(update, return_result=True)
     except Exception as e:
         print(f"  [feedback] could not record vote (non-fatal): {e}")
+        return None
+
+
+def remove_vote(msg_id: str, *, voter: str, guest_session_id: str = "") -> bool | None:
+    """Retract an owned vote; return False for another owner, None on storage failure."""
+    msg_id = (msg_id or "").strip()
+    if not msg_id:
+        return False
+    try:
+        def update(store):
+            votes = store.setdefault("votes", {})
+            vote = votes.get(msg_id)
+            if vote is None:
+                return True
+            if vote.get("voter") != voter:
+                return False
+            # Older guest votes have no trustworthy owner; never let another
+            # guest retract them merely because both are displayed as "guest".
+            if voter == "guest" and (not guest_session_id or vote.get("guest_session_id") != guest_session_id):
+                return False
+            del votes[msg_id]
+            topic_key = vote.get("topic_key", "")
+            topic = _rebuild_topic(topic_key, votes)
+            topics = store.setdefault("topics", {})
+            if topic["total"]:
+                topics[topic_key] = topic
+            else:
+                topics.pop(topic_key, None)
+            return True
+        return _store().mutate(update, return_result=True)
+    except Exception as error:  # noqa: BLE001 - Any persistence failure must leave retraction unconfirmed.
+        print(f"  [feedback] could not remove vote (non-fatal): {type(error).__name__}")
         return None
 
 

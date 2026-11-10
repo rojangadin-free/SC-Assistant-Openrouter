@@ -1,67 +1,14 @@
-"""
-rag/spelling.py — a misspelled question must still find the right page.
+"""Corpus-derived spelling candidates and conservative offline corrections.
 
-The failure this fixes
-----------------------
-A student types:
+Document indexing updates spell_vocab.json; new terms do not require Python
+changes. Workers notice changes to that file without restarting. Seed terms
+provide a small fallback when the deployment has no vocabulary yet.
 
-    "latin honir requirements"
-
-and gets a vague, wrong-ish answer. Nothing in the pipeline was broken; every
-layer did exactly what it was told:
-
-* BM25 scores `honir` at **zero**. The token appears in no chunk of the
-  handbook, so the strongest retrieval signal in the question contributes
-  nothing, and the query effectively degrades to "latin ... requirements" —
-  which matches admission requirements, transfer requirements, graduation
-  requirements and a dozen other pages equally well.
-* The dense encoder embeds a nonsense token somewhere unhelpful, blurring the
-  vector away from the "GRADUATION HONORS AND AWARDS" section it should be
-  nearest to.
-* `should_optimize()` in rag/latency.py measured the question as *searchable*:
-  three content words (`latin`, `honir`, `requirements`), no pronouns, no
-  follow-up markers — so the LLM rewrite that would have silently fixed the
-  typo was skipped, on purpose, to save a round-trip.
-
-Every one of those decisions is individually correct. Together they mean one
-transposed letter quietly costs the student the right answer, and the
-content-gap report then files the question as a missing document — the same
-pollution rag/dictation.py was written to stop.
-
-Why a dictionary of the CORPUS, not a dictionary of English
------------------------------------------------------------
-A general spell checker is the wrong tool twice over. It does not know
-`BSIT`, `CITAS`, `SCTI`, `Waray` or `laude`, so it would "fix" the exact terms
-that matter most, and it does not know which of its suggestions exists in
-*these* documents — the only suggestions worth making.
-
-So the vocabulary is the corpus itself: every word the indexed documents
-actually contain, with how often it appears (`spell_vocab.json`, written by
-`tools/build_spell_vocab.py` and refreshed whenever a document is indexed).
-A token is only ever replaced by a word the retriever can actually match, and
-frequency breaks ties toward the word the documents talk about most.
-
-A small seed list is baked in below so the module still works on a fresh
-checkout that has never built the vocabulary file, and so that vocabulary
-gathered from a scanned page (OCR produces its own garbage words) can never
-outvote the terms we know are real.
-
-Rules of engagement
--------------------
-* **One working question in chat.** The graph applies accepted repairs before
-  optimization, retrieval, reranking and generation. Merely adding a repaired
-  probe leaves the typo in control of candidate ordering and answer intent.
-  The variant helper remains additive for callers that use it directly.
-* **Conservative.** Short words are left alone, the first letter must match,
-  the edit distance is bounded, and an ambiguous repair (two equally good
-  corpus words) is declined rather than guessed.
-* **Nothing is rewritten on screen.** The student sees what they typed; only
-  the working question is repaired. The original input and history are kept.
-
-The one thing this module decides beyond retrieval is `has_misspelling()`,
-which rag/latency.py uses to answer "is this question searchable as typed?".
-A still-misspelled working question may need the optimizer. A locally repaired
-question takes the same latency decision as its correctly spelled counterpart.
+Local edits are deliberately limited. Valid words, names, short words and
+uncertain spellings need sentence-level interpretation, not a growing table of
+typo pairs or academic phrases. rag.query_optimizer handles that on every text
+question, using the original wording plus these non-authoritative candidates.
+Only the working question changes; displayed input and history remain intact.
 """
 
 from __future__ import annotations
@@ -69,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -137,92 +85,9 @@ MIN_TARGET_FREQ = 3
 # term reaches (so the corpus always wins a tie).
 SEED_FREQ = MIN_TARGET_FREQ
 
-# At most this many repairs per question. A message where five words are unknown
-# is not a typo, it is another language (rag/language.py) or a paste of garbage,
-# and "correcting" it word by word would invent a query nobody asked.
+# Limit unreviewed local edits. The contextual optimizer can repair more words
+# together; it is not subject to this conservative fallback's limit.
 MAX_CORRECTIONS = 3
-
-
-# --------------------------------------------------------------------------- #
-# Real-word typos
-# --------------------------------------------------------------------------- #
-#
-# Everything above this point can only repair a word that is in NO dictionary:
-# `honir`, `requirments`, `enrolmnet`. That misses the harder half of the
-# problem, and a student found it immediately:
-#
-#     typed:      "lost the dens"
-#     repaired:   "lost the deans"        <- only half fixed
-#     meant:      "list the deans"
-#
-# `dens` is unknown, so it was repaired. `lost` is a perfectly ordinary English
-# word, so `is_known()` answered True and `_suggest()` returned None without
-# even looking — which is correct in isolation and wrong in this sentence. A
-# spell checker cannot see the difference; only the surrounding words can.
-#
-# So a *known* word is only ever reconsidered when the sentence itself says it
-# does not belong, and then only for a tiny, explicit set of confusions.
-#
-# Two pieces of evidence are required, which is what keeps "i lost my id" safe:
-#
-#   1. The typed word must be one of the pairs below — a confusion that is one
-#      keystroke wide and changes what is being ASKED, not merely which word was
-#      used. This is a table, not a distance search: opening real words up to
-#      edit-distance matching would let "dean" become "dear", "mean", "dead"...
-#   2. The sentence must supply the context the replacement needs. "lost" only
-#      becomes "list" when a plural noun follows it ("lost the deans"), because
-#      that is the shape of a request for an enumeration and NOT the shape of
-#      "i lost my id" or "lost and found".
-#
-# Fails closed. When the context is absent the student's word stands, and the
-# probe is simply not added.
-
-# typed -> intended, for confusions where the two words ask different questions.
-_REAL_WORD_CONFUSIONS: Dict[str, str] = {
-    # The reported case. A dropped/slipped vowel on the keyboard's home row,
-    # and the single most common way a student asks for an enumeration.
-    "lost": "list",
-    "lsit": "list",
-    "liat": "list",
-    # "gice me the deans", "gove me the requirements"
-    "gice": "give",
-    "gove": "give",
-    # "how mich is the tuition", "how muxh"
-    "mich": "much",
-    "muxh": "much",
-    # "want are the programs"
-    "want": "what",
-    "waht": "what",
-    "hwat": "what",
-    # "who si the dean"
-    "si": "is",
-    # "wgo is the dean"
-    "wgo": "who",
-    "hwo": "who",
-    # "whne is enrollment"
-    "whne": "when",
-    "wehn": "when",
-}
-
-# A real-word repair is only applied when the word AFTER it looks like this.
-# Keyed by the intended word, because the evidence differs per confusion:
-#
-#   "list"  needs something enumerable after it  -> "list the deans"
-#   "what"  needs a verb/determiner              -> "what are the programs"
-#
-# `None` means "no following-word evidence required" — used for confusions that
-# are not real words in the first place ("lsit", "waht"), where the table is
-# only supplying a better answer than edit distance would.
-_CONTEXT_AFTER: Dict[str, Optional[Tuple[str, ...]]] = {
-    "list": ("the", "all", "every", "down", "of"),
-    "give": ("me", "us", "the", "a"),
-    "much": ("is", "are", "does", "do", "the", "for"),
-    "what": ("is", "are", "was", "were", "do", "does", "the", "a", "an"),
-    "is": ("the", "a", "an"),
-    "who": ("is", "are", "was", "were", "the"),
-    "when": ("is", "are", "does", "do", "will", "the"),
-}
-
 
 
 # --------------------------------------------------------------------------- #
@@ -320,7 +185,8 @@ yourself
 # Vocabulary loading
 # --------------------------------------------------------------------------- #
 
-_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+# Keep Unicode words/codes whole, but do not consume closing quotes or dashes.
+_WORD_RE = re.compile(r"\b[A-Za-z]\w*(?:['\-\u2010-\u2015\u2212]\w+)*(?!\w)")
 
 
 def _read_vocab_file(path: str) -> Dict[str, int]:
@@ -358,35 +224,39 @@ class _Vocabulary:
     """
     The words a correction is allowed to produce, indexed for fast lookup.
 
-    Built once per process and rebuilt on demand (`reload()`), because indexing
-    a new document adds terms to the file while the app is running.
+    A lookup snapshot, replaced when indexing publishes a changed vocabulary.
     """
 
     def __init__(self, terms: Dict[str, int]):
         self.freq: Dict[str, int] = dict(terms)
 
-        # Candidates are only ever compared against words with the same first
-        # letter and a similar length, so the search space is bucketed by
-        # exactly that. Without it every unknown token would be scored against
-        # the whole corpus vocabulary — thousands of edit-distance calls on the
-        # request path.
+        # Local edits retain the initial letter; interpreter hints can also
+        # consider first-letter errors. Both searches stay length-bounded.
         self.buckets: Dict[Tuple[str, int], List[str]] = {}
+        self.by_length: Dict[int, List[str]] = {}
         for word in self.freq:
             self.buckets.setdefault((word[0], len(word)), []).append(word)
+            self.by_length.setdefault(len(word), []).append(word)
 
-    def candidates(self, word: str, max_edits: int) -> Iterable[str]:
+    def candidates(self, word: str, max_edits: int, same_initial=True) -> Iterable[str]:
         head = word[0]
         for length in range(len(word) - max_edits, len(word) + max_edits + 1):
-            for candidate in self.buckets.get((head, length), ()):
-                yield candidate
+            yield from (self.buckets.get((head, length), ()) if same_initial
+                        else self.by_length.get(length, ()))
 
 
 _vocab: Optional[_Vocabulary] = None
+_vocab_stamp = None
 
 
 def _vocabulary() -> _Vocabulary:
-    global _vocab
-    if _vocab is None:
+    global _vocab, _vocab_stamp
+    try:
+        stat = os.stat(SPELL_VOCAB_FILE)
+        stamp = (SPELL_VOCAB_FILE, stat.st_mtime_ns, stat.st_size, stat.st_ino)
+    except OSError:
+        stamp = (SPELL_VOCAB_FILE, None, None, None)
+    if _vocab is None or stamp != _vocab_stamp:
         terms = {w: SEED_FREQ for w in _SEED_TERMS}
         for word, count in _read_vocab_file(SPELL_VOCAB_FILE).items():
             # The corpus wins when it has actually seen the word more often than
@@ -394,6 +264,9 @@ def _vocabulary() -> _Vocabulary:
             # floor so it stays usable.
             terms[word] = max(count, terms.get(word, 0))
         _vocab = _Vocabulary(terms)
+        _vocab_stamp = stamp
+        _suggest.cache_clear()
+        _candidate_suggestions.cache_clear()
     return _vocab
 
 
@@ -534,16 +407,17 @@ def _vowel_slip_only(typed: str, candidate: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 def is_known(word: str) -> bool:
-    """True when the word needs no repair: the documents use it, or it is
-    ordinary English glue."""
+    """Vocabulary membership, not a verdict that the word fits this sentence."""
     w = (word or "").strip().lower()
     if not w:
         return True
     return w in _COMMON_ENGLISH or w in _vocabulary().freq
 
 
+# Snapshot identity prevents an in-flight old lookup from caching a result for
+# a vocabulary published after it started.
 @lru_cache(maxsize=4096)
-def _suggest(word: str) -> Optional[str]:
+def _suggest(word: str, vocab: _Vocabulary) -> Optional[str]:
     """
     The corpus word `word` was most likely meant to be, or None.
 
@@ -558,12 +432,11 @@ def _suggest(word: str) -> Optional[str]:
     """
     w = word.lower()
 
-    if len(w) < MIN_CORRECTABLE_LEN or not w.isalpha():
+    if len(w) < MIN_CORRECTABLE_LEN or not w.isascii() or not w.isalpha():
         return None
-    if is_known(w):
+    if w in _COMMON_ENGLISH or w in vocab.freq:
         return None
 
-    vocab = _vocabulary()
     cutoff = _max_edits(w)
 
     best: Optional[str] = None
@@ -617,133 +490,110 @@ def _suggest(word: str) -> Optional[str]:
 
 def suggest(word: str) -> Optional[str]:
     """Public wrapper around the cached lookup — `str` in, `str | None` out."""
-    return _suggest((word or "").strip())
+    return _suggest((word or "").strip(), _vocabulary())
 
 
-def _plural_ish(word: str) -> bool:
-    """
-    A rough "is this a countable thing, plural" test, used as the evidence that
-    a list was being asked for.
-
-    Deliberately crude: request position and possessive guards are checked
-    separately. `-ss` is excluded so "process" and "class" are not plurals.
-    """
-    w = (word or "").lower().strip("?.,!")
-    return len(w) > 3 and w.endswith("s") and not w.endswith("ss")
-
-
-def _real_word_repair(
-    token: str, following: List[str], preceding: List[str]
-) -> Optional[str]:
-    """
-    The repair for a token that IS a real word but is the wrong one here.
-
-    `following` and `preceding` are the original surrounding words, lowercased.
-    Returns None unless the request supplies the needed evidence:
-
-      1. `token` is in `_REAL_WORD_CONFUSIONS`;
-      2. a real word appears at the request opening (optionally after politeness);
-      3. the next word is expected, and "list" has a non-personal plural object.
-
-    Worked example, the question that prompted this:
-
-        "lost the dens"   -> dens is unknown  -> "deans"     (the old path)
-                          -> lost is known    -> "list"      (this path:
-                                                  "the" follows, and "deans"
-                                                  is a plural noun)
-        => "list the deans"
-
-    And the case it must NOT touch:
-
-        "i lost my id"    -> "my" is not an expected follower, and there is no
-                             plural noun          => no repair
-    """
-    typed = (token or "").lower()
-    meant = _REAL_WORD_CONFUSIONS.get(typed)
-    if not meant or meant == typed:
-        return None
-
-    # A confusion that is not itself a word ("lsit", "waht") needs no context:
-    # nothing is being overruled, and edit distance would only guess worse.
-    #
-    # `_COMMON_ENGLISH` rather than `is_known()`: whether the CORPUS happens to
-    # contain "lost" is irrelevant here — it is an English word either way, and
-    # "i lost my id" must survive on a corpus that never mentions losing
-    # anything. Using is_known() made that depend on the documents, which is
-    # how the test suite caught it.
-    if typed not in _COMMON_ENGLISH:
-        return meant
-
-    # "I lost the documents" and "I want the programs" describe real actions,
-    # not misspelled requests. Do not reinterpret words inside a sentence.
-    if any(word not in ("please", "kindly") for word in preceding):
-        return None
-
-    expected = _CONTEXT_AFTER.get(meant)
-    if not expected:
-        return None
-
-    next_word = following[0].strip("?.,!") if following else ""
-    if next_word not in expected:
-        return None
-
-    # "lost all my documents" is still a loss, even though it names a plural.
-    if meant == "list":
-        if any(word in ("my", "our", "your", "his", "her", "their")
-               for word in following[:2]):
-            return None
-        if not any(_plural_ish(w) for w in following):
-            return None
-
-    return meant
+def _typing_distance(word: str, candidate: str) -> float:
+    """Rank hints by likely keyboard slips/omitted vowels, never apply an edit."""
+    previous = [0.0]
+    for char in candidate:
+        previous.append(previous[-1] + (0.35 if char in _VOWELS else 1.0))
+    before_previous = None
+    for i, typed in enumerate(word, 1):
+        deletion = 0.35 if typed in _VOWELS else 1.0
+        current = [previous[0] + deletion]
+        for j, meant in enumerate(candidate, 1):
+            if typed == meant:
+                substitution = 0.0
+            elif typed in _VOWELS and meant in _VOWELS:
+                substitution = 0.25
+            elif any(typed + meant in row or meant + typed in row
+                     for row in ("qwertyuiop", "asdfghjkl", "zxcvbnm")):
+                substitution = 0.5
+            else:
+                substitution = 1.0
+            cost = min(previous[j] + deletion,
+                       current[j - 1] + (0.35 if meant in _VOWELS else 1.0),
+                       previous[j - 1] + substitution)
+            if (before_previous is not None and j > 1
+                    and typed == candidate[j - 2] and word[i - 2] == meant):
+                cost = min(cost, before_previous[j - 2] + 0.5)
+            current.append(cost)
+        before_previous, previous = previous, current
+    return previous[-1] + (0.25 if word[0] != candidate[0] else 0.0)
 
 
-def misspellings(text: str) -> List[Tuple[str, str]]:
-    """
-    The repairs this text needs, as `(typed, meant)` pairs, in order.
+@lru_cache(maxsize=2048)
+def _candidate_suggestions(word: str, vocab: _Vocabulary) -> Tuple[str, ...]:
+    """Wider, non-authoritative suggestions; only the interpreter may apply them."""
+    cutoff = 3 if len(word) < 10 else 4
+    ranked = []
+    for candidate in vocab.candidates(word, cutoff, same_initial=False):
+        frequency = vocab.freq.get(candidate, 0)
+        if frequency < MIN_TARGET_FREQ or candidate == word or candidate in _COMMON_ENGLISH:
+            continue
+        distance = _edit_distance(word, candidate, cutoff)
+        if distance <= cutoff:
+            ranked.append((_typing_distance(word, candidate), distance, -frequency, candidate))
+    return tuple(item[3] for item in sorted(ranked)[:8])
 
-    Two kinds, in priority order per token:
 
-      1. a real-word confusion the sentence contradicts ("lost the deans"),
-         which needs the neighbouring words as evidence;
-      2. a token no dictionary and no document contains ("honir"), which is
-         repaired by edit distance against the corpus.
+def _word_matches(text: str) -> Iterable[re.Match]:
+    for match in _WORD_RE.finditer(text):
+        # Python's \w excludes combining marks; never suggest a partial word.
+        edges = text[max(0, match.start() - 1):match.start()] + text[match.end():match.end() + 1]
+        if not any(unicodedata.category(char).startswith("M") for char in edges):
+            yield match
 
-    Exported so the decision is inspectable: a silent correction is very hard to
-    debug when retrieval later goes strange, and rag/latency.py needs to know
-    whether there was one at all.
-    """
-    tokens = [m.group(0) for m in _WORD_RE.finditer(text or "")]
-    lowered = [t.lower() for t in tokens]
 
-    found: List[Tuple[str, str]] = []
-    for i, token in enumerate(tokens):
-        # The real-word check runs FIRST and on the ORIGINAL words. Running it
-        # on an already-corrected copy would let one repair create the context
-        # for the next, which is how a single typo turns into a rewritten
-        # question.
-        fixed = _real_word_repair(token, lowered[i + 1:], lowered[:i])
-        if not fixed:
-            fixed = _suggest(token.strip("'-"))
+def spelling_candidates(text: str) -> Dict[str, List[str]]:
+    """Bounded corpus hints, including first-letter mistakes and rare OCR words."""
+    vocab = _vocabulary()
+    hints = {}
+    considered = set()
+    for match in _word_matches(text or ""):
+        token = match.group(0)
+        word = token.lower()
+        if (not word.isascii() or not word.isalpha() or not 3 <= len(word) <= 24
+                or token.isupper() or word in considered or word in _COMMON_ENGLISH
+                or vocab.freq.get(word, 0) >= MIN_TARGET_FREQ):
+            continue
+        considered.add(word)
+        candidates = _candidate_suggestions(word, vocab)
+        if candidates:
+            hints[token] = list(candidates)
+        if len(considered) >= 8:
+            break
+    return hints
+
+
+def _repairs(text: str) -> List[Tuple[re.Match, str]]:
+    """Find conservative lexical repairs and their exact original spans."""
+    text = text or ""
+    vocab = _vocabulary()
+
+    found: List[Tuple[re.Match, str]] = []
+    for match in _word_matches(text):
+        token = match.group(0)
+        if token != token.lower():
+            continue
+        fixed = _suggest(token, vocab)
 
         if fixed and fixed != token.lower():
-            found.append((token, fixed))
+            found.append((match, fixed))
             if len(found) >= MAX_CORRECTIONS:
                 break
     return found
 
 
+def misspellings(text: str) -> List[Tuple[str, str]]:
+    """Inspect accepted local repairs, not a verdict that other words are correct."""
+    return [(match.group(0), meant) for match, meant in _repairs(text)]
+
+
 
 def has_misspelling(text: str) -> bool:
-    """
-    True when the question carries a word no document contains.
-
-    This is the retrieval-relevant definition of a typo, not the dictionary one:
-    "recieve" is misspelled and this returns False if nothing in the corpus is
-    close to it, because no repair would change which pages are found. What it
-    catches is the case that costs an answer — a word that WOULD have matched a
-    page if it had been typed correctly.
-    """
+    """Whether local repair found a change; False does not prove correct spelling."""
     return bool(misspellings(text))
 
 
@@ -758,13 +608,14 @@ def correct_query(text: str) -> str:
     if not t:
         return ""
 
-    repairs = misspellings(t)
+    repairs = _repairs(t)
     if not repairs:
         return ""
 
     out = t
-    for typed, meant in repairs:
-        out = re.sub(rf"\b{re.escape(typed)}\b", meant, out, count=1)
+    # Exact spans, from the right, preserve punctuation and subsequent offsets.
+    for match, meant in reversed(repairs):
+        out = out[:match.start()] + meant + out[match.end():]
 
     out = out.strip()
     return "" if out.lower() == t.lower() else out
@@ -774,9 +625,9 @@ def spelling_variants(text: str) -> List[str]:
     """
     The retrieval probes to ADD for a possibly-misspelled question.
 
-    `[]` for a correctly spelled one, which is the overwhelmingly common case
-    and the reason this is safe to run on every question. The caller keeps the
-    input as the primary query. Chat repairs its working input before expansion.
+    An empty result means no confident local repair. Direct/unreviewed callers
+    keep the input as their primary query. Validated interpretations must skip
+    these variants so rejected local guesses cannot re-enter retrieval.
     """
     corrected = correct_query(text)
     return [corrected] if corrected else []

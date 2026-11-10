@@ -42,11 +42,13 @@ $(document).ready(function() {
   const userListBody = $('#userListBody');
 
   // Edit User Modal Elements
-  const editUserModal = $('#editUserModal');
+  // Keep the fixed overlay outside the dashboard's animated/clipped content.
+  const editUserModal = $('#editUserModal').appendTo(document.body);
   const editUserForm = $('#editUserForm');
   const closeEditUserModal = $('#closeEditUserModal');
   const cancelEditUser = $('#cancelEditUser');
   const saveUserChangesButton = $('#saveUserChanges');
+  let editUserOpener = null;
 
 
   // ===== Dashboard Navigation =====
@@ -68,14 +70,14 @@ $(document).ready(function() {
       uploadSection.addClass('active');
       uploadsMenuItem.addClass('active');
       // Update header title
-      $('.header-left span').text('File Management');
+      $('.header-left span').text('Documents');
       // Refresh file list when showing uploads
       refreshFileList();
     } else if (sectionName === 'users') { // New
       usersSection.addClass('active');
       usersMenuItem.addClass('active');
       // Update header title
-      $('.header-left span').text('User Management');
+      $('.header-left span').text('User accounts');
       // Load the user list
       loadUserList();
     }
@@ -128,8 +130,10 @@ $(document).ready(function() {
   // target="_blank"> with no MenuItem id, so it leaves the dashboard entirely
   // and is not a place to be restored to.
   $(document).on('click', '.menu-item[id$="MenuItem"]', function() {
+    closeEditModal(false);
     rememberSection(this.id);
   });
+  $(window).on('pagehide', () => closeEditModal(false));
 
   // Replay the stored click. Returns false when there is nothing usable to
   // restore, so the caller can fall back to the landing screen.
@@ -439,9 +443,9 @@ $(document).ready(function() {
           </div>
         </div>
         <div class="file-actions">
-          <button class="file-action view" title="View"><i class="fas fa-eye"></i></button>
-          <button class="file-action download" title="Download"><i class="fas fa-download"></i></button>
-          <button class="file-action delete" title="Delete"><i class="fas fa-trash"></i></button>
+          <button type="button" class="file-action view" title="View document" aria-label="View document"><i class="fas fa-eye" aria-hidden="true"></i></button>
+          <button type="button" class="file-action download" title="Download document" aria-label="Download document"><i class="fas fa-download" aria-hidden="true"></i></button>
+          <button type="button" class="file-action delete" title="Delete document" aria-label="Delete document"><i class="fas fa-trash" aria-hidden="true"></i></button>
         </div>
       </div>
     `);
@@ -572,36 +576,67 @@ $(document).ready(function() {
   
   // --- Edit User Modal Open ---
   userListBody.on('click', '.edit-user', function() {
+    if (saveUserChangesButton.prop('disabled')) return;
     const button = $(this);
+    editUserOpener = this;
     $('#editUserCognitoUsername').val(button.data('id'));
     $('#editUserUsername').val(button.data('username'));
     $('#editUserEmail').val(button.data('email'));
     $('#editUserRole').val(button.data('role'));
     editUserModal.addClass('active');
+    $('#editUserUsername').trigger('focus');
   });
 
   // --- Edit User Modal Close ---
-  function closeEditModal() {
+  function closeEditModal(restoreFocus = true) {
+    if (!editUserModal.hasClass('active')) return;
     editUserModal.removeClass('active');
     editUserForm[0].reset();
+    $('#editUserCognitoUsername').val('');
+    if (restoreFocus && editUserOpener && $(editUserOpener).is(':visible')) {
+      editUserOpener.focus();
+    }
+    editUserOpener = null;
   }
-  closeEditUserModal.on('click', closeEditModal);
-  cancelEditUser.on('click', closeEditModal);
+  closeEditUserModal.on('click', () => closeEditModal());
+  cancelEditUser.on('click', () => closeEditModal());
   editUserModal.on('click', function(e) {
     if ($(e.target).is('#editUserModal')) {
       closeEditModal();
+    }
+  });
+  editUserModal.on('keydown', function(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeEditModal();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const controls = editUserModal.find('button, input:not([type="hidden"]), select')
+      .filter(':visible:not(:disabled)');
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
     }
   });
 
   // --- Edit User Form Submit ---
   editUserForm.on('submit', function(e) {
     e.preventDefault();
+    if (saveUserChangesButton.prop('disabled')) return;
     const originalText = saveUserChangesButton.text();
     saveUserChangesButton.prop('disabled', true).text('Saving...');
 
     $.ajax({
       url: '/api/dashboard/users/update',
       type: 'POST',
+      timeout: 30000,
       data: editUserForm.serialize(),
       success: function(response) {
         if (response.success) {
@@ -723,13 +758,13 @@ $(document).ready(function() {
           const colour = r.tone === 'bad' ? '#ef4444'
                        : r.tone === 'warn' ? '#f59e0b' : '#3b82f6';
           $list.append(
-            '<div class="attention-row" data-target="' + escapeHtml(target || '') + '">' +
+            '<button type="button" class="attention-row" data-target="' + escapeHtml(target || '') + '">' +
               '<span class="attention-count" style="color:' + colour + ';">' + r.count + '</span>' +
               '<span class="attention-label">' +
                 '<i class="fas ' + escapeHtml(r.icon) + '"></i> ' + escapeHtml(r.label) +
               '</span>' +
               (target ? '<i class="fas fa-chevron-right attention-go"></i>' : '') +
-            '</div>');
+            '</button>');
         });
       }
 

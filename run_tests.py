@@ -22,7 +22,7 @@ env vars that redirect storage must be set before their module imports.
     test_doc_priority.py   which document supersedes which, by date (unit)
     test_reranker_model.py the app and the downloader load one model (unit)
 
-    test_latency.py        when the optimizer round-trip is skipped (unit)
+    test_latency.py        bounded contextual interpretation (unit)
     test_progress.py       what the waiting student is told, truthfully (unit)
     test_sse_delivery.py   that the telling survives a proxy and a browser (unit)
 
@@ -66,6 +66,9 @@ TESTS_DIR = "tests"
 RUN_FROM = os.path.dirname(os.path.abspath(__file__))
 
 SUITES = [
+    ("School signup and email verification", "test_auth_signup.py"),
+    ("Standard Cognito password recovery",  "test_password_reset.py"),
+    ("Rendered UI contracts",               "test_ui_contracts.py"),
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
     ("Storage backend (file/DynamoDB)",  "test_store.py"),
@@ -78,10 +81,9 @@ SUITES = [
     # sees it, and both are additive for input that needs no repair. A failure in
     # one is usually the same mistake as a failure in the other.
     ("Dictated query repair (voice)",   "test_dictation.py"),
-    # Third of the same family, and last because it is the one that can also
-    # make a question SLOWER: a typo now makes `should_optimize()` wait for the
-    # rewrite, so a false positive here costs a round-trip as well as a probe.
+    # Local candidates plus general sentence-level interpretation.
     ("Misspelled query repair (typos)", "test_spelling.py"),
+    ("General query interpretation",     "test_query_optimizer.py"),
 
     # Who is asking. Sits next to the announcements suite because it owns the
 
@@ -124,7 +126,7 @@ SUITES = [
     # WHEN the optimizer runs, while the three above decide WHAT is searched. If
     # the language/dictation suites are failing, a latency failure is downstream
     # noise.
-    ("Answer latency (skip + budget)",   "test_latency.py"),
+    ("Query interpretation budget",     "test_latency.py"),
 
 
 

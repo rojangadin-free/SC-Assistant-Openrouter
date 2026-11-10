@@ -1,293 +1,202 @@
+{% from 'partials/brand.html' import college_brand with context %}
+{% set auth_view = initial_view|default('login') %}
+{% set recovery_state = reset_state|default({}, true) %}
+{% if auth_view == 'forgot' %}{% set auth_view = 'reset' %}{% endif %}
+{% if auth_view not in ['login', 'signup', 'verify', 'reset'] %}{% set auth_view = 'login' %}{% endif %}
+{% set auth_headings = {
+    'login': ['Sign in', 'Use your username or email to continue.'],
+    'signup': ['Create account', 'Choose a username and enter your account details.'],
+    'verify': ['Verify your email', 'Confirm your email before signing in.'],
+    'reset': ['Reset password', 'Send an OTP to your email and set a new password.']
+} %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Samar College Assistant</title>
+    <title>{{ auth_headings[auth_view][0] }} - Samar College Assistant</title>
     <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}" type="image/x-icon">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-    {# The font is linked here, not @imported by auth.css, so the request starts
-       during the first HTML parse instead of after auth.css has been fetched and
-       read. This page is the first thing most students see, and it is the one
-       page where a late font swap is most visible: the whole screen is one card
-       with two lines of text in it.
-
-       auth.html is standalone — it does not extend base.html — so these four
-       lines are necessarily a copy of the ones there. #}
+    {# Standalone auth pages use the same fonts and shared tokens as base.html. #}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&family=Source+Serif+4:wght@500;600&display=swap">
 
-
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/ui.utilities.css')}}"/>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/auth.css')}}"/>
-
-    {# auth.html does not extend base.html, so it does not inherit base's link to
-       polish.css — and this is the first screen every student sees. Without it
-       the login page was the only page still shipping the unfixed values: the
-       #9ca3af helper text at 2.41:1, a 36px theme toggle, and no focus ring on
-       the code inputs. Last in the head for the same reason as in base.html:
-       it corrects declarations auth.css makes literally, so it has to win on
-       source order. #}
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/polish.css')}}"/>
-
-    {# And console.css after it, for the same reason this file has to link
-       polish.css by hand: auth.html does not extend base.html, so nothing in
-       the layout adds it. Without this line /login keeps the old card — square
-       radius, grey surface, no hairline — and is the one page in the app that
-       does not look like the rest of it. #}
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/console.css')}}"/>
-
-
-    <style>
-        /* ── Guest divider ─────────────────────────── */
-        .or-divider {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 0 0 1rem;
-            color: var(--text-secondary);
-            font-size: var(--text-sm);
-        }
-        .or-divider::before,
-        .or-divider::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: var(--border);
-        }
-
-        /* ── Guest button ──────────────────────────── */
-        .guest-button {
-            width: 100%;
-            padding: 13px;
-            background: transparent;
-            border: 1.5px solid var(--border);
-            border-radius: 12px;
-            color: var(--text-secondary);
-            font-size: var(--text-md);
-            font-weight: var(--weight-medium);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            transition: all 0.25s ease;
-            font-family: inherit;
-            margin-bottom: 1rem;
-        }
-        .guest-button:hover {
-            border-color: var(--primary);
-            color: var(--primary);
-            background: rgba(26, 115, 232, 0.04);
-            transform: translateY(-1px);
-        }
-        .guest-button i {
-            font-size: 15px;
-            opacity: 0.75;
-        }
-
-        /* ── Guest disclaimer ──────────────────────── */
-        .guest-disclaimer {
-            /* Was 11.5px. This line tells a non-enrolled visitor that the app is
-               still usable for them — the sentence that decides whether they stay
-               — and it was set smaller than anything else on the page. */
-            font-size: var(--text-xs);
-            color: var(--text-secondary);
-            text-align: center;
-            line-height: 1.5;
-            margin-bottom: 0.5rem;
-            padding: 0 4px;
-        }
-        .guest-disclaimer i {
-            color: var(--accent);
-            margin-right: 4px;
-        }
-
-        /* ── Only show guest section on login form ─── */
-        #guestSection { display: block; }
-    </style>
 </head>
-<body>
-    {# Skip link. base.html gives one to every page that extends it; auth.html is
-       standalone, so /login was the one route shipping without it — I only found
-       that by querying the served DOM of all four routes instead of trusting the
-       shared template.
-
-       It matters less here than on /chat (there is no sidebar of past
-       conversations to walk past) but not zero: the header above the card holds
-       the theme toggle, and the reset flow puts six OTP boxes ahead of the
-       button. tabindex="-1" makes the container a real focus destination —
-       without it the browser scrolls the card into view but leaves focus on
-       <body>, so the next Tab starts again from the top. #}
+<body class="auth-body" data-initial-view="{{ auth_view }}" data-auth-csrf="{{ auth_csrf|default('') }}">
     <a class="skip-link" href="#loginMain">Skip to main content</a>
 
-    <div class="login-container" id="loginMain" tabindex="-1">
-        <div class="login-header">
-            <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
-                <i class="fas fa-moon"></i>
+    <div class="auth-layout">
+    <header class="auth-masthead">
+        <div class="auth-masthead-top">
+            {{ college_brand('college-brand--auth', href=url_for('auth.auth_page')) }}
+            <button type="button" class="theme-toggle" id="themeToggle" title="Switch to dark mode" aria-label="Switch to dark mode">
+                <i class="fas fa-moon" aria-hidden="true"></i>
             </button>
-            <div class="logo">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Logo" class="logo-img">
-            </div>
-            <h1 id="formTitle">Welcome Back</h1>
-            <p id="formSubtitle">Sign in to access Samar College Assistant</p>
+        </div>
+    </header>
+
+    <main class="login-container" id="loginMain" tabindex="-1">
+        <div class="login-header">
+            <h1 id="formTitle" tabindex="-1">{{ auth_headings[auth_view][0] }}</h1>
+            <p id="formSubtitle">{{ auth_headings[auth_view][1] }}</p>
         </div>
 
+        <div id="authMessage" class="auth-message" role="status" aria-live="polite" aria-atomic="true"></div>
+
         <!-- ── Login Form ───────────────────────────────── -->
-        <form id="loginForm">
-            {# type="text", not type="email". This pool signs in by username, so
-               either identifier is valid here and the browser's built-in email
-               validation was rejecting the username before the request was even
-               sent ("Please include an '@'"). The server resolves an email to
-               its username, so both work; the hint below says so rather than
-               leaving the student to guess which one the field wants. #}
+        <form id="loginForm" action="/login" method="post" aria-labelledby="formTitle"{% if auth_view != 'login' %} hidden{% endif %}>
+            {# Existing numeric usernames remain valid login identifiers. #}
             <div class="form-group">
-                <label for="email">Email or Username</label>
+                <label for="email">Email or username</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-envelope input-icon"></i>
-                    {# Placeholder kept short on purpose: "you@example.com or your
-                       username" measured 282px of text in a 264px field at 375px
-                       wide, so it was clipped mid-word on a phone — and the hint
-                       below already spells out that both forms are accepted. #}
                     <input type="text" id="email" name="email" class="form-input"
                            placeholder="Email or username"
                            autocomplete="username" inputmode="email"
-                           autocapitalize="none" spellcheck="false"
-                           aria-describedby="loginIdentifierHint" required>
+                           autocapitalize="none" spellcheck="false" required>
                 </div>
-                <p class="field-hint" id="loginIdentifierHint">Sign in with either your email address or your username.</p>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" required>
-                    <i class="fas fa-eye password-toggle" id="passwordToggle"></i>
+                    <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" autocomplete="current-password" required>
+                    <button type="button" class="password-toggle" id="passwordToggle" aria-label="Show password" aria-controls="password" aria-pressed="false"><i class="fas fa-eye" aria-hidden="true"></i></button>
                 </div>
             </div>
             <div class="form-options">
                 <div class="checkbox-wrapper">
                     <input type="checkbox" id="rememberMe" name="rememberMe">
-                    <div class="custom-checkbox" id="customCheckbox">
-                        <i class="fas fa-check"></i>
-                    </div>
-                    <label for="rememberMe">Remember me</label>
+                    <label for="rememberMe"><span class="custom-checkbox" id="customCheckbox" aria-hidden="true"><i class="fas fa-check"></i></span><span>Remember me</span></label>
                 </div>
-                <a href="#" class="forgot-password" id="forgotPasswordLink">Forgot Password?</a>
+                <a href="/password-reset" class="forgot-password" id="forgotPasswordLink">Forgot password?</a>
             </div>
 
-            <!-- ── End User Agreement gate: must be checked to sign in ── -->
-            <div class="form-options eula-gate">
-                <div class="checkbox-wrapper">
-                    <input type="checkbox" id="loginDataConsent" name="data_consent_ack">
-                    <div class="custom-checkbox" id="loginCustomCheckbox">
-                        <i class="fas fa-check"></i>
-                    </div>
-                    <label for="loginDataConsent">I agree to the <a href="#" id="openEulaLinkLogin">End User Agreement</a></label>
-                </div>
-            </div>
-
-            <button type="submit" class="login-button" id="loginButton" disabled>Sign In</button>
+            <button type="submit" class="login-button" id="loginButton">Sign in</button>
 
             <!-- ── Guest access (only shown on login form) ── -->
-            <div id="guestSection">
-                <div class="or-divider">or</div>
-                <p class="guest-disclaimer">
-                    <i class="fas fa-info-circle"></i>
-                    Not enrolled? You can still ask general questions about Samar College.
-                </p>
+            <div class="guest-section" id="guestSection"{% if auth_view != 'login' %} hidden{% endif %}>
+                <p class="guest-disclaimer">For general college questions, no account is needed.</p>
                 <button type="button" class="guest-button" id="guestButton">
-                    <i class="fas fa-user-circle"></i>
-                    Continue as Guest
+                    Continue as guest
                 </button>
             </div>
         </form>
 
         <!-- ── Sign-up Form ──────────────────────────────── -->
-        <form id="signupForm" style="display:none;">
+        <form id="signupForm" action="/signup" method="post" aria-labelledby="formTitle" novalidate{% if auth_view != 'signup' %} hidden{% endif %}>
             <div class="form-group">
                 <label for="signupUsername">Username</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-user input-icon"></i>
-                    <input type="text" id="signupUsername" name="username" class="form-input" placeholder="Username" required>
+                    <input type="text" id="signupUsername" name="username" class="form-input" placeholder="Choose a username"
+                           autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"
+                           pattern="[A-Za-z0-9_.\-]{1,64}" required>
+                </div>
+            </div>
+            <div class="form-group" id="signupStudentIdGroup">
+                <label for="signupStudentId">ID number</label>
+                <div class="input-wrapper">
+                    <input type="text" id="signupStudentId" name="student_id" class="form-input" placeholder="Enter your ID number"
+                           autocomplete="off" inputmode="numeric" spellcheck="false" maxlength="64"
+                           pattern="[0-9]{1,64}" required>
                 </div>
             </div>
             <div class="form-group">
-                <label for="signupEmail">Email Address</label>
+                <label for="signupEmail">Email address</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-envelope input-icon"></i>
-                    <input type="email" id="signupEmail" name="email" class="form-input" placeholder="Enter your email" required>
+                    <input type="email" id="signupEmail" name="email" class="form-input" placeholder="Enter your email"
+                           autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254" required>
                 </div>
             </div>
             <div class="form-group">
                 <label for="signupPassword">Password</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" id="signupPassword" name="password" class="form-input" placeholder="Enter your password" required>
-                    <i class="fas fa-eye password-toggle" id="signupPasswordToggle"></i>
+                    <input type="password" id="signupPassword" name="password" class="form-input" placeholder="Create a password"
+                           autocomplete="new-password" minlength="8" maxlength="256" aria-describedby="signupPasswordHint" required>
+                    <button type="button" class="password-toggle" id="signupPasswordToggle" aria-label="Show password" aria-controls="signupPassword" aria-pressed="false"><i class="fas fa-eye" aria-hidden="true"></i></button>
+                </div>
+                <p class="field-hint" id="signupPasswordHint">At least 8 characters, including uppercase and lowercase letters, a number, and a special character.</p>
+            </div>
+            <div class="form-group">
+                <label for="signupConfirmPassword">Confirm password <span class="optional-label">(optional)</span></label>
+                <div class="input-wrapper">
+                    <input type="password" id="signupConfirmPassword" name="confirm_password" class="form-input" placeholder="Re-enter your password" autocomplete="new-password" maxlength="256">
+                    <button type="button" class="password-toggle" id="signupConfirmPasswordToggle" aria-label="Show password" aria-controls="signupConfirmPassword" aria-pressed="false"><i class="fas fa-eye" aria-hidden="true"></i></button>
                 </div>
             </div>
             <!-- ── Data Access Agreement gate: the checkbox itself enables
                  the Sign Up button. The link opens the full text to read. ── -->
             <div class="form-options eula-gate">
                 <div class="checkbox-wrapper">
-                    <input type="checkbox" id="signupDataConsent" name="data_consent" value="true">
-                    <div class="custom-checkbox" id="signupCustomCheckbox">
-                        <i class="fas fa-check"></i>
-                    </div>
-                    <label for="signupDataConsent">I agree to the <a href="#" id="openEulaLink">Data Access Agreement</a></label>
+                    <input type="checkbox" id="signupDataConsent" name="data_consent" value="true" aria-labelledby="signupConsentLabel openEulaLink" required>
+                    <label for="signupDataConsent" id="signupConsentLabel"><span class="custom-checkbox" id="signupCustomCheckbox" aria-hidden="true"><i class="fas fa-check"></i></span><span>I agree to the</span></label>
                 </div>
+                <button type="button" class="agreement-link" id="openEulaLink" aria-haspopup="dialog" aria-controls="eulaModal">End User Agreement</button>
             </div>
 
-            <button type="submit" class="login-button" id="signupButton" disabled>Sign Up</button>
+            <button type="submit" class="login-button" id="signupButton" disabled>Create account</button>
         </form>
 
-        <!-- ── Forgot-password Form ──────────────────────── -->
-        <form id="forgotPasswordForm" style="display:none;">
+        <form id="signupVerifyForm" action="/confirm-signup" method="post" aria-labelledby="formTitle"
+              data-signup-email="{{ signup_email|default('', true) }}" novalidate{% if auth_view != 'verify' %} hidden{% endif %}>
+            <p class="verification-recipient">Email to verify <strong id="signupVerificationEmail">{{ signup_email|default('', true) or 'your email' }}</strong></p>
+            <button type="button" class="auth-link-button" id="restartSignupButton">Back to sign up</button>
             <div class="form-group">
-                <label for="resetEmail">Email Address</label>
-                <div class="input-wrapper">
-                    <i class="fas fa-envelope input-icon"></i>
-                    <input type="email" id="resetEmail" name="email" class="form-input" placeholder="Enter your email" required>
-                </div>
+                <label for="signupCode">6-digit verification code</label>
+                <input type="text" id="signupCode" name="code" class="form-input signup-code-input" inputmode="numeric"
+                       autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6"
+                       aria-describedby="signupCodeHint" required>
+                <p class="field-hint" id="signupCodeHint">Check your inbox or spam folder. The code verifies your email, not ownership of an ID number.</p>
             </div>
-            <p class="reset-instructions">Enter your email address and we'll send you a verification code to reset your password.</p>
-            <button type="submit" class="login-button" id="sendCodeButton">Send Code</button>
+            <button type="submit" class="login-button" id="confirmSignupButton">Verify email</button>
+            <div class="resend-code">
+                <button type="button" class="auth-link-button" id="resendSignupCodeButton" aria-describedby="signupResendStatus" disabled>Resend code</button>
+                <p class="field-hint" id="signupResendStatus">Checking when you can request another code.</p>
+            </div>
             <div class="back-to-login">
-                <a href="#" id="backToLoginFromForgot">Back to Login</a>
+                <a href="/auth" id="backToLoginFromVerify">Back to sign in</a>
             </div>
         </form>
 
-        <!-- ── Reset-flow Form ───────────────────────────── -->
-        <form id="resetFlowForm" style="display:none;">
-            <input type="hidden" id="resetFlowEmail" name="email" value="">
+        <script type="application/json" id="signupState">{{ signup_state|default({})|tojson }}</script>
+        <script type="application/json" id="resetState">{{ recovery_state|tojson }}</script>
 
+        <!-- OTP requests and password resets stay on the same form. -->
+        <form id="resetFlowForm" action="/reset-password" method="post" aria-labelledby="formTitle"{% if auth_view != 'reset' %} hidden{% endif %}>
             <div class="form-group">
-                <label>Verification Code</label>
-                <div class="code-input-container">
-                    <input aria-label="Verification code, digit 1 of 6" type="text" class="code-input" maxlength="1" data-index="0">
-                    <input aria-label="Verification code, digit 2 of 6" type="text" class="code-input" maxlength="1" data-index="1">
-                    <input aria-label="Verification code, digit 3 of 6" type="text" class="code-input" maxlength="1" data-index="2">
-                    <input aria-label="Verification code, digit 4 of 6" type="text" class="code-input" maxlength="1" data-index="3">
-                    <input aria-label="Verification code, digit 5 of 6" type="text" class="code-input" maxlength="1" data-index="4">
-                    <input aria-label="Verification code, digit 6 of 6" type="text" class="code-input" maxlength="1" data-index="5">
+                <label for="resetEmail">Email address</label>
+                <div class="reset-email-row">
+                    <input type="email" id="resetEmail" name="email" class="form-input" placeholder="Enter your email"
+                           autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254"
+                           value="{{ recovery_state.get('email', '') }}" aria-describedby="resetResendStatus" required>
+                    <button type="button" class="auth-link-button reset-send-otp" id="sendCodeButton" aria-describedby="resetResendStatus">Send OTP</button>
                 </div>
+                <p class="field-hint reset-resend-status" id="resetResendStatus" aria-live="polite">Send an OTP to this email to continue.</p>
             </div>
-
             <div class="form-group">
-                <label for="newPassword">New Password</label>
+                <label for="resetVerificationCode">6-digit OTP</label>
+                <input type="text" id="resetVerificationCode" name="code" class="form-input reset-code-input" inputmode="numeric"
+                       autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6"
+                       aria-describedby="resetCodeHint" required>
+                <p class="field-hint" id="resetCodeHint">Enter the latest OTP from your email. Your password changes only when you select Reset password.</p>
+            </div>
+            <div class="form-group">
+                <label for="newPassword">New password</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" id="newPassword" name="password" class="form-input" placeholder="Enter new password" required>
-                    <i class="fas fa-eye password-toggle" id="newPasswordToggle"></i>
+                    <input type="password" id="newPassword" name="password" class="form-input" placeholder="Enter new password"
+                           autocomplete="new-password" minlength="8" maxlength="256" aria-describedby="resetPasswordRequirements strengthText" required>
+                    <button type="button" class="password-toggle" id="newPasswordToggle" aria-label="Show password" aria-controls="newPassword" aria-pressed="false"><i class="fas fa-eye" aria-hidden="true"></i></button>
                 </div>
                 <div class="password-strength">
                     <div class="password-strength-bar" id="strengthBar"></div>
                 </div>
                 <div class="password-strength-text" id="strengthText"></div>
-                <div class="password-requirements">
+                <div class="password-requirements" id="resetPasswordRequirements">
                     <div class="requirement" id="lengthReq"><i class="fas fa-circle"></i><span>At least 8 characters</span></div>
                     <div class="requirement" id="uppercaseReq"><i class="fas fa-circle"></i><span>One uppercase letter</span></div>
                     <div class="requirement" id="lowercaseReq"><i class="fas fa-circle"></i><span>One lowercase letter</span></div>
@@ -297,30 +206,33 @@
             </div>
 
             <div class="form-group">
-                <label for="confirmPassword">Confirm Password</label>
+                <label for="confirmPassword">Confirm password</label>
                 <div class="input-wrapper">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" id="confirmPassword" name="confirmPassword" class="form-input" placeholder="Confirm new password" required>
-                    <i class="fas fa-eye password-toggle" id="confirmPasswordToggle"></i>
+                    <input type="password" id="confirmPassword" name="confirmPassword" class="form-input" placeholder="Confirm new password"
+                            autocomplete="new-password" maxlength="256" aria-describedby="passwordMatch" required>
+                    <button type="button" class="password-toggle" id="confirmPasswordToggle" aria-label="Show password" aria-controls="confirmPassword" aria-pressed="false"><i class="fas fa-eye" aria-hidden="true"></i></button>
                 </div>
-                <div class="password-match" id="passwordMatch">
+                <div class="password-match" id="passwordMatch" aria-live="polite" hidden>
                     <i class="fas fa-times-circle"></i><span>Passwords do not match</span>
                 </div>
             </div>
 
-            <button type="submit" class="login-button" id="resetButton">Reset Password</button>
-
-            <div class="resend-code">
-                Didn't receive the code? <a href="#" id="resendCodeLink">Resend Code</a>
-            </div>
-            <div class="back-to-login">
-                <a href="#" id="backToLoginFromReset">Back to Login</a>
-            </div>
+            <button type="submit" class="login-button" id="resetButton" disabled>Reset password</button>
         </form>
 
-        {#<div class="signup-link" id="toggleLink">
-            Don't have an account? <a href="#" id="switchToSignup">Sign up here</a>
-        </div> #}
+        <div class="back-to-login" id="resetPasswordNavigation"{% if auth_view != 'reset' %} hidden{% endif %}>
+            <a href="/auth" id="backToLoginFromReset">Back to sign in</a>
+        </div>
+        <div class="back-to-login" id="resetProgressNotice" hidden>
+            <p class="field-hint">A reset request is being processed. Refresh to check its status before trying again.</p>
+            <a href="/password-reset" id="refreshResetLink">Refresh recovery status</a>
+        </div>
+
+        <div class="signup-link" id="toggleLink"{% if auth_view not in ['login', 'signup'] %} hidden{% endif %}>
+            <span id="signupEntry"{% if auth_view != 'login' %} hidden{% endif %}>Don't have an account? <a href="/signup" id="switchToSignup">Create an account</a></span>
+            <span id="loginEntry"{% if auth_view != 'signup' %} hidden{% endif %}>Already have an account? <a href="/auth" id="switchToLogin">Sign in</a></span>
+        </div>
+    </main>
     </div>
 
     <!-- Notification toast -->
@@ -340,8 +252,8 @@
         </div>
 
         <div class="notification-content">
-            <div class="notification-title">Success</div>
-            <div class="notification-message">Operation completed successfully</div>
+            <div class="notification-title"></div>
+            <div class="notification-message"></div>
         </div>
     </div>
 
@@ -349,17 +261,15 @@
          Moved here from settings.html. It's now shown during signup,
          before an account is created, instead of after the fact when
          a logged-in user later toggles data access in Settings. -->
-    <div id="eulaModal" class="eula-overlay">
-        <div class="eula-flex-container">
+    <dialog id="eulaModal" class="eula-dialog" aria-labelledby="eulaTitle" aria-describedby="eulaIntro">
             <div class="eula-modal">
 
                 <div class="eula-header">
-                    <i class="fas fa-file-signature"></i>
-                    <h3>Student Data Access Agreement</h3>
+                    <h2 id="eulaTitle" tabindex="-1">Student Data Access Agreement</h2>
                 </div>
 
-                <div class="eula-body">
-                    <p style="margin-top: 0;">By creating an account, you authorize the Samar College AI Assistant to securely access, process, and use your student information for personalized academic assistance.</p>
+                <div class="eula-body" tabindex="0" role="region" aria-label="Agreement terms">
+                    <p id="eulaIntro" style="margin-top: 0;">By creating an account, you authorize the Samar College AI Assistant to securely access, process, and use your student information for personalized academic assistance.</p>
                     <p style="margin-bottom: 4px;"><strong>This access includes:</strong></p>
                     <ul class="eula-terms-box">
                         <li>Current and historical academic grades</li>
@@ -374,53 +284,12 @@
 
                 <div class="eula-footer">
                     <button type="button" id="btnDeclineEula" class="btn-eula btn-eula-decline">Close</button>
-                    <button type="button" id="btnAcceptEula" class="btn-eula btn-eula-agree">I Agree</button>
+                    <button type="button" id="btnAcceptEula" class="btn-eula btn-eula-agree">I agree</button>
                 </div>
 
             </div>
-        </div>
-    </div>
+    </dialog>
 
     <script src="{{ url_for('static', filename='js/auth.js') }}"></script>
-    <script>
-    // ── Guest login handler ─────────────────────────────────────
-    $(document).ready(function () {
-        $('#guestButton').on('click', function () {
-            const btn = $(this);
-            btn.prop('disabled', true).html('<span class="loading"></span>Entering as Guest…');
-
-            $.post('/guest', function (response) {
-                if (response.success) {
-                    window.location.href = response.redirect;
-                } else {
-                    showNotification('Could not start guest session. Please try again.', 'error');
-                    btn.prop('disabled', false).html('<i class="fas fa-user-circle"></i> Continue as Guest');
-                }
-            }).fail(function () {
-                showNotification('Network error. Please try again.', 'error');
-                btn.prop('disabled', false).html('<i class="fas fa-user-circle"></i> Continue as Guest');
-            });
-        });
-
-        // Hide guest section when switching to signup / forgot-password forms
-        $(document).on('click', '#switchToSignup, #forgotPasswordLink', function () {
-            $('#guestSection').hide();
-        });
-        $(document).on('click', '#switchToLogin, #backToLoginFromForgot, #backToLoginFromReset', function () {
-            $('#guestSection').show();
-        });
-
-        // Re-expose showNotification for the guest button fallback
-        function showNotification(message, type) {
-            const n = $('#notification');
-            n.removeClass('success error').addClass(type);
-            n.find('.notification-title').text(type === 'success' ? 'Success' : 'Error');
-            n.find('.notification-message').text(message);
-            n.find('.notification-icon i').attr('class', type === 'success' ? 'fas fa-check' : 'fas fa-exclamation-triangle');
-            n.addClass('show');
-            setTimeout(() => n.removeClass('show'), 4000);
-        }
-    });
-    </script>
 </body>
 </html>

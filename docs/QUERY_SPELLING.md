@@ -1,4 +1,59 @@
-# Misspelled questions (`rag/spelling.py`)
+# General Query Interpretation
+
+## Current Behavior
+
+The query path no longer depends on a list of misspelled questions or academic
+phrases. Every non-empty text question receives one bounded contextual
+interpretation, including complete sentences whose words are all in the dictionary.
+
+1. `rag/spelling.py` offers conservative local corrections and bounded candidates
+   from the document vocabulary. Candidate ranking considers missing vowels,
+   transpositions, keyboard slips and first-letter errors. These are hints, not
+   authoritative replacements.
+2. `rag/query_optimizer.py` gives the model the original question, local hints and
+   recent history. Its structured result separates corrected wording, a grounded
+   search query, and genuine ambiguity requiring clarification. This supports
+   multiple typos, split/joined words and real-word mistakes in context without
+   adding input-specific Python rules.
+3. Validation rejects changes to protected names/codes, numbers, dates, negations,
+   cost qualifiers and comparisons. Search expansion must retain the latest
+   subject and use words/constraints grounded in the question or supplied history;
+   otherwise the corrected question is used instead.
+4. `rag/chain.py` uses the accepted question throughout retrieval, reranking and
+   generation. It disables unreviewed spelling expansion after interpretation so
+   a rejected local hint cannot return as another retrieval probe. Original input
+   and displayed/persisted history are not rewritten.
+
+The existing `spell_vocab.json` format remains supported. Indexing already learns
+document terms automatically; workers now detect file changes and use
+vocabulary-specific cache keys. Newly learned terms need no typo-table update,
+manual cache reset or vector reindex. Generated interpretations are never learned
+as document vocabulary.
+
+The interpretation window defaults to **8 seconds**, configurable with
+`SC_OPTIMIZER_BUDGET_SECONDS`. The dedicated client makes one bounded call without
+retries. Timeout, capacity refusal or invalid output retain conservative wording
+and add uncertainty guidance. An explicit ambiguous interpretation skips retrieval
+and asks a focused clarification instead of choosing a policy by guesswork.
+
+This is broad, extensible correction, not a guarantee that every possible typo
+has one knowable meaning. Names, valid words and genuinely ambiguous requests must
+not be forcibly "corrected" into a more familiar topic.
+
+Validation:
+
+```bash
+python tests/test_query_optimizer.py
+python tests/test_spelling.py
+python tests/test_latency.py
+python run_tests.py
+```
+
+## Historical Designs
+
+The sections below record earlier bugs and implementations. Their skip heuristics,
+explicit real-word confusion table and phrase-specific recovery have been replaced
+by the current contextual interpretation path above.
 
 > "latin honir requirements" must find the Latin honors page.
 
@@ -80,7 +135,7 @@ corrected probe was not harmless: results from the typo could occupy the limited
 answer context and displace the evidence retrieved for the intended question.
 This happened with reranking disabled and could also happen when it was enabled.
 
-## The fix
+## Previous Local Fix (Superseded)
 
 ### 1. One repaired working question throughout chat (no network)
 
@@ -136,7 +191,7 @@ and document frequencies, not the tokens themselves, so the corpus vocabulary is
 unrecoverable from the index once it is built. It is therefore collected from the
 chunk text at index time.
 
-## Safety rules
+## Earlier Local Safety Rules
 
 Every one of these exists to stop a working question from being "corrected":
 
@@ -182,7 +237,7 @@ If it is missing entirely, `rag/spelling.py` falls back to a baked-in seed list
 of campus terms — so the headline repair still works on a fresh checkout, just
 with a smaller vocabulary.
 
-## What it costs
+## Previous Skip-Policy Costs
 
 * **A correctly spelled question: nothing.** No extra probe, no extra
   round-trip, no change to `should_optimize()`. This is the overwhelming
@@ -211,8 +266,10 @@ of the original input/history.
 | File | Role |
 |---|---|
 | `rag/spelling.py` | The repair, the vocabulary, the thresholds. |
+| `rag/query_optimizer.py` | General interpretation prompt, structured validation and clarification guidance. |
 | `tools/build_spell_vocab.py` | Build/inspect `spell_vocab.json` from `data/`. |
 | `rag/chain.py` | Repairs the working question before every chat stage; retains additive expansion helpers. |
-| `rag/latency.py` | A typo means "not searchable as typed" ⇒ wait for the rewrite. |
+| `rag/latency.py` | Every textual question receives a bounded interpretation opportunity. |
 | `store_index.py` | Learns the vocabulary as documents are indexed. |
 | `tests/test_spelling.py` | The suite above. |
+| `tests/test_query_optimizer.py` | General correction, output guards, unseen terms and concurrent reload tests. |

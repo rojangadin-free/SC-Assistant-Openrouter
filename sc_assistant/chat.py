@@ -23,7 +23,7 @@ from aws.dynamodb import (
     save_report
 )
 from rag.gaps import looks_unanswered, record_gap
-from rag.feedback import record_vote, get_vote, get_votes
+from rag.feedback import record_vote, remove_vote, get_vote, get_votes
 from rag.roles import resolve_role
 from rag.progress import ProgressChannel
 
@@ -533,14 +533,15 @@ def submit_report():
 @bp.route("/feedback", methods=["POST"])
 def submit_feedback():
     """
-    Body: {msg_id, verdict: "up"|"down", question, answer, sources[], comment}
+    Body: {msg_id, verdict: "up"|"down"|null, question, answer, sources[], comment}
+    An explicit null retracts this session's vote without deleting a filed report.
 
     One click, no form. There used to be a separate flag button next to it, which
     asked the student to fill in a form to say the same thing they had just said
     by clicking 👎 — so the votes came in and the reports did not, and nobody
     could tell whether a downvote meant "wrong" or "unhelpful".
 
-    The vote is always recorded, and that is all this endpoint does. A 👎 is
+    An up/down vote is recorded; null retracts an owned vote. A downvote is
     counted, grouped by topic, and stored with the sources that produced the
     answer — enough for the satisfaction metric and the suspect-document list. It
     does NOT file a report: a report is a work order someone has to read and act
@@ -556,13 +557,26 @@ def submit_feedback():
         return jsonify({"success": False, "message": "Not authenticated"}), 401
 
     data = request.get_json(silent=True) or {}
-    msg_id = (data.get("msg_id") or "").strip()
-    verdict = (data.get("verdict") or "").strip().lower()
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "Invalid feedback body."}), 400
+    msg_id = data.get("msg_id")
+    raw_verdict = data.get("verdict")
 
-    if not msg_id:
+    if not isinstance(msg_id, str) or not msg_id.strip():
         return jsonify({"success": False, "message": "Missing message id."}), 400
+    msg_id = msg_id.strip()
+    voter = "guest" if _is_guest() else session["user"]
+    guest_session_id = get_session_id() if _is_guest() else ""
+    if "verdict" in data and raw_verdict is None:
+        removed = remove_vote(msg_id, voter=voter, guest_session_id=guest_session_id)
+        if removed is None:
+            return jsonify({"success": False, "message": "Could not remove your feedback."}), 500
+        if not removed:
+            return jsonify({"success": False, "message": "This feedback cannot be removed by this session."}), 403
+        return jsonify({"success": True, "message": "Feedback removed.", "vote": None, "can_report": False})
+    verdict = raw_verdict.strip().lower() if isinstance(raw_verdict, str) else ""
     if verdict not in ("up", "down"):
-        return jsonify({"success": False, "message": "Verdict must be 'up' or 'down'."}), 400
+        return jsonify({"success": False, "message": "Verdict must be 'up', 'down', or null to remove feedback."}), 400
 
     conv_id = (data.get("conv_id") or "") or (session.get("current_conv_id") or "")
 
@@ -575,8 +589,9 @@ def submit_feedback():
         # it tells you something is wrong but never what. See rag/feedback.py.
         sources=data.get("sources") or [],
         comment=data.get("comment") or "",
-        voter="guest" if _is_guest() else (session.get("user") or ""),
+        voter=voter,
         conv_id=conv_id,
+        guest_session_id=guest_session_id,
     )
     if topic is None:
         return jsonify({"success": False, "message": "Could not record that vote."}), 500
@@ -600,6 +615,8 @@ def read_feedback(msg_id):
     if not session.get("user"):
         return jsonify({"success": False, "message": "Not authenticated"}), 401
     vote = get_vote(msg_id)
+    if vote:
+        vote = {key: value for key, value in vote.items() if key != "guest_session_id"}
     return jsonify({"success": True, "vote": vote})
 
 

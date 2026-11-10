@@ -14,12 +14,9 @@ by reading the source instead, which is the same trade tests/test_pwa.py makes.
 
 What is actually being defended
 -------------------------------
-1. A self-contained question must NOT pay for the optimizer round-trip. That is
-   the entire speed-up; if §1 passes trivially the change did nothing.
-2. A follow-up MUST still pay for it. "what about for transferees" searched
-   literally retrieves the wrong subject — a wrong answer, which is worse than
-   the slow one we started with. §2 is the safety half and it matters more
-   than §1.
+1. Every textual question gets contextual interpretation, including apparently
+   complete questions and real-word typos that a dictionary cannot detect.
+2. Follow-ups retain access to their preceding conversation.
 3. A late rewrite must be dropped, not waited for, and never crash the answer.
 4. The literal question must survive. If a bug here demoted the student's own
    wording, retrieval would silently get worse in a way no timing log shows.
@@ -34,7 +31,6 @@ import re
 
 from rag.latency import (
     should_optimize, pick_search_query, Deadline, Timings,
-    THIN_QUERY_TERMS, _content_terms,
 )
 
 _passed = 0
@@ -60,10 +56,7 @@ HISTORY = [
 ]
 
 
-print("\n=== 1. A self-contained question skips the optimizer =========")
-# This is the speed-up. Each of these names its own subject and carries enough
-# content words that a rewrite cannot find a document the literal words miss, so
-# the LLM round-trip in front of retrieval is pure waiting.
+print("\n=== 1. Complete questions still get contextual interpretation ===")
 
 for q in (
     "who is the dean of the college of education",
@@ -71,17 +64,17 @@ for q in (
     "how much is the tuition fee for BSIT",
     "who is the principal of the elementary department",
 ):
-    check(f"first turn, self-contained -> skip: {q[:44]!r}",
-          should_optimize(q, []) is False)
+    check(f"first turn, self-contained -> interpret: {q[:44]!r}",
+          should_optimize(q, []) is True)
 
 # Same question, ninth turn. "who is the dean of education" means the same thing
 # on turn 1 and turn 9, so mid-conversation is not by itself a reason to wait.
-check("mid-conversation but self-contained -> still skips",
-      should_optimize("who is the dean of the college of education", HISTORY) is False)
+check("mid-conversation and self-contained -> still interpreted",
+      should_optimize("who is the dean of the college of education", HISTORY) is True)
 
 # `None` is what a brand-new session actually passes, not [].
 check("history=None behaves like no history",
-      should_optimize("who is the dean of the college of education", None) is False)
+      should_optimize("who is the dean of the college of education", None) is True)
 
 
 print("\n=== 2. A follow-up still waits for the rewrite ================")
@@ -116,38 +109,24 @@ check("empty question -> no optimizer call", should_optimize("", HISTORY) is Fal
 check("whitespace question -> no optimizer call", should_optimize("   ", []) is False)
 
 
-print("\n=== 3. The thinness threshold is where the real questions are =")
-# This section is why the threshold is 3 and not 4. Written first at 4 — matching
-# expand_queries() in rag/chain.py — it failed on the two most ordinary questions
-# the assistant gets:
-#
-#   "who is the dean of the college of education"  -> [dean, college, education]
-#   "who is the principal of the elementary dept"  -> [principal, elementary,
-#                                                      department]
-#
-# Three content words each, so at 4 they measured as "thin", waited for a rewrite
-# they had no use for, and the headline case of this whole change would still have
-# been slow. The thresholds answer different questions (see rag/latency.py), and
-# the cost of a false positive is an LLM round-trip here versus one extra Pinecone
-# probe there.
+print("\n=== 2b. Unresolved words are not valid search anchors =========")
+for q in ("latin hnit requirements", "latin hnir requirements",
+          "latin hzzzz graduation requirements"):
+    check(f"unresolved term, first turn -> waits: {q!r}",
+          should_optimize(q, []) is True)
+    check(f"unresolved term, with history -> waits: {q!r}",
+          should_optimize(q, HISTORY) is True)
+check("a repaired honors question gets the same contextual validation",
+      should_optimize("latin honor requirements", []) is True)
+check("a known academic acronym does not bypass interpretation",
+      should_optimize("BSIT admission requirements", []) is True)
 
-thin = "tuition fee?"
-rich = "who is the dean of the college of education"
-check(f"'{thin}' measures as thin", len(_content_terms(thin)) < THIN_QUERY_TERMS)
-check("a three-term role question measures as searchable",
-      len(_content_terms(rich)) == 3
-      and len(_content_terms(rich)) >= THIN_QUERY_TERMS)
 
-# The boundary itself, in both directions — an off-by-one here silently changes
-# which questions pay for the optimizer.
-at_threshold = "dean college education"                     # exactly 3 terms
-below = "dean college"                                      # exactly 2
-check("exactly THIN_QUERY_TERMS content words -> not thin",
-      len(_content_terms(at_threshold)) == THIN_QUERY_TERMS
-      and should_optimize(at_threshold, []) is False)
-check("one below THIN_QUERY_TERMS -> thin, waits",
-      len(_content_terms(below)) == THIN_QUERY_TERMS - 1
-      and should_optimize(below, []) is True)
+print("\n=== 3. Known words and unfamiliar languages use the same path ===")
+for text in ("sign the internship contact", "who is the internship contact",
+             "tuition fee", "dean college education", "Pila an bayad?", "\u8bfe\u7a0b\u8981\u6c42"):
+    check(f"no dictionary/thinness shortcut: {text!r}", should_optimize(text, []) is True)
+check("punctuation alone has no text to interpret", should_optimize("?!", []) is False)
 
 
 
@@ -284,10 +263,11 @@ check("the rewrite is only ever collected with a timeout",
       "future_query.result(" in chain_src
       and "future_query.result()" not in chain_src)
 
-check("retrieval receives the late rewrite as a callback",
-      "late_query=late_rewrite" in chain_src)
-check("the literal question leads retrieval",
-      "user_question=user_text" in chain_src)
+check("interpretation is validated before it changes the working question",
+      "parse_interpretation(response.content, original_text, history)" in chain_src
+      and "user_text = interpretation.question" in chain_src)
+check("retrieval and generation share the interpreted question",
+      "user_question=user_text" in chain_src and "late_query=late_rewrite" not in chain_src)
 check("a missed budget is handled, not raised",
       "concurrent.futures.TimeoutError" in chain_src)
 check("the timing line is emitted", "timings.render()" in chain_src)

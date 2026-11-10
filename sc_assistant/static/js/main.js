@@ -110,7 +110,8 @@ $(document).ready(function() {
       // Only trigger if desktop AND currently collapsed
       if (!isMobile() && sidebar.hasClass('collapsed')) {
         // Don't trigger if they clicked the button directly (though stopPropagation handles this)
-        if ($(e.target).closest('.collapse-btn').length === 0) {
+          if ($(e.target).closest('.collapse-btn, .college-brand').length === 0) {
+           e.preventDefault();
            sidebar.removeClass('collapsed');
            localStorage.setItem('sidebarCollapsed', 'false');
         }

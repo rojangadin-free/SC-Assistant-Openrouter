@@ -282,26 +282,8 @@
 .history-loader-spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--sc-yellow); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* --- EMPTY STATE & FAQ --- */
-.empty-chat-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; color: var(--text-secondary); margin: auto 0; animation: fadeIn 0.4s ease; width: 100%; max-width: 600px; }
-.empty-chat-state .empty-logo { width: 80px; height: 80px; margin-bottom: 1.25rem; object-fit: contain; background: rgba(251, 188, 5, 0.1); border-radius: 50%; padding: 8px; border: 1px solid rgba(251, 188, 5, 0.25); }
-.empty-chat-state h2 { color: var(--text-primary); font-size: 1.5rem; margin-bottom: 0.5rem; font-weight: 700; }
-.empty-chat-state p { font-size: 0.95rem; margin-bottom: 1.5rem; }
-.faq-suggestions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
-.faq-btn { background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-primary); padding: 0.7rem 1.2rem; border-radius: 20px; font-size: 0.9rem; font-weight: 500; cursor: pointer; transition: background var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out), border-color var(--dur-fast) var(--ease-in-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); box-shadow: var(--shadow-sm); }
-/* Staggered by 60ms each, so the three suggestions arrive in sequence rather than
-   as one block. This is the first screen of the app and the only place a stagger
-   is used: it draws the eye along the row, which is exactly what a new user
-   should be reading. 60ms is under the ~100ms threshold where a sequence starts
-   to feel like a queue.
-
-   The delays sit on the buttons and not on .faq-suggestions so the container can
-   still lay out immediately — only the contents are timed. */
-.faq-btn { animation: riseIn var(--dur-slow) var(--ease-out) both; }
-.faq-btn:nth-child(1) { animation-delay: 60ms; }
-.faq-btn:nth-child(2) { animation-delay: 120ms; }
-.faq-btn:nth-child(3) { animation-delay: 180ms; }
-.faq-btn:hover { background: var(--sc-green); color: white; border-color: var(--sc-green); transform: translateY(-2px); box-shadow: 0 4px 6px rgba(13, 69, 3, 0.15); }
+/* Empty-state appearance lives in console.css. Its suggestion rows use the
+   compiled ui: layout utilities rather than a second, competing flex layout. */
 
 
 /* =========================================

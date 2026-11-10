@@ -9,7 +9,7 @@ COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID")
 COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
 COGNITO_CLIENT_SECRET = os.getenv("COGNITO_CLIENT_SECRET")
 AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
-S3_BUCKET_NAME = "sc-assistant-bucket2"
+S3_BUCKET_NAME = "sc-assistant-bucket3"
 
 # Vector Store Configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")

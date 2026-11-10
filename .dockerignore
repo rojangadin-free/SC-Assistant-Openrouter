@@ -10,6 +10,7 @@ env
 **/*.pyc
 .ruff_cache
 .pytest_cache
+node_modules
 **/*.sqlite3*
 **/*.json.lock
 **/*.json.*.tmp

@@ -39,6 +39,27 @@ and each one has its own document under [`docs/`](docs/).
 
 ---
 
+## UI development
+
+The interface remains Flask/Jinja with the school's existing green and gold.
+`console.css` owns shared visual tokens and components; page styles own their
+layouts. The shared college masthead is `templates/partials/brand.html`.
+
+New layout utilities use prefixed Tailwind classes (`ui:`), without Preflight or
+a browser CDN. The compiled stylesheet is committed so the Python production
+image does not need Node. After changing utility classes, run:
+
+```powershell
+npm ci --ignore-scripts
+npm run build:ui
+```
+
+Commit `sc_assistant/static/css/ui.utilities.css` with its template changes.
+For local visual checks, `tools/ui_preview.py` renders the real chat/dashboard
+templates using synthetic data. `tools/test_portal_ui.py` exercises that fixture;
+`tools/test_signup_ui.py` uses the separate fake-Cognito auth preview. Neither
+fixture is evidence of live backend capacity or Cognito configuration.
+
 ## Project layout
 
 ```

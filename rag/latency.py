@@ -1,47 +1,8 @@
-"""
-rag/latency.py — the two decisions that make an answer start sooner.
+"""Bound contextual interpretation without confusing known words with correct intent.
 
-Nothing here touches indexing, retrieval scoring or the prompt. This module owns
-only *when* work is allowed to happen, and it is deliberately pure string /
-arithmetic work so it can be tested with no Pinecone index, no model weights and
-no network — the same reasoning as rag/dictation.py.
-
-The problem being fixed
-----------------------
-`sc_assistant/chat.py` cannot yield a single SSE token until `app_graph.invoke()`
-returns. Inside that call, three things happen strictly in order:
-
-    1. the query-optimizer LLM rewrites the question   (network, blocking)
-    2. Pinecone is searched                            (network)
-    3. the cross-encoder reranks the candidates        (CPU)
-
-Step 1 is a full round-trip to a *reasoning* model on a *free* tier to produce
-about ten words, and steps 2-3 cannot start until it lands. The student is
-looking at a blank screen for the whole of it.
-
-Two observations make most of that cost removable:
-
-  A. The rewrite is only worth waiting for when the question cannot be understood
-     on its own. "what about for transferees?" needs the previous turn to become
-     a searchable query; "who is the dean of education" does not — it already
-     contains every term the index needs, and `retrieve_documents()` ranks the
-     student's literal words anyway.
-
-  B. When the rewrite *is* wanted, it does not have to be waited for *first*.
-     Retrieval on the literal question can be in flight while the rewriter is
-     still thinking, and the rewrite can join as one more probe if it arrives in
-     time. `multi_query_retrieve()` already fans out to several phrasings, so an
-     extra one costs a parallel network call, not a serial one.
-
-`should_optimize()` decides A. `Deadline` bounds B.
-
-What this module refuses to do
-------------------------------
-It does not decide which documents win. Every function here either says "skip
-work that would not have changed the outcome" or "stop waiting for work that is
-late". A bug in this file can make an answer slower, or make it use the literal
-question instead of a rewrite — it cannot reorder a ranking, which is why none of
-it needed to be validated against tools/eval_retrieval.py.
+Every text question gets an interpretation opportunity, including real-word
+typos. The optimizer overlaps other preparation, but accepted wording is
+collected before retrieval. Late results never mutate an answer in progress.
 """
 
 from __future__ import annotations
@@ -51,211 +12,22 @@ import re
 import time
 from typing import Dict, List, Optional
 
-# A word that exists in no document cannot be searched for. That is a retrieval
-# fact, not a spelling opinion, which is why the decision below consults it:
-# "latin honir requirements" measures as a perfectly searchable three-term
-# question by every rule in this file, and retrieves the wrong pages because its
-# most important token scores zero in BM25. See rag/spelling.py.
-from rag.spelling import has_misspelling
-
-
-# Words that carry no search signal. Same intent as `_STOPWORDS` in rag/chain.py
-# and duplicated on purpose: importing chain.py constructs the Pinecone index and
-# loads the embedding model at module scope, which would make a unit test of this
-# file need credentials and ~400 MB of weights. The list only has to be good
-# enough to count how much *content* a question carries.
-_STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "am", "do",
-    "does", "did", "what", "which", "who", "whom", "whose", "when", "where",
-    "why", "how", "and", "or", "but", "if", "then", "than", "of", "in", "on",
-    "at", "to", "for", "with", "by", "from", "about", "as", "that", "this",
-    "these", "those", "there", "here", "it", "its", "can", "could", "should",
-    "would", "will", "shall", "may", "might", "must", "have", "has", "had",
-    "you", "your", "me", "my", "i", "we", "our", "us", "they", "them", "their",
-    "please", "tell", "give", "show", "list", "all", "any", "some", "also",
-}
-
-# Below this many content words a question is too thin to search on its own, so
-# the rewrite is worth waiting for.
-#
-# Three, not four — and the difference was found by testing, not by taste.
-# `rag/chain.py` uses 4 for `expand_queries()`, but that threshold answers a
-# different question: "should I bolt 'complete list of' onto this?", where a
-# false positive costs one extra Pinecone probe. Here a false positive costs an
-# entire LLM round-trip in front of every answer, so the bar has to be lower.
-#
-# What 4 actually rejected:
-#
-#   "who is the dean of the college of education"  -> [dean, college, education]
-#   "who is the principal of the elementary dept"  -> [principal, elementary,
-#                                                      department]
-#
-# Both are completely searchable — they name their subject and their unit — and
-# both are the *most common shape of question this assistant receives*. At 4 they
-# measured as thin and paid for a rewrite they had no use for, which would have
-# left the headline case of this whole change still slow.
-THIN_QUERY_TERMS = 3
-
-
-# Phrases that only mean something relative to a previous turn. A question
-# containing one of these is a follow-up no matter how many content words it has,
-# because the words it carries may be about the wrong subject:
-#
-#   "what about for transferees?"        -> refers to the previous topic
-#   "is that the same for shs?"          -> "that" is in the last answer
-#
-# Sending those to retrieval unrewritten searches for the wrong thing, which is a
-# wrong answer, not a slow one. So this list biases toward waiting.
-_FOLLOWUP_MARKERS = (
-    "what about", "how about", "and for", "what if", "same for", "the same",
-    "that one", "those ones", "it instead", "instead of that",
-)
-
-# Conversational affirmations and negations that begin a reply to the AI.
-# When the student says "yes do the programs offered" they are accepting the
-# AI's own suggestion from the previous turn — the real search intent lives in
-# that turn, not in these words. Searching the literal text retrieves the wrong
-# subject (or nothing). Waiting for a rewrite with the full history fixes this.
-#
-# Kept as a frozenset so the membership test is O(1) regardless of list length.
-_AFFIRMATION_STARTERS = frozenset({
-    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "fine",
-    "no", "nope", "nah", "got", "great",
-})
-
-# Pronouns and deictics that need an antecedent. Checked as whole words so
-# "their" in "their programs" counts but "that" inside "thatch" does not.
-_ANAPHORA = (
-    "it", "its", "this", "that", "these", "those", "they", "them", "their",
-    "he", "she", "him", "her", "his", "hers", "one", "ones", "there",
-)
-
-
-def _content_terms(query: str) -> List[str]:
-    """The words a search engine would actually match on."""
-    words = re.findall(r"[A-Za-z][A-Za-z0-9\-']+", (query or "").lower())
-    return [w for w in words if w not in _STOPWORDS and len(w) > 2]
-
-
-def _has_anaphora(query: str) -> bool:
-    """True when the question points at something it does not name."""
-    words = re.findall(r"[a-z']+", (query or "").lower())
-    return any(w in _ANAPHORA for w in words)
-
-
 def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> bool:
-    """
-    Should the query-optimizer LLM be called for this question?
-
-    Returns False only when the question is self-contained enough that a rewrite
-    could not change which documents are found. That is the common case for a
-    first message, and skipping it removes an entire LLM round-trip from the time
-    the student spends waiting.
-
-    The rule, in the order it is applied:
-
-      0. A word no document contains -> wait, with or without history. The
-                                question is not searchable AS TYPED no matter
-                                how many terms it has. See below.
-      1. No history          -> nothing to resolve a reference against, so the
-                                rewrite has no information the question lacks.
-                                Skip, UNLESS the question is too thin to search.
-      2. Follow-up markers   -> wait. "what about for transferees" is meaningless
-         or a bare pronoun      alone, and searching it unrewritten retrieves the
-                                wrong subject. A wrong answer is worse than a
-                                slow one, so ambiguity resolves toward waiting.
-      3. Thin question       -> wait. Fewer than THIN_QUERY_TERMS content words
-                                is where retrieval measurably struggles.
-      4. Otherwise           -> skip. The question names its own subject and
-                                carries enough terms; the literal words are
-                                already retrieved and reranked.
-
-    Note that (1) is checked before (2): a first-turn question containing "that"
-    has nothing to resolve it against, so waiting for a rewrite buys nothing.
-    """
-    q = (question or "").strip()
-    if not q:
-        return False
-
-    terms = _content_terms(q)
-
-    # (0) A misspelled term, checked BEFORE the history rule, because it is the
-    # one signal that does not depend on there being a previous turn.
-    #
-    # "latin honir requirements" was the question that added this branch. It has
-    # three content words, no pronouns and no follow-up marker, so every rule
-    # below reads it as self-contained and skips the rewrite — and then BM25
-    # scores `honir` at zero (no document contains it), the dense encoder embeds
-    # a nonsense token, and the search collapses to "latin ... requirements",
-    # which fits admission, transfer and graduation requirements equally badly.
-    # The student sees a confidently wrong answer.
-    #
-    # Counting terms measures how MUCH the question carries. This measures
-    # whether those terms exist in the corpus at all, which is a different
-    # question and the one that decides whether the literal words can be
-    # searched. rag/chain.py also adds a corrected retrieval probe locally, so
-    # this is not the only defence — it is the one that lets the LLM see the
-    # question in context and fix a typo the edit-distance repair declined.
-    if has_misspelling(q):
-        return True
-
-    # (1) First turn. There is no previous topic to inherit, so the only thing a
-    # rewrite can add is bulk — and `expand_queries()` already does that for
-    # thin queries without a network call.
-    if not history:
-        return len(terms) < THIN_QUERY_TERMS
+    """Known words can still express a typo; skip only inputs without text."""
+    return bool(re.search(r"\w", question or "", re.UNICODE))
 
 
-    lowered = q.lower()
-
-    # (2a) Message starts with an affirmation/negation directed at the AI.
-    # "yes do the programs offered", "sure what are the fees", "ok tell me more"
-    # — the first word is a reply to the previous turn, not a search term.
-    # The real intent is carried by what the AI said, so we must resolve against
-    # history. Checked before the follow-up-marker scan because it is the more
-    # specific signal.
-    first_word = re.split(r"[\s,!.?]+", lowered)[0] if lowered else ""
-    if first_word in _AFFIRMATION_STARTERS:
-        return True
-
-    # (2b) An explicit continuation, or a reference with no antecedent in the
-    # sentence itself.
-    if any(marker in lowered for marker in _FOLLOWUP_MARKERS):
-        return True
-    if _has_anaphora(q):
-        return True
-
-    # (3) Too little to search on.
-    if len(terms) < THIN_QUERY_TERMS:
-        return True
-
-    # (4) Self-contained mid-conversation question: "who is the dean of
-    # education" means the same thing on turn 1 and turn 9.
-    return False
-
-
-# How long retrieval may wait for a late rewrite before going ahead with the
-# documents it already has. Chosen to be shorter than the round-trip it is
-# guarding: if the optimizer is slower than this, waiting for it costs more than
-# the recall it might add. Env-overridable so a deployment on a slow link can
-# raise it without a code change.
-OPTIMIZER_BUDGET_SECONDS = float(os.getenv("SC_OPTIMIZER_BUDGET_SECONDS", "2.5"))
+# One bounded interpretation call, never an unbounded second round trip.
+OPTIMIZER_BUDGET_SECONDS = float(os.getenv("SC_OPTIMIZER_BUDGET_SECONDS", "8.0"))
 
 
 class Deadline:
     """
     A shrinking time budget.
 
-    Used for the one thing in the answer path that is allowed to be abandoned:
-    the optimizer's rewrite. Retrieval starts on the student's literal question
-    immediately; when the rewrite is wanted, this bounds how long the request
-    will wait for it before proceeding without it.
-
-    Deliberately not a hard timeout on the LLM call. Cancelling the call would
-    waste the tokens already generated and lose a rewrite that was 50 ms away
-    from being useful. `remaining()` instead lets the *waiter* give up while the
-    call finishes in the background, so a rewrite that lands late is simply
-    ignored rather than cancelled.
+    Bounds how long preparation waits for interpretation before safe fallback.
+    Running work cannot always be cancelled, so late results are ignored; the
+    model client's separate timeout also bounds occupied worker slots.
     """
 
     def __init__(self, seconds: float = OPTIMIZER_BUDGET_SECONDS,

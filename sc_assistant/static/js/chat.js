@@ -273,11 +273,11 @@ $(document).ready(function() {
   function feedbackButtons(msgId) {
     return `
       <div class="feedback-group" data-msg-id="${msgId}">
-        <button class="feedback-btn feedback-up" data-verdict="up" title="This answer helped">
-          <i class="far fa-thumbs-up"></i>
+        <button type="button" class="feedback-btn feedback-up" data-verdict="up" title="This answer helped" aria-label="This answer helped" aria-pressed="false">
+          <i class="far fa-thumbs-up" aria-hidden="true"></i>
         </button>
-        <button class="feedback-btn feedback-down" data-verdict="down" title="This answer was wrong or unhelpful">
-          <i class="far fa-thumbs-down"></i>
+        <button type="button" class="feedback-btn feedback-down" data-verdict="down" title="This answer was wrong or unhelpful" aria-label="This answer was wrong or unhelpful" aria-pressed="false">
+          <i class="far fa-thumbs-down" aria-hidden="true"></i>
         </button>
       </div>`;
   }
@@ -335,24 +335,34 @@ $(document).ready(function() {
   }
 
 
+  function paintFeedback($group, verdict) {
+    $group.find('.feedback-btn').each(function() {
+      const selected = $(this).data('verdict') === verdict;
+      $(this).toggleClass('voted', selected).attr('aria-pressed', String(selected));
+    });
+  }
+
   $(document).on('click', '.feedback-btn', function() {
     const $btn = $(this);
     const $group = $btn.closest('.feedback-group');
+    if ($group.data('feedbackPending')) return;
     const msgId = $group.data('msg-id');
-    const verdict = $btn.data('verdict');
+    const previousVerdict = $group.find('.feedback-btn.voted').data('verdict') || null;
+    const verdict = $btn.hasClass('voted') ? null : $btn.data('verdict');
     const $message = $('#' + msgId);
+    const $previousOptions = $message.find('.reason-sheet, .escalate-offer').filter(':visible');
+    const hadFocus = this === document.activeElement;
 
-    // Clicking the already-active thumb is a no-op rather than a toggle-off: an
-    // absent vote and a retracted vote are indistinguishable in the data, so
-    // there is nothing to gain by allowing it.
-    if ($btn.hasClass('voted')) return;
-
-    $group.find('.feedback-btn').removeClass('voted');
-    $btn.addClass('voted');
+    // Keep one request per message in flight while its result is pending.
+    $group.data('feedbackPending', true).data('feedbackTouched', true);
+    $group.find('.feedback-btn').prop('disabled', true);
+    $previousOptions.hide();
+    paintFeedback($group, verdict);
 
     $.ajax({
       url: '/chat/feedback',
       method: 'POST',
+      timeout: 15000,
       contentType: 'application/json',
       data: JSON.stringify({
         msg_id:   msgId,
@@ -363,6 +373,7 @@ $(document).ready(function() {
         conv_id:  activeConversationId || '',
       }),
       success: function(res) {
+        $message.find('.reason-sheet, .escalate-offer').remove();
         if (verdict === 'down') {
           // Nothing has been reported yet — the vote is counted, and answering
           // this sheet is what files the report. Ignoring or closing it leaves the
@@ -373,13 +384,19 @@ $(document).ready(function() {
           // makes it the right moment — and the only reliable one — to offer the
           // human fallback. Prompting everyone would be nagging.
           showEscalationOffer($message);
-        } else {
+        } else if (verdict === 'up') {
           showNotification('Thanks for the feedback!', 'success');
         }
       },
-      error: function() {
-        $group.find('.feedback-btn').removeClass('voted');
-        showNotification('Could not save your feedback.', 'error');
+      error: function(xhr) {
+        paintFeedback($group, previousVerdict);
+        $previousOptions.show();
+        showNotification((xhr.responseJSON && xhr.responseJSON.message) || 'Could not save your feedback.', 'error');
+      },
+      complete: function() {
+        $group.data('feedbackPending', false);
+        $group.find('.feedback-btn').prop('disabled', false);
+        if (hadFocus && document.activeElement === document.body && $btn.is(':visible')) $btn.trigger('focus');
       }
     });
   });
@@ -943,9 +960,8 @@ $(document).ready(function() {
       Object.keys(res.votes).forEach(function(mid) {
         const verdict = res.votes[mid];
         if (verdict !== 'up' && verdict !== 'down') return;
-        $('#' + mid)
-          .find('.feedback-btn.feedback-' + verdict)
-          .addClass('voted');
+        const $group = $('#' + mid).find('.feedback-group');
+        if (!$group.data('feedbackTouched')) paintFeedback($group, verdict);
       });
     });
     // No error branch on purpose: an un-restored thumb is a cosmetic loss, and

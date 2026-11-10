@@ -1,13 +1,12 @@
-<div class="header">
+<div class="{{ 'chat-floating-controls' if active_page == 'chat' else 'header' }}">
   <!-- Mobile sidebar toggle -->
-  <button class="hamburger-menu" id="hamburgerMenu" aria-label="Toggle sidebar">
-    <i class="fas fa-bars"></i>
+  <button type="button" class="hamburger-menu" id="hamburgerMenu" aria-label="Toggle sidebar">
+    <i class="fas fa-bars" aria-hidden="true"></i>
   </button>
 
+  {% if active_page != 'chat' %}
   <div class="header-left">
-    {% if active_page == 'chat' %}
-      <span></span>
-    {% elif active_page == 'dashboard' %}
+    {% if active_page == 'dashboard' %}
       <span>Dashboard</span>
     {% elif active_page == 'settings' %}
       <span>Settings</span>
@@ -15,6 +14,7 @@
       <span>Samar College</span>
     {% endif %}
   </div>
+  {% endif %}
 
   <div class="header-right">
     {# Replies inbox. Only on the chat screen, because that is where the question
@@ -23,16 +23,15 @@
        always empty trains people to ignore it, and then the one time it matters
        they will not look. #}
     {% if active_page == 'chat' %}
-    <button class="replies-toggle" id="repliesToggle"
-            title="Replies from the offices" style="display:none;">
-      <i class="fas fa-inbox"></i>
+    <button type="button" class="replies-toggle" id="repliesToggle"
+             title="Replies from the offices" aria-label="Replies from the offices" style="display:none;">
+      <i class="fas fa-inbox" aria-hidden="true"></i>
       <span class="replies-badge" id="repliesBadge" style="display:none;">0</span>
     </button>
     {% endif %}
 
-    <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
-      <i class="fas fa-moon"></i>
+    <button type="button" class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+      <i class="fas fa-moon" aria-hidden="true"></i>
     </button>
   </div>
 </div>
-

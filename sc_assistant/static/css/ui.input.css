@@ -1,0 +1,5 @@
+/* Layout utilities only. Existing components keep their own styles; no Preflight. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(ui);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(ui) source(none);
+@source "../../templates";

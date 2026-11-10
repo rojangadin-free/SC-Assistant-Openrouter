@@ -66,7 +66,7 @@
     <div id="uploadSection" class="dashboard-section">
 
       <div class="section-header">
-        <h2>File Management</h2>
+        <h2>Documents</h2>
       </div>
 
       <div class="upload-section">
@@ -74,7 +74,7 @@
           <div class="upload-icon">
             <i class="fas fa-cloud-upload-alt"></i>
           </div>
-          <h3 class="upload-title">Upload Files</h3>
+          <h3 class="upload-title">Upload documents</h3>
         </div>
 
         <div class="upload-area" id="uploadArea">
@@ -109,11 +109,11 @@
 
     <div id="usersSection" class="dashboard-section">
       <div class="section-header">
-        <h2>User Management</h2>
+        <h2>User accounts</h2>
       </div>
 
       <div class="user-list-container">
-        <h3>Registered Users</h3>
+        <h3>Registered users</h3>
         <div id="userListLoader" style="display: none;">
           <div class="loader-spinner"></div>
         </div>
@@ -164,7 +164,7 @@
     <div id="analyticsSection" class="dashboard-section active">
       <div class="dashboard-header">
         <h1>Overview</h1>
-        <p>What students asked, what the assistant could not answer, and what is waiting for you.</p>
+        <p>Review student requests, recent activity, and recorded answer feedback.</p>
       </div>
 
       {# Triage first, and deliberately ABOVE the window selector: everything
@@ -180,7 +180,7 @@
                because this card carries .sc-accent-red. #}
             <h3 class="sc-h3--tight"><i class="fas fa-triangle-exclamation" style="color:var(--ui-danger-ink);"></i>&nbsp;Needs your attention</h3>
 
-            <p class="sc-lead--sm">Everything below is waiting on a person. Click a row to go to it.</p>
+            <p class="sc-lead--sm">Requests waiting for a staff response or review.</p>
           </div>
           <div class="sc-toolbar-right">
             <button class="sc-btn sc-btn--ghost sc-btn--xs" id="refreshTriageBtn">
@@ -199,7 +199,7 @@
           <span id="analyticsGeneratedAt" class="analytics-muted">Loading…</span>
         </div>
         <div class="analytics-toolbar-actions">
-          <label for="analyticsDays" class="analytics-muted">Window</label>
+          <label for="analyticsDays" class="analytics-muted">Date range</label>
           <select id="analyticsDays" class="analytics-select">
             <option value="7">Last 7 days</option>
             <option value="14" selected>Last 14 days</option>
@@ -221,22 +221,22 @@
 
       <div class="analytics-kpis">
         <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Questions with signal</p>
+          <p class="analytics-kpi-label" title="Questions recorded through feedback, content gaps, or staff requests">Questions tracked</p>
           <h3 class="analytics-kpi-value" id="kpiQuestions">—</h3>
           <span class="analytics-kpi-delta" id="kpiQuestionsDelta">vs. previous 7 days</span>
         </div>
         <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Answered rate</p>
+          <p class="analytics-kpi-label">Answered</p>
           <h3 class="analytics-kpi-value" id="kpiAnsweredRate">—</h3>
           <span class="analytics-kpi-delta" id="kpiAnsweredRateDelta">vs. previous 7 days</span>
         </div>
         <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Satisfaction</p>
+          <p class="analytics-kpi-label">Helpful feedback</p>
           <h3 class="analytics-kpi-value" id="kpiSatisfaction">—</h3>
           <span class="analytics-kpi-delta" id="kpiSatisfactionDelta">vs. previous 7 days</span>
         </div>
         <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Pending escalations</p>
+          <p class="analytics-kpi-label">Awaiting staff reply</p>
           <h3 class="analytics-kpi-value" id="kpiPending">—</h3>
           <span class="analytics-kpi-delta" id="kpiPendingDelta">oldest wait</span>
         </div>
@@ -861,11 +861,11 @@
       </div>
     </div>
 
-    <div class="confirm-dialog" id="editUserModal">
+    <div class="confirm-dialog" id="editUserModal" role="dialog" aria-modal="true" aria-labelledby="editUserTitle">
       <div class="confirm-box" id="editUserBox" style="max-width: 500px;">
         <h3 class="confirm-title" style="display: flex; justify-content: space-between; align-items: center;">
-          Edit User
-          <button id="closeEditUserModal" class="close-modal-btn" style="background: none; border: none; font-size: 1.5rem; color: var(--text-secondary); cursor: pointer;">&times;</button>
+          <span id="editUserTitle">Edit User</span>
+          <button type="button" id="closeEditUserModal" class="close-modal-btn" aria-label="Close user editor" style="background: none; border: none; font-size: 1.5rem; color: var(--text-secondary); cursor: pointer;">&times;</button>
         </h3>
         <form id="editUserForm">
           <input type="hidden" id="editUserCognitoUsername" name="cognito_username">
@@ -890,7 +890,7 @@
 
           <div class="confirm-buttons">
             <button type="button" class="confirm-button cancel-button" id="cancelEditUser">Cancel</button>
-            <button type="submit" class="confirm-button confirm-logout-button" id="saveUserChanges">Save Changes</button>
+            <button type="submit" class="sc-btn sc-btn--green" id="saveUserChanges">Save Changes</button>
           </div>
         </form>
       </div>
@@ -1205,8 +1205,8 @@
         ? (value >= 0 ? '+' : '') + Math.round(value * 100) + ' pts'
         : (value >= 0 ? '+' : '') + value;
       const colour = kind === 'neutral' ? 'var(--text-tertiary)'
-                   : value > 0 ? '#16a34a'
-                   : value < 0 ? '#ef4444'
+                   : value > 0 ? 'var(--ui-success-ink)'
+                   : value < 0 ? 'var(--ui-danger-ink)'
                    : 'var(--text-tertiary)';
       $el.text(shown + ' vs. previous 7 days').css('color', colour);
     }
@@ -1322,9 +1322,10 @@
     function renderAnalytics(a) {
       const grid   = cssVar('--border', '#e5e7eb');
       const ink    = cssVar('--text-secondary', '#6b7280');
-      const green  = '#22c55e';
-      const red    = '#ef4444';
-      const blue   = '#3b82f6';
+      const green  = cssVar('--con-chart-ok', '#4b805b');
+      const red    = cssVar('--con-chart-bad', '#ba635b');
+      const blue   = cssVar('--con-chart-activity', '#536f80');
+      const muted  = cssVar('--con-chart-muted', '#a6b7ac');
 
       $('#analyticsGeneratedAt').text(
         'Last ' + a.window_days + ' days · updated ' +
@@ -1351,7 +1352,7 @@
               ? Math.round(oldest / 24) + ' days'
               : Math.round(oldest) + ' hours'))
         .css('color', (oldest !== null && oldest !== undefined && oldest >= 48)
-          ? '#ef4444' : 'var(--text-tertiary)');
+          ? 'var(--ui-danger-ink)' : 'var(--text-tertiary)');
 
       // ── Answered vs. unanswered, by day ─────────────────────────
       const series = a.series || [];
@@ -1412,7 +1413,7 @@
                 // Fade everything that is not near the peak, so the busy block
                 // is readable without counting bars.
                 backgroundColor: hourly.map(h =>
-                  h.share_of_peak >= 0.66 ? blue : 'rgba(59,130,246,.35)')
+                  h.share_of_peak >= 0.66 ? blue : muted)
               }]
             },
             options: {
@@ -1436,17 +1437,26 @@
         destroyChart('analyticsTopicsChart');
         analyticsCharts.analyticsTopicsChart = drawChart(
           'analyticsTopicsChart', {
-            type: 'doughnut',
+            type: 'bar',
             data: {
               labels: topics.map(t => (t.topic || t.key || '').slice(0, 34)),
               datasets: [{
+                label: 'Questions',
                 data: topics.map(t => t.total),
-                backgroundColor: ['#3b82f6','#22c55e','#f59e0b','#8b5cf6','#ec4899','#14b8a6']
+                backgroundColor: green,
+                maxBarThickness: 28
               }]
             },
             options: {
-              responsive: true, maintainAspectRatio: false,
-              plugins: { legend: { position: 'right', labels: { color: ink, boxWidth: 12, font: { size: 11 } } } }
+              responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+              plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { title: items => items.length ? (topics[items[0].dataIndex].topic || topics[items[0].dataIndex].key || '') : '' } }
+              },
+              scales: {
+                x: { beginAtZero: true, grid: { color: grid }, ticks: { color: ink, precision: 0 } },
+                y: { grid: { display: false }, ticks: { color: ink, autoSkip: false } }
+              }
             }
           });
       }
@@ -1556,7 +1566,6 @@
       const html = allConflicts.map(function(c) {
         const res = c.resolution || null;
         const resolved = !!res;
-        const accent = resolved ? '#22c55e' : '#f59e0b';
         const badge = resolved
           ? '<span class="sc-badge sc-badge--ok">RESOLVED</span>'
           : '<span class="sc-badge sc-badge--warn">NEEDS REVIEW</span>';
@@ -1600,7 +1609,7 @@
         const question = 'Who is the ' + (c.role || 'holder') + ' of ' + (c.subject_display || '') + '?';
 
         return '' +
-        '<div class="conflict-card" data-key="' + esc(c.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.25rem 1.5rem;">' +
+        '<div class="conflict-card admin-record-card" data-key="' + esc(c.key) + '">' +
           '<div class="sc-cardhead">' +
             '<div>' +
               '<h3 style="margin:0;font-size:1.02rem;color:var(--text-primary);">' + esc(c.label) + '</h3>' +
@@ -1793,7 +1802,6 @@
 
       const html = allGaps.map(function(g) {
         const resolved = g.status === 'resolved';
-        const accent = resolved ? '#22c55e' : '#3b82f6';
         const badge = resolved
           ? '<span class="sc-badge sc-badge--ok">COVERED</span>'
           : '<span class="sc-badge sc-badge--info">NEEDS A DOCUMENT</span>';
@@ -1828,7 +1836,7 @@
             '<button class="gap-resolve sc-btn sc-btn--primary sc-btn--sm" ><i class="fas fa-check"></i> Mark as covered</button>';
 
         return '' +
-        '<div class="gap-card" data-key="' + esc(g.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.15rem 1.4rem;">' +
+        '<div class="gap-card admin-record-card" data-key="' + esc(g.key) + '">' +
           '<div class="sc-cardhead">' +
             '<div class="sc-min0">' +
               '<h3 style="margin:0;font-size:1rem;color:var(--text-primary);">' + esc(g.topic) + '</h3>' +
@@ -2023,7 +2031,7 @@
         const bad = (t.examples || []).filter(e => e.verdict === 'down');
         const ex = bad[0] || (t.examples || [])[0] || {};
         return '' +
-        '<div class="fb-card" data-key="' + esc(t.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid #ef4444;border-radius:10px;padding:.9rem 1.1rem;">' +
+        '<div class="fb-card admin-record-card" data-key="' + esc(t.key) + '">' +
           '<div class="sc-cardhead">' +
             '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(t.topic || '(no question recorded)') + '</strong>' +
             '<span style="white-space:nowrap;font-size:.8rem;color:var(--text-secondary);">' +
@@ -2146,7 +2154,6 @@
 
       $('#escList').html(escItems.map(function(it) {
         const pending = it.status === 'pending';
-        const accent = pending ? '#8b5cf6' : (it.status === 'answered' ? '#22c55e' : 'var(--border)');
         const badge = pending
           ? '<span class="sc-badge sc-badge--violet">WAITING</span>'
           : it.status === 'answered'
@@ -2154,7 +2161,7 @@
             : '<span class="sc-badge sc-badge--muted">DISMISSED</span>';
 
         return '' +
-        '<div class="esc-card" data-id="' + esc(it.id) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + accent + ';border-radius:12px;box-shadow:var(--shadow-sm);padding:1.1rem 1.4rem;">' +
+        '<div class="esc-card admin-record-card" data-id="' + esc(it.id) + '">' +
           '<div class="sc-cardhead">' +
             '<div class="sc-min0">' +
               '<h3 style="margin:0;font-size:.98rem;color:var(--text-primary);">' + esc(it.question) + '</h3>' +
@@ -2392,7 +2399,7 @@
             : calHuman(p.start) + ' – ' + calHuman(p.end);
 
           return '' +
-          '<div class="cal-card" data-key="' + esc(p.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + g.accent + ';border-radius:10px;padding:.75rem 1rem;display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">' +
+          '<div class="cal-card admin-record-card admin-record-card--split" data-key="' + esc(p.key) + '">' +
             '<div class="sc-min0">' +
               '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(p.label) + '</strong>' +
               '<div style="font-size:.8rem;color:' + colour + ';font-weight:600;margin-top:.2rem;">' + esc(when) + '</div>' +
@@ -2685,8 +2692,8 @@
         if (a.expires_on) window_.push('until ' + calHuman(a.expires_on));
 
         return '' +
-        '<div class="ann-card" data-key="' + esc(a.key) + '" style="background:var(--bg-surface);border:1px solid var(--border);border-left:4px solid ' + look.colour + ';border-radius:10px;padding:.85rem 1.1rem;' +
-             (a.expired || !a.active ? 'opacity:.6;' : '') + '">' +
+        '<div class="ann-card admin-record-card' + (a.expired || !a.active ? ' is-inactive' : '') +
+             '" data-key="' + esc(a.key) + '">' +
           '<div class="sc-cardhead">' +
             '<div class="sc-min0">' +
               '<span style="font-size:.7rem;font-weight:800;color:' + look.colour + ';letter-spacing:.05em;">' + look.label + '</span>' +

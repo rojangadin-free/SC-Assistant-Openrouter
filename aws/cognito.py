@@ -1,18 +1,47 @@
-import boto3
-import hmac
-import hashlib
 import base64
+import hashlib
+import hmac
+import os
+import re
+import tempfile
+
+import boto3
 from botocore.exceptions import ClientError
 from jose import jwt
-from config import COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, AWS_REGION
 
 # Ensure you add COGNITO_CLIENT_SECRET to your config.py and .env
-from config import COGNITO_CLIENT_SECRET 
+from config import (
+    AWS_REGION,
+    COGNITO_CLIENT_ID,
+    COGNITO_CLIENT_SECRET,
+    COGNITO_USER_POOL_ID,
+)
 
 cognito_client = boto3.client("cognito-idp", region_name=AWS_REGION)
 
+
+def signup_mutation_lock(username):
+    """Serialize signup changes across workers without unbounded lock files."""
+    from rag.store import _file_transaction
+    pool = hashlib.sha256(COGNITO_USER_POOL_ID.encode()).hexdigest()[:12]
+    stripe = int(hashlib.sha256(username.lower().encode()).hexdigest()[:8], 16) % 32
+    return _file_transaction(os.path.join(tempfile.gettempdir(), f"sc-signup-{pool}-{stripe}"))
+
+
+def _pending_account_error(username, expected_email):
+    user = cognito_client.admin_get_user(UserPoolId=COGNITO_USER_POOL_ID, Username=username)
+    attrs = {item["Name"]: item["Value"] for item in user.get("UserAttributes", [])}
+    if user.get("UserStatus") != "UNCONFIRMED" or attrs.get("email_verified") == "true":
+        return {"success": False, "message": "This account is already confirmed or cannot be changed here. Please sign in."}
+    if (attrs.get("email") or "").lower() != expected_email.lower():
+        return {"success": False, "message": "The signup email changed in another request. Refresh the page before continuing."}
+    return None
+
 COGNITO_ERROR_MESSAGES = {
     "UsernameExistsException": "This username or email is already registered. Please try logging in.",
+    "AliasExistsException": "This email is already registered. Please sign in to the existing account.",
+    "CodeDeliveryFailureException": "The verification email could not be delivered. Please try resending the code.",
+    "TooManyFailedAttemptsException": "Too many verification attempts. Please wait before trying again.",
     "InvalidPasswordException": "Your password is not strong enough. It must be at least 8 characters long and include an uppercase letter, a lowercase letter, a number, and a special character (e.g., !@#$%).",
     # Reached only for genuinely malformed input: `resolve_cognito_username`
     # translates an email to its username first, and misconfiguration is split
@@ -117,28 +146,62 @@ def resolve_cognito_username(identifier):
     if not _looks_like_email(identifier):
         return identifier
 
+    identifier = identifier.lower()
     try:
-        resp = cognito_client.list_users(
-            UserPoolId=COGNITO_USER_POOL_ID,
-            # Cognito's filter syntax needs the value in double quotes; it only
-            # supports prefix ("^=") and exact ("=") matching on one attribute.
-            Filter=f'email = "{identifier}"',
-            Limit=1,
-        )
-        users = resp.get("Users", [])
-        if users:
-            return users[0].get("Username") or identifier
+        escaped = identifier.replace("\\", "\\\\").replace('"', '\\"')
+        params = {"UserPoolId": COGNITO_USER_POOL_ID, "Filter": f'email = "{escaped}"', "Limit": 60}
+        fallback, confirmed = identifier, None
+        for _ in range(10):
+            resp = cognito_client.list_users(**params)
+            for user in resp.get("Users", []):
+                username = user.get("Username")
+                if not username:
+                    continue
+                if fallback == identifier:
+                    fallback = username
+                if user.get("UserStatus") == "CONFIRMED":
+                    confirmed = confirmed or username
+                    attributes = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
+                    if attributes.get("email_verified") == "true":
+                        return username
+            token = resp.get("PaginationToken")
+            if not token or token == params.get("PaginationToken"):
+                break
+            params["PaginationToken"] = token
+        # An abandoned, unconfirmed signup with the same email must not shadow
+        # the actual verified account during email sign-in.
+        return confirmed or fallback
     except ClientError as e:
-        print(f"[cognito] resolve_cognito_username lookup failed (non-fatal): {e}")
-    except Exception as e:
-        print(f"[cognito] resolve_cognito_username unexpected error (non-fatal): {e}")
+        print(f"[cognito] email lookup failed ({e.response.get('Error', {}).get('Code')}); trying the alias.")
+    except Exception as e:  # noqa: BLE001 - a verified email alias can still authenticate
+        print(f"[cognito] email lookup failed ({type(e).__name__}); trying the alias.")
 
     return identifier
 
-def sign_up_user(username, email, password):
-    """Signs up a new user in Cognito using SecretHash."""
-    if "@" in username or ' ' in username:
-        return {"success": False, "message": "Username cannot be an email address or contain spaces."}
+def normalize_signup_email(value):
+    """Validate a verification address without restricting its provider/domain."""
+    if not isinstance(value, str):
+        raise ValueError("Enter a valid email address.")  # noqa: TRY004 - missing form input is a validation error
+    email = value.strip().lower()
+    local, separator, domain = email.partition("@")
+    domain_pattern = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+    if (not separator or not re.fullmatch(domain_pattern, domain) or len(email) > 254
+            or not 1 <= len(local) <= 64 or local.startswith(".") or local.endswith(".")
+            or ".." in local or not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)):
+        raise ValueError("Enter a valid email address.")
+    return email
+
+
+def sign_up_user(username, email, password, *, student_id, display_name=None):
+    """Create an unconfirmed account with an independent, self-reported student ID."""
+    try:
+        email = normalize_signup_email(email)
+    except ValueError as error:
+        return {"success": False, "message": str(error)}
+    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
+        return {"success": False, "message": "Use 1-64 letters, numbers, periods, underscores or hyphens for your username."}
+    if not isinstance(student_id, str) or not re.fullmatch(r"[0-9]{1,64}", student_id):
+        return {"success": False, "message": "Enter your ID number using 1-64 digits (0-9) only."}
 
     try:
         secret_hash = get_secret_hash(username)
@@ -149,24 +212,63 @@ def sign_up_user(username, email, password):
             Password=password,
             UserAttributes=[
                 {"Name": "email", "Value": email},
-                {"Name": "name", "Value": username},
-                {"Name": "custom:role", "Value": "user"}
+                {"Name": "name", "Value": display_name or username},
+                {"Name": "custom:student_id", "Value": student_id},
             ]
         )
         
-        # Admin actions do NOT require SecretHash, but require Admin IAM permissions
-        cognito_client.admin_confirm_sign_up(
-            UserPoolId=COGNITO_USER_POOL_ID,
-            Username=username
-        )
-        cognito_client.admin_update_user_attributes(
-            UserPoolId=COGNITO_USER_POOL_ID,
-            Username=username,
-            UserAttributes=[{'Name': 'email_verified', 'Value': 'true'}]
-        )
-        return {"success": True, "user_sub": resp.get("UserSub")}
+        requires_confirmation = not resp.get("UserConfirmed", False)
+        return {"success": True, "user_sub": resp.get("UserSub"),
+                "requires_confirmation": requires_confirmation,
+                "delivery_pending": requires_confirmation and not resp.get("CodeDeliveryDetails")}
     except ClientError as e:
+        error = e.response.get("Error", {})
+        message = (error.get("Message") or "").lower()
+        if error.get("Code") in ("InvalidParameterException", "NotAuthorizedException") and (
+            "custom:student_id" in message or "unauthorized attribute" in message
+            or "attribute does not exist in the schema" in message
+        ):
+            print("[cognito] Signup profile schema or app-client attribute write access is not configured.")
+            return {"success": False, "configuration_error": True,
+                    "message": "Account creation requires a server configuration update. Please contact the school administrator."}
+        # Cognito can create the UNCONFIRMED user even if delivery is throttled.
+        # Keep a confirmation/resend path, never an authenticated app session.
+        if e.response.get("Error", {}).get("Code") in ("CodeDeliveryFailureException", "LimitExceededException"):
+            return {"success": True, "requires_confirmation": True, "delivery_pending": True,
+                    "message": "Your signup needs verification, but the code could not be sent. Please try resending it."}
         return {"success": False, "message": handle_cognito_error(e)}
+
+
+def confirm_signup_user(username, code, *, expected_email):
+    try:
+        error = _pending_account_error(username, expected_email)
+        if error:
+            return error
+        cognito_client.confirm_sign_up(
+            ClientId=COGNITO_CLIENT_ID, Username=username,
+            SecretHash=get_secret_hash(username), ConfirmationCode=code,
+            ForceAliasCreation=False,
+        )
+        return {"success": True, "message": "Your email is verified. You can now sign in."}
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") == "NotAuthorizedException":
+            return {"success": False, "message": "Verification could not be completed. If you already verified your email, sign in instead."}
+        return {"success": False, "message": handle_cognito_error(error)}
+
+
+def resend_signup_code(username, *, expected_email):
+    try:
+        error = _pending_account_error(username, expected_email)
+        if error:
+            return error
+        cognito_client.resend_confirmation_code(
+            ClientId=COGNITO_CLIENT_ID, Username=username,
+            SecretHash=get_secret_hash(username),
+        )
+        return {"success": True, "message": "A new verification code was sent to your email."}
+    except ClientError as error:
+        return {"success": False, "message": handle_cognito_error(error)}
+
 
 def login_user(identifier, password):
     """Logs in a user by email OR username and returns authentication tokens.
@@ -211,13 +313,15 @@ def forgot_password(email):
             SecretHash=secret_hash,
             Username=username
         )
-        return {"success": True, "message": "If an account with that email exists, you will receive a code to reset your password."}
+        return {"success": True, "username": username,
+                "message": "If an account with that email exists, you will receive a code to reset your password."}
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code")
         # Same non-committal reply for a bad address as for an unknown account:
         # neither should tell an outsider whether an email is registered here.
         if code in ("UserNotFoundException", "InvalidParameterException"):
-            return {"success": True, "message": "If an account with that email exists, you will receive a code to reset your password."}
+            return {"success": True, "username": username,
+                    "message": "If an account with that email exists, you will receive a code to reset your password."}
         return {"success": False, "message": handle_cognito_error(e)}
 
 def reset_password(email, code, new_password):
@@ -238,4 +342,10 @@ def reset_password(email, code, new_password):
         )
         return {"success": True, "message": "Password has been reset successfully!"}
     except ClientError as e:
-        return {"success": False, "message": handle_cognito_error(e)}
+        error_code = e.response.get("Error", {}).get("Code")
+        if error_code in ("CodeMismatchException", "ExpiredCodeException", "UserNotFoundException", "UserNotConfirmedException"):
+            return {"success": False, "retry_allowed": error_code != "ExpiredCodeException",
+                    "message": "The verification code is incorrect or expired."}
+        return {"success": False,
+                "retry_allowed": error_code in ("InvalidPasswordException", "PasswordHistoryPolicyViolationException"),
+                "message": handle_cognito_error(e)}

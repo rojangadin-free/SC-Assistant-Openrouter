@@ -67,6 +67,7 @@ with open(_VOCAB, "w", encoding="utf-8") as fh:
         # exactly one substitution from "talk" and "para".
         "deans": 33, "programs": 70, "task": 4, "tasks": 6, "part": 11,
         "items": 8, "counseling": 26, "receipt": 9, "procedure": 18,
+        "history": 20, "moral": 12,
     }}, fh)
 
 
@@ -88,6 +89,9 @@ from rag.latency import Deadline, Timings, pick_search_query, should_optimize  #
 from rag.dictation import dictation_variants  # noqa: E402
 from rag.language import language_variants  # noqa: E402
 from rag import reranker  # noqa: E402
+from rag.query_optimizer import (  # noqa: E402
+    optimizer_messages, parse_interpretation, interpretation_guidance, QueryInterpretation,
+)
 
 reload_vocabulary()
 
@@ -126,6 +130,50 @@ check("and it is reported as a misspelling",
 check("the repair is exposed as a (typed, meant) pair",
       misspellings("latin honir requirements") == [("honir", "honor")],
       misspellings("latin honir requirements"))
+
+
+# ============================================================
+section("1b. Difficult spellings require full-query interpretation")
+# ============================================================
+PHRASE_TYPOS = [
+    ("latin hnit requirements", "latin honor requirements"),
+    ("latin hnir requirements", "latin honor requirements"),
+    ("Latin hnit requirements?", "Latin honor requirements?"),
+    ("latin hnoir requirements", "latin honor requirements"),
+    ("latni honors requirements", "latin honors requirements"),
+    ("tuition feez for BSIT", "tuition fees for BSIT"),
+    ("tuition feess for BSIT", "tuition fees for BSIT"),
+    ("cum ldae requirements", "cum laude requirements"),
+    ("good mroal certificate", "good moral certificate"),
+    ("hnit policy; latin hnit requirements", "hnit policy; latin honor requirements"),
+    ("show 'honir' requirements", "show 'honor' requirements"),
+    ("honir- requirements", "honor- requirements"),
+]
+for typed, meant in PHRASE_TYPOS:
+    check(f"contextual review is not skipped: {typed!r}", should_optimize(typed, []))
+for typed, meant in PHRASE_TYPOS[-2:]:
+    check(f"local repair preserves punctuation: {typed!r}", correct_query(typed) == meant)
+
+for question in (
+    "hnit requirements", "admission hnir requirements",
+    "latin history requirements", "latin hint requirements",
+    "latin HNIT requirements", "latin Hnir requirements",
+    "latin hzzzz requirements", "latni hnit requirements",
+    "latin. hnit requirements", "latin hnit101 requirements",
+    "latin 101hnit requirements", "latin honir101 requirements",
+    "latin course_hnir requirements",
+    "how do i keep a good mood during exams", "good mrna structure",
+    "certificaci\u00f3n requirements", "honir\uff11 policy",
+    "latin hnit\uff11\uff10\uff11 requirements", "honir\u0301 requirements",
+    "latin hnit\u2011101 requirements", "latin hnit\u0301 requirements",
+    "latin hnit\u1ab0101 requirements", "is tuition free for BSIT",
+):
+    check(f"no unsupported phrase guess: {question!r}",
+          correct_query(question) == "", correct_query(question))
+check("short typos are not guessed without their phrase context",
+      suggest("hnit") is None and suggest("hnir") is None)
+check("a severe typo is not guessed by a special-case local phrase table",
+      misspellings("latin hnit requirements") == [])
 
 
 # ============================================================
@@ -256,8 +304,7 @@ REAL_WORD = [
 ]
 
 for typed, meant in REAL_WORD:
-    got = correct_query(typed)
-    check(f"{typed:<28} -> {meant}", got == meant, got)
+    check(f"real-word interpretation is requested: {typed!r}", should_optimize(typed, []))
 
 # And the half that makes it safe. "lost" is a real word students really use,
 # and every one of these is a genuine question about a lost thing. A correction
@@ -291,7 +338,7 @@ for question in KEEP_WANT:
 # copy — otherwise one repair manufactures the context for the next and a
 # single typo cascades into a rewritten question.
 check("a repair does not create the context for another",
-      len(misspellings("lost the dens")) == 2,
+      misspellings("lost the dens") == [("dens", "deans")],
       misspellings("lost the dens"))
 
 # Short real words sit one substitution from unrelated corpus words, which is
@@ -339,17 +386,17 @@ check("and mid-conversation too",
 # Both of these carry three content words, which is what makes them searchable
 # as typed — "requirements for enrollment" has only two, so it is thin and would
 # wait for its own (pre-existing) reason.
-check("a correctly spelled self-contained question still skips it",
-      should_optimize("who is the dean of the college of education", []) is False)
-check("a correct question skips it mid-conversation as well",
+check("known words still receive sentence-level validation",
+      should_optimize("who is the dean of the college of education", []) is True)
+check("a complete question is interpreted mid-conversation as well",
       should_optimize("who is the dean of the college of education",
-                      [{"role": "user", "content": "hi"}]) is False)
+                      [{"role": "user", "content": "hi"}]) is True)
 # Not "how much is the tuition for THIS semester": `this` is a deictic, so that
 # question waits for a pre-existing reason of its own (rag/latency.py rule 2b)
 # and would prove nothing about spelling either way.
-check("a correct fee question still skips it",
+check("a fee question still receives contextual validation",
       should_optimize("how much is the tuition fee for bsit",
-                      [{"role": "user", "content": "hi"}]) is False)
+                      [{"role": "user", "content": "hi"}]) is True)
 
 
 
@@ -397,6 +444,18 @@ check("a missing vocabulary file still loads the seed terms",
       _spelling.vocabulary_size() > 0)
 check("and the headline repair still works from seeds alone",
       _spelling.suggest("honir") == "honor", _spelling.suggest("honir"))
+for typo in ("hnit", "hnir"):
+    check(f"missing vocabulary still requests contextual interpretation: {typo}",
+          should_optimize(f"latin {typo} requirements", []))
+check("missing vocabulary is not a reason to guess at a valid word",
+      _spelling.correct_query("latin hint requirements") == "")
+check("a seed-only repair cannot erase the fee-waiver meaning",
+      _spelling.correct_query("is tuition free for BSIT") == "")
+for typo in ("hnit", "hnir"):
+    noisy_vocab = _spelling._Vocabulary({**_spelling._vocabulary().freq, typo: 1})
+    with patch.object(_spelling, "_vocab", noisy_vocab):
+        check(f"one OCR occurrence cannot disable interpretation: {typo}",
+              should_optimize(f"latin {typo} requirements", []))
 
 
 # ============================================================
@@ -412,15 +471,15 @@ check("chain.py adds the corrected phrasing as a retrieval probe",
       "spelling_variants(query)" in chain_src)
 check("the expansion helper keeps its input as the first query",
       "queries = [query]" in chain_src)
-check("the optimizer prompt is told about the misspellings",
-      "misspellings(user_text)" in chain_src)
-check("and it has an explicit spelling rule",
-      "2. SPELLING:" in chain_src)
+check("the optimizer receives original wording and local hints separately",
+      "optimizer_messages(original_text, user_text, history)" in chain_src)
+check("interpretations are validated before use",
+      "parse_interpretation(response.content, original_text, history)" in chain_src)
 
 with open("rag/latency.py", encoding="utf-8") as fh:
     latency_src = fh.read()
-check("should_optimize() consults the spell checker",
-      "has_misspelling(q)" in latency_src)
+check("dictionary membership no longer gates contextual review",
+      "has_misspelling(q)" not in latency_src)
 
 with open("store_index.py", encoding="utf-8") as fh:
     index_src = fh.read()
@@ -482,21 +541,34 @@ stale = SimpleNamespace(
     page_content="ARCHIVED DIRECTORY: Graduate Studies dean: Dr. Previous Dean.",
     metadata={"source": "archived-directory.txt", "page": 1, "chunk_id": "stale"},
 )
+honors = SimpleNamespace(
+    page_content="GRADUATION HONORS AND AWARDS: Latin honors eligibility requirements.",
+    metadata={"source": "handbook.txt", "page": 52, "chunk_id": "honors"},
+)
+admission = SimpleNamespace(
+    page_content="ADMISSION REQUIREMENTS: Freshmen submit admission documents.",
+    metadata={"source": "handbook.txt", "page": 45, "chunk_id": "admission"},
+)
 probes, optimizer_prompts, scored_queries = [], [], []
 
 
 def fetch(query):
     probes.append(query)
+    if "latin" in query.lower().split():
+        return [honors, admission] if "honor" in query.lower() else [admission]
     return [stale] if "lost" in query.split() or "dens" in query.split() else [current]
 
 
 def optimize(messages):
     if isinstance(messages[-1], dict):
         optimizer_prompts.append(messages)
-        latest = messages[-1]["content"].split("Latest Question: ", 1)[1]
-        # Echoing is supported; the local repair must not depend on an LLM
-        # obeying a spelling hint or even returning within its time budget.
-        return SimpleNamespace(content=latest.split("\nLIKELY MISSPELLINGS", 1)[0])
+        latest = json.loads(messages[-1]["content"])["original_question"]
+        # This is a deterministic model double, not production correction logic.
+        question = dict(PHRASE_TYPOS + REAL_WORD).get(latest, correct_query(latest) or latest)
+        return SimpleNamespace(content=json.dumps({
+            "status": "unchanged" if question == latest else "corrected",
+            "question": question, "search_query": question, "clarification": "",
+        }))
     return SimpleNamespace(content="Transcribed image text.")
 
 
@@ -509,6 +581,8 @@ def score(pairs, **kwargs):
     return [10.0 if (
         ("lost" in query.split() and "ARCHIVED" in passage)
         or ("lost" not in query.split() and "CURRENT" in passage)
+        or ("honor" in query.lower() and "HONORS" in passage)
+        or ("honor" not in query.lower() and "ADMISSION" in passage)
     ) else 0.0 for query, passage in pairs]
 
 
@@ -517,13 +591,16 @@ namespace = {
     "List": list, "Dict": dict, "Optional": Optional, "ChatState": dict,
     "StateGraph": _Graph, "END": None, "InMemorySaver": lambda: None,
     "HumanMessage": SimpleNamespace, "SystemMessage": SimpleNamespace,
-    "correct_query": correct_query, "misspellings": misspellings,
+    "correct_query": correct_query,
+    "optimizer_messages": optimizer_messages, "parse_interpretation": parse_interpretation,
+    "interpretation_guidance": interpretation_guidance,
     "spelling_variants": spelling_variants, "dictation_variants": dictation_variants,
     "language_variants": language_variants, "should_optimize": should_optimize,
     "pick_search_query": pick_search_query, "Deadline": Deadline, "Timings": Timings,
     "retriever": SimpleNamespace(invoke=fetch),
     "rerank": reranker.rerank, "rerank_multi": reranker.rerank_multi,
     "summarizer": SimpleNamespace(invoke=optimize),
+    "query_optimizer_model": SimpleNamespace(invoke=optimize),
     "source_priority": lambda *args, **kwargs: {}, "doc_key": lambda source: source,
     "get_doc_dates": lambda: {},
     "authority_block": lambda *args: "", "freshness_block": lambda *args, **kwargs: "",
@@ -548,17 +625,24 @@ namespace["FINAL_TOP_K"] = 1
 node = namespace["create_graph"]()
 
 
-def chat_snapshot(question, history=None, image=None):
+def chat_snapshot(question, history=None, image=None, role="student"):
     probes.clear()
     optimizer_prompts.clear()
     scored_queries.clear()
-    state = {"input": question, "chat_history": history or [], "image_data": image}
+    state = {"input": question, "chat_history": history or [], "image_data": image,
+             "role": role}
     result = node(state)
     return {
         "messages": [message.content for message in result["messages_to_llm"]],
         "citations": result["citations"], "probes": sorted(probes),
         "optimizer": list(optimizer_prompts), "scores": sorted(set(scored_queries)),
     }, state
+
+
+def answer_path(snapshot):
+    # The optimizer must see each original input; everything AFTER interpretation
+    # should match the correctly worded question's answer path.
+    return {key: value for key, value in snapshot.items() if key != "optimizer"}
 
 
 history = [{"role": "user", "content": "what programs are offered?"}]
@@ -570,8 +654,8 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
               typo["messages"][-1] == "list the deans", typo["messages"][-1])
         check(f"reranker {label}: identical retrieval probes",
               typo["probes"] == clean["probes"], typo["probes"])
-        check(f"reranker {label}: identical optimizer input",
-              typo["optimizer"] == clean["optimizer"])
+        check(f"reranker {label}: optimizer can inspect the unaltered input",
+              json.loads(typo["optimizer"][0][-1]["content"])["original_question"] == "lost the dens")
         check(f"reranker {label}: identical ranking queries",
               typo["scores"] == clean["scores"], typo["scores"])
         check(f"reranker {label}: identical context and selected evidence",
@@ -583,25 +667,113 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
 with patch.object(reranker, "_load_model", return_value=None):
     clean, _ = chat_snapshot("list the deans")
     typo, _ = chat_snapshot("lost the dens")
-    check("a first-turn text chat takes the identical repaired answer path", typo == clean)
-    with patch.dict(namespace, {"summarizer": SimpleNamespace(invoke=unavailable_optimizer)}):
-        clean, _ = chat_snapshot("list the deans")
-        typo, _ = chat_snapshot("lost the dens")
-        check("optimizer failure still uses the repaired question and evidence",
-              typo == clean and typo["messages"][-1] == "list the deans"
-              and typo["citations"] == ["current"])
+    check("a first-turn text chat takes the identical repaired answer path", answer_path(typo) == answer_path(clean))
+    with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=unavailable_optimizer)}):
+        typo, _ = chat_snapshot("latin honir requirements")
+        check("optimizer failure retains conservative local repair and signals uncertainty",
+              typo["messages"][-1] == "latin honor requirements"
+              and typo["citations"] == ["honors"]
+              and "interpretation was unavailable" in typo["messages"][0])
     clean, _ = chat_snapshot("latin honor requirements")
     typo, _ = chat_snapshot("latin honir requirements")
-    check("a repaired self-contained question uses the same optimizer skip path",
-          typo == clean and typo["optimizer"] == [])
+    check("a complete question is interpreted and uses the same answer path",
+          answer_path(typo) == answer_path(clean) and len(typo["optimizer"]) == 1)
     clean, _ = chat_snapshot("list the deans", image="test-image")
     typo, state = chat_snapshot("lost the dens", image="test-image")
     check("an image question also sends the repaired wording without changing the image",
-          typo == clean and state["image_data"] == "test-image")
+          answer_path(typo) == answer_path(clean) and state["image_data"] == "test-image")
     for question in (*KEEP_LOST, *KEEP_WANT, "Pila an bayad sa enrollment?", "what is b s i t"):
         unchanged, _ = chat_snapshot(question)
         check(f"chat keeps non-typos unchanged: {question!r}",
               unchanged["messages"][-1] == question)
+
+    def reject_bad_hint(messages):
+        question = json.loads(messages[-1]["content"])["original_question"]
+        return SimpleNamespace(content=json.dumps({
+            "status": "unchanged", "question": question, "search_query": question,
+            "clarification": "",
+        }))
+
+    with patch.dict(namespace, {
+        "correct_query": lambda text: text.replace("meal", "medal"),
+        "spelling_variants": lambda text: [text.replace("meal", "medal")],
+        "query_optimizer_model": SimpleNamespace(invoke=reject_bad_hint),
+    }):
+        snapshot, _ = chat_snapshot("what is a good meal before exams")
+        check("retrieval cannot reapply a spelling hint rejected by the interpreter",
+              snapshot["messages"][-1] == "what is a good meal before exams"
+              and all("medal" not in query for query in snapshot["probes"] + snapshot["scores"]))
+
+
+# The exact reported failures must reach honors evidence, including for a guest
+# whose previous conversation was about admission. These execute the real node.
+from rag import roles  # noqa: E402
+admission_history = [
+    {"role": "user", "content": "freshman admission requirements"},
+    {"role": "assistant", "content": "Freshmen submit admission documents."},
+]
+with patch.dict(namespace, {
+    "resolve_role": roles.resolve_role, "role_block": roles.role_block,
+    "system_prompt": answer_prompts.system_prompt,
+}):
+    for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
+        with patch.object(reranker, "_load_model", return_value=model):
+            clean, _ = chat_snapshot("latin honor requirements", admission_history, role="guest")
+            for word in ("hnit", "hnir", "honir"):
+                question = f"latin {word} requirements"
+                typo, state = chat_snapshot(question, admission_history, role="guest")
+                check(f"reranker {label}: {word} takes the clean honors answer path",
+                      answer_path(typo) == answer_path(clean) and typo["citations"] == ["honors"])
+                check(f"reranker {label}: {word} never reaches retrieval or generation",
+                      all(word not in q.split() for q in typo["probes"] + typo["scores"])
+                      and typo["messages"][-1] == "latin honor requirements")
+                check(f"reranker {label}: {word} preserves stored input and guest role",
+                      state["input"] == question and state["role"] == "guest"
+                      and state["chat_history"] == admission_history)
+
+    with patch.object(reranker, "_load_model", return_value=None):
+        with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=unavailable_optimizer)}):
+            snapshot, _ = chat_snapshot("what about latin hnit requirements", admission_history)
+            check("unresolved wording is not silently assigned a replacement topic on failure",
+                  snapshot["messages"][-1] == "what about latin hnit requirements"
+                  and "clarification" in snapshot["messages"][0])
+        late = concurrent.futures.Future()
+        late.set_running_or_notify_cancel()
+        with patch.dict(namespace, {"Deadline": lambda: SimpleNamespace(expired=lambda: False, remaining=lambda: 0)}):
+            with patch.object(namespace["optimizer_pool"], "submit",
+                              return_value=late):
+                snapshot, _ = chat_snapshot("what about latin hnir requirements", admission_history)
+                late.set_result(QueryInterpretation("corrected", "latin honor requirements", "latin honor requirements"))
+                check("a late result cannot mutate a response already being prepared",
+                      snapshot["messages"][-1] == "what about latin hnir requirements"
+                      and "interpretation was unavailable" in snapshot["messages"][0])
+        phases = []
+        with patch.object(namespace["optimizer_pool"], "submit", side_effect=runtime.CapacityError("busy")):
+            with patch.dict(namespace, {"emit_phase": lambda callback, phase, **kwargs: phases.append(phase)}):
+                snapshot, _ = chat_snapshot("latin hnit requirements")
+                check("capacity refusal uses safe wording and uncertainty guidance",
+                      snapshot["messages"][-1] == "latin hnit requirements"
+                      and "interpretation was unavailable" in snapshot["messages"][0])
+                check("a busy optimizer never claims it is understanding the question",
+                      "understanding" not in phases)
+
+        def ambiguous(messages):
+            question = json.loads(messages[-1]["content"])["original_question"]
+            return SimpleNamespace(content=json.dumps({
+                "status": "clarify", "question": question, "search_query": "",
+                "clarification": "Which policy do you mean?",
+            }))
+
+        with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=ambiguous)}):
+            snapshot, _ = chat_snapshot("requirements for that thing")
+            check("genuine ambiguity asks for clarification without retrieving an assumed topic",
+                  snapshot["probes"] == [] and snapshot["citations"] == []
+                  and "Ask ONLY one" in snapshot["messages"][0])
+        with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=lambda messages: SimpleNamespace(content="not JSON"))}):
+            snapshot, _ = chat_snapshot("latin hnit requirements")
+            check("malformed optimizer output cannot become a search query",
+                  all("not JSON" not in query for query in snapshot["probes"])
+                  and snapshot["messages"][-1] == "latin hnit requirements")
 
 
 # ============================================================

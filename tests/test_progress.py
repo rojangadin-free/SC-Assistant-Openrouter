@@ -333,13 +333,12 @@ check(
     "documents=len(initial_docs)" in chain_src,
 )
 
-# "understanding" must be conditional: rag/latency.py SKIPS the optimizer for a
-# self-contained question, and announcing a phase that was skipped is precisely
-# the dishonesty this module exists to avoid.
+# "understanding" requires submitted work, not just a desired rewrite: empty
+# input, exhausted budgets and a busy optimizer pool must not claim this phase.
 check(
     "'understanding' is only reported when the rewrite actually runs",
     re.search(
-        r"if wants_rewrite:\s*\n\s*emit_phase\(progress,\s*\"understanding\"\)",
+        r"if future_query is not None:\s*\n\s*emit_phase\(progress,\s*\"understanding\"\)",
         chain_src,
     )
     is not None,
