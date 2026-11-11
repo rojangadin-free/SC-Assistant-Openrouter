@@ -62,7 +62,7 @@
 {% endblock %}
 
 {% block content %}
-  <div class="content-area">
+  <div class="content-area dashboard-content">
     <div id="uploadSection" class="dashboard-section">
 
       <div class="section-header">
@@ -114,10 +114,17 @@
 
       <div class="user-list-container">
         <h3>Registered users</h3>
+        <div class="sc-field user-search">
+          <label class="sc-label" for="userSearch">Search users</label>
+          <input type="search" id="userSearch" class="sc-input" placeholder="Name, email, or username"
+                 autocomplete="off" spellcheck="false" aria-describedby="userSearchStatus" aria-controls="userListTable" disabled>
+          <p id="userSearchStatus" class="user-search-status" role="status" aria-live="polite">Loading users...</p>
+        </div>
         <div id="userListLoader" style="display: none;">
           <div class="loader-spinner"></div>
         </div>
-        <div class="table-wrapper">
+        <p id="userTableHint" class="mobile-table-hint">Swipe or scroll for all account details. Edit actions stay visible.</p>
+        <div class="table-wrapper" tabindex="0" role="region" aria-label="User accounts table" aria-describedby="userTableHint">
           <table id="userListTable">
             <thead>
               <tr>
@@ -360,7 +367,8 @@
           </button>
         </div>
 
-        <div class="sc-scroll-x">
+        <p id="reportsTableHint" class="mobile-table-hint">Swipe for report details. Open View to review and resolve a report.</p>
+        <div class="sc-scroll-x" tabindex="0" role="region" aria-label="Reports table" aria-describedby="reportsTableHint">
           <table id="reportsTable" class="sc-table">
             <thead>
               <tr style="background:var(--bg-main);">
@@ -588,7 +596,7 @@
         <h3 class="sc-h3">
           <i class="fas fa-plus-circle" style="color:var(--ui-success-ink);"></i>&nbsp;Add or correct a period
         </h3>
-        <div style="display:grid;grid-template-columns:1.4fr .9fr .9fr 1.4fr auto;gap:.6rem;align-items:end;">
+        <div class="admin-editor-grid calendar-editor-grid">
           <div>
             <label class="sc-label">Event name</label>
             <input aria-label="Calendar entry label" type="text" id="calLabel" placeholder="Enrollment"
@@ -640,7 +648,7 @@
         <div class="sc-row sc-mt6">
           <label class="sc-label--inline">Year, if the text omits it</label>
           <input aria-label="Academic year for the scan" type="number" id="calScanYear" placeholder="2026" min="2000" max="2100"
-                 style="width:6.5rem;padding:.45rem .6rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.85rem;">
+                 class="sc-input calendar-scan-year">
           <button id="calScanBtn"
                   class="sc-btn sc-btn--blue">
             <i class="fas fa-search"></i> Find dates
@@ -662,7 +670,7 @@
         </p>
         <div class="sc-row">
           <input aria-label="Test question for calendar preview" type="text" id="calPreviewQ" placeholder="can i still enroll?"
-                 style="flex:1;min-width:16rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:.875rem;">
+                 class="sc-input calendar-preview-query">
           <input aria-label="Date to preview the answer for" type="date" id="calPreviewDate"
                  class="sc-select sc-select--mid-pad">
           <button id="calPreviewBtn"
@@ -731,7 +739,7 @@
                       class="sc-textarea"></textarea>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:.6rem;align-items:end;margin-top:.6rem;">
+        <div class="admin-editor-grid announcement-editor-grid sc-mt6">
           <div>
             <label class="sc-label">Urgency</label>
             <select aria-label="Announcement priority" id="annPriority"
@@ -817,25 +825,25 @@
 
 
 
-    <div class="confirm-dialog" id="reportDetailModal">
-      <div class="confirm-box" id="reportDetailBox" style="max-width: 700px; width: 95%; transition: all 0.2s ease;">
+    <div class="confirm-dialog" id="reportDetailModal" role="dialog" aria-modal="true" aria-labelledby="reportDetailTitle">
+      <div class="confirm-box" id="reportDetailBox" style="max-width: 700px; transition: all 0.2s ease;">
         <h3 class="confirm-title" style="display:flex;justify-content:space-between;align-items:center;">
-          <span>Report Detail</span>
+          <span id="reportDetailTitle">Report Detail</span>
           <div style="display:flex; align-items:center;">
             {# .sc-icon-btn is what gives this a 44px hit area (polish.css). It
                measured 15×24 without it — an icon-sized button with no box, so
                the target was the glyph itself. aria-label because the accessible
                name was coming from title alone, which not every screen reader
                announces. #}
-            <button id="toggleFullScreenBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.1rem;color:var(--text-secondary);cursor:pointer;margin-right:12px;" title="Toggle Full Screen" aria-label="Toggle full screen">
+            <button type="button" id="toggleFullScreenBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.1rem;color:var(--text-secondary);cursor:pointer;margin-right:12px;" title="Toggle Full Screen" aria-label="Toggle full screen" aria-pressed="false">
               <i class="fas fa-expand"></i>
             </button>
             {# Was 14×30, and its accessible name was the character "×". #}
-            <button id="closeReportDetailBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.4rem;color:var(--text-secondary);cursor:pointer;" aria-label="Close report">&times;</button>
+            <button type="button" id="closeReportDetailBtn" class="sc-icon-btn" style="background:none;border:none;font-size:1.4rem;color:var(--text-secondary);cursor:pointer;" aria-label="Close report">&times;</button>
           </div>
         </h3>
         
-        <div id="rd-details-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem;font-size:0.875rem;flex-shrink:0;">
+        <div id="rd-details-grid" class="report-details-grid" style="margin-bottom:1.25rem;font-size:0.875rem;flex-shrink:0;">
           <div><strong style="color:var(--text-secondary);">Student:</strong> <span id="rd-email">—</span></div>
           <div><strong style="color:var(--text-secondary);">Date:</strong> <span id="rd-date">—</span></div>
           <div><strong style="color:var(--text-secondary);">Status:</strong> <span id="rd-status">—</span></div>
@@ -847,16 +855,16 @@
           <div id="rd-other" style="margin-top:0.25rem;padding:0.5rem;background:var(--bg-surface);border-radius:6px;border:1px solid var(--border);">—</div>
         </div>
 
-        <div class="context-wrapper" style="background:var(--bg-main);border-radius:8px;padding:1.25rem;border:1px solid var(--border);margin-bottom:1.25rem;display:flex;flex-direction:column;">
+        <div class="context-wrapper report-context" style="background:var(--bg-main);border-radius:8px;border:1px solid var(--border);margin-bottom:1.25rem;display:flex;flex-direction:column;">
           <div id="rd-context-title" style="font-size:.72rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.75rem;flex-shrink:0;text-align:center;">Conversation Context</div>
-          <div id="rd-full-conversation" style="font-size:.875rem;color:var(--text-primary);line-height:1.5;max-height:350px;overflow-y:auto;display:flex;flex-direction:column;gap:1rem;padding-right:8px; width: 100%; max-width: 850px; margin: 0 auto;">
+          <div id="rd-full-conversation" tabindex="0" role="region" aria-label="Reported conversation" style="font-size:.875rem;color:var(--text-primary);line-height:1.5;max-height:350px;overflow-y:auto;display:flex;flex-direction:column;gap:1rem;padding-right:8px; width: 100%; max-width: 850px; margin: 0 auto;">
             </div>
         </div>
 
         <div class="confirm-buttons" id="rdActions" style="flex-shrink:0;">
-          <button class="confirm-button cancel-button" id="cancelReportDetailBtn">Cancel</button>
-          <button id="rdIgnoreBtn" class="sc-btn sc-btn--ghost"><i class="fas fa-ban"></i> Ignore</button>
-          <button id="rdDoneBtn" class="sc-btn sc-btn--green"><i class="fas fa-check"></i> Mark Done</button>
+          <button type="button" class="confirm-button cancel-button" id="cancelReportDetailBtn">Cancel</button>
+          <button type="button" id="rdIgnoreBtn" class="sc-btn sc-btn--ghost"><i class="fas fa-ban"></i> Ignore</button>
+          <button type="button" id="rdDoneBtn" class="sc-btn sc-btn--green"><i class="fas fa-check"></i> Mark Done</button>
         </div>
       </div>
     </div>
@@ -1007,18 +1015,29 @@
         url: '/admin/reports/api/resolve', method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify({ report_id: id, status: status }),
-        success: function() { $('#reportDetailModal').removeClass('active'); loadReports(); },
+        success: function() { if (currentRid === id) window.closeReportDetail(); loadReports(); },
         error:   function() { window.showNotification('Failed to update report.', 'error'); }
       });
     }
 
     // ── Detail Modal ─────────────────────────────────────────────
     let currentRid = null;
+    let reportOpener = null;
 
     function resetFullscreen() {
       $('#reportDetailBox').removeClass('modal-fullscreen');
       $('#toggleFullScreenBtn i').removeClass('fa-compress').addClass('fa-expand');
+      $('#toggleFullScreenBtn').attr('aria-pressed', 'false');
     }
+
+    window.closeReportDetail = function(restoreFocus = true) {
+      if (!$('#reportDetailModal').hasClass('active')) return;
+      $('#reportDetailModal').removeClass('active');
+      resetFullscreen();
+      currentRid = null;
+      if (restoreFocus && reportOpener && $(reportOpener).is(':visible')) reportOpener.focus();
+      reportOpener = null;
+    };
 
     // Full screen toggle functionality
     $('#toggleFullScreenBtn').on('click', function() {
@@ -1031,6 +1050,7 @@
         box.addClass('modal-fullscreen');
         icon.removeClass('fa-expand').addClass('fa-compress');
       }
+      $(this).attr('aria-pressed', String(box.hasClass('modal-fullscreen')));
       
       // Keep scroll at bottom when resizing
       setTimeout(() => {
@@ -1040,9 +1060,11 @@
     });
 
     window.openReportDetail = function(id) {
-      currentRid = id;
       const r = allReports.find(x => x.report_id === id);
       if (!r) return;
+      currentRid = id;
+      reportOpener = document.activeElement;
+      resetFullscreen();
       
       const statusStyle = { 
         pending: 'background:#fef3c7;color:#b45309', 
@@ -1061,6 +1083,7 @@
       
       if (r.reporter_uid && r.conv_id) {
         $.getJSON(`/admin/reports/api/conversation/${r.reporter_uid}/${r.conv_id}`, function(conv) {
+          if (currentRid !== id || !$('#reportDetailModal').hasClass('active')) return;
           if (conv && conv.messages && conv.messages.length > 0) {
             let conversationHtml = '';
             
@@ -1096,7 +1119,7 @@
               
               conversationHtml += `
                 <div style="display: flex; width: 100%; justify-content: ${rowJustify}; margin-bottom: 8px;">
-                  <div style="max-width: 85%; padding: 12px 16px; border-radius: 12px; ${bgStyle} ${borderStyle}">
+                  <div class="report-message" style="max-width: 85%; padding: 12px 16px; border-radius: 12px; ${bgStyle} ${borderStyle}">
                     <strong style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-secondary); display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; letter-spacing: 0.04em;">
                       <span>${label}</span>
                       ${reportedTag}
@@ -1119,6 +1142,7 @@
             $('#rd-full-conversation').html('<div style="color:var(--text-secondary);font-style:italic;text-align:center;padding:1rem;">No conversation logs found.</div>');
           }
         }).fail(function() {
+          if (currentRid !== id || !$('#reportDetailModal').hasClass('active')) return;
           $('#rd-full-conversation').html(`
             <div style="color:var(--ui-danger-ink);font-size:0.8rem;margin-bottom:0.5rem;"><i class="fas fa-exclamation-triangle"></i> Failed to retrieve entire context. Displaying reported text snippet:</div>
             <div style="padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; font-style: italic; color: var(--text-secondary);">${r.msg_snippet || '—'}</div>
@@ -1134,20 +1158,18 @@
       const isPending = (r.status === 'pending');
       $('#rdDoneBtn, #rdIgnoreBtn').toggle(isPending);
       $('#reportDetailModal').addClass('active');
+      $('#reportDetailBox').scrollTop(0);
+      $('#closeReportDetailBtn').trigger('focus');
     };
 
     $('#rdDoneBtn').on('click',   function() { resolveReport(currentRid, 'done'); resetFullscreen(); });
     $('#rdIgnoreBtn').on('click', function() { resolveReport(currentRid, 'ignored'); resetFullscreen(); });
     
-    $('#cancelReportDetailBtn, #closeReportDetailBtn').on('click', function() { 
-      $('#reportDetailModal').removeClass('active'); 
-      resetFullscreen();
-    });
+    $('#cancelReportDetailBtn, #closeReportDetailBtn').on('click', () => window.closeReportDetail());
     
     $('#reportDetailModal').on('click', function(e) { 
       if ($(e.target).is('#reportDetailModal')) {
-        $(this).removeClass('active'); 
-        resetFullscreen();
+        window.closeReportDetail();
       }
     });
 
@@ -2382,12 +2404,12 @@
           // they cannot.
           let when, colour;
           if (g.key === 'active') {
-            colour = '#15803d';
+            colour = 'var(--ui-success-ink)';
             when = p.days_left === 0
               ? 'Today is the last day'
               : 'Open now · closes in ' + p.days_left + ' day(s), on ' + calHuman(p.end);
           } else if (g.key === 'upcoming') {
-            colour = '#1d4ed8';
+            colour = 'var(--ui-info-ink)';
             when = 'Starts in ' + p.days_until_start + ' day(s), on ' + calHuman(p.start);
           } else {
             colour = 'var(--text-tertiary)';
@@ -2659,9 +2681,9 @@
     }
 
     const ANN_LOOK = {
-      urgent:    { colour: '#ef4444', label: 'URGENT' },
-      important: { colour: '#f59e0b', label: 'IMPORTANT' },
-      info:      { colour: '#3b82f6', label: 'NOTICE' }
+      urgent:    { colour: 'var(--ui-danger-ink)', label: 'URGENT' },
+      important: { colour: 'var(--ui-warn-ink)', label: 'IMPORTANT' },
+      info:      { colour: 'var(--ui-info-ink)', label: 'NOTICE' }
     };
 
     function renderAnnouncements() {

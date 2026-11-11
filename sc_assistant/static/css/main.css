@@ -579,16 +579,6 @@ p { line-height: var(--leading-normal); }
 }
 .header-right .replies-toggle:hover { background: var(--bg-surface); }
 .header-right .replies-toggle:active { transform: scale(0.92); }
-.theme-toggle { background: transparent; border: 0px solid var(--border); color: var(--text-secondary); font-size: 1.1rem; cursor: pointer; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: background var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out), transform var(--dur-fast) var(--ease-out); }
-.theme-toggle:hover { background: var(--bg-surface); color: var(--sc-yellow); border-color: var(--sc-yellow); }
-/* Press feedback. A button that visibly gives when pressed is the cheapest way to
-   confirm the tap landed — which matters most on a phone, where there is no
-   cursor and no hover state to have told you the target was live. */
-.theme-toggle:active { transform: scale(0.92); }
-/* The icon itself swaps between sun and moon in JS. Rotating it on hover hints
-   that it toggles rather than opens something. */
-.theme-toggle:hover i { transform: rotate(-15deg); }
-.theme-toggle i { transition: transform var(--dur-base) var(--ease-out); }
 
 /* 5. USER ACCOUNT */
 .user-account-section { padding: 0.75rem; flex-shrink: 0; border-top: 1px solid var(--border); position: relative; }

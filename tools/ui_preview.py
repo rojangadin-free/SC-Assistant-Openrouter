@@ -298,11 +298,167 @@ def update_user():
                    new_username=request.form.get("username", ""))
 
 
+# Fixed admin snapshots keep layout checks independent of the wall clock and chat history.
+ADMIN_PREVIEW_TODAY = "2026-11-11"
+REPORT_HISTORY = [
+    {"role": "user", "content": (
+        "I am transferring from another college and will be travelling with my parent to submit "
+        "my records. Could you explain the enrollment requirements, which office evaluates my "
+        "previous subjects, and whether I can also ask about scholarship assistance during the "
+        "same visit? I need to plan around work and the time needed to request my transcript."
+    )},
+    {"role": "assistant", "content": (
+        "Start with a credential evaluation at the Office of the Registrar before choosing "
+        "subjects or paying enrollment fees. Bring your available academic records and a list "
+        "of the subjects you completed so the evaluator can identify missing documents.\n\n"
+        "Scholarship applications are reviewed separately. Ask Student Affairs which supporting "
+        "documents apply to your circumstances and whether their submission deadline differs "
+        "from the enrollment period. An evaluation is not a guarantee of admission or funding."
+    )},
+    {"role": "user", "content": (
+        "My previous school can issue a certified copy of grades now, but the official transcript "
+        "may arrive later. Please give me a detailed checklist that I can show my parent, including "
+        "the evaluation dates, the offices to visit, and what needs confirmation before we travel."
+    )},
+    {"role": "assistant", "content": (
+        "The transferee evaluation window runs from November 2 to November 20, 2026. Submit your "
+        "available records to the Registrar and explain which documents are still being processed "
+        "by your previous school. Ask the evaluator to confirm in writing whether a certified "
+        "copy of grades is acceptable while you wait for the official transcript.\n\n"
+        "### Documents and office checklist\n\n"
+        "| Document or step | Where to submit | What to check before travelling |\n"
+        "| --- | --- | --- |\n"
+        "| Transcript of Records or certified copy of grades | Office of the Registrar | "
+        "Confirm whether a temporary copy can begin the evaluation and when the original is due. |\n"
+        "| Honorable Dismissal and Good Moral Certificate | Admissions and Records counter | "
+        "Request original signed documents from your previous school and keep copies for reference. |\n"
+        "| Scholarship application and supporting documents | Student Affairs Office | "
+        "Ask about eligibility, the separate application deadline, and any additional evidence. |\n"
+        "| Written subject-credit evaluation | Program coordinator and Registrar | "
+        "Check the approved subjects before selecting a class schedule or paying enrollment fees. |\n\n"
+        "Allow **two working days after a complete submission** for the initial evaluation. "
+        "Missing records or a program-specific review can extend that estimate, so do not make "
+        "non-refundable travel arrangements based only on this answer.\n\n"
+        "Bring a copy of `SamarCollegeTransfereeEnrollmentRequirementsAndScholarshipApplication"
+        "GuidelinesForAcademicYear20262027.pdf` if you have been given that checklist, along with "
+        "your application reference and contact details.\n\n"
+        "> Confirm the dates and any temporary-document arrangements directly with the Registrar. "
+        "A scholarship review does not automatically reserve an enrollment slot."
+    )},
+    {"role": "user", "content": (
+        "Can I request a written evaluation before paying any enrollment fees? I would like to "
+        "review the credited subjects with my parent before we commit to a class schedule."
+    )},
+    {"role": "assistant", "content": (
+        "You can request a written evaluation before making a payment. Ask the Registrar which "
+        "subjects have been credited, which remain under review, and whether the proposed class "
+        "schedule has been approved by your program coordinator. Keep the written response with "
+        "your application records and confirm the payment instructions with the Cashier."
+    )},
+]
+
+
+@app.get("/admin/reports/api/list")
+def admin_reports():
+    reports = [
+        {"report_id": "mobile-report-1", "status": "pending", "created_at": "2026-11-11T08:40:00Z",
+         "reporter_email": "previewstudentwithaverylongenrollmentandscholarshipinquiry@students.preview.example",
+         "reporter_uid": "preview-student", "conv_id": "preview-conversation", "reason": "Others",
+         "other_text": (
+             "The answer combines enrollment and scholarship deadlines, but the printed notice "
+             "from my previous visit lists a different closing date. Please verify whether the "
+             "temporary copy of grades is sufficient and clarify which deadline applies before "
+             "my parent takes time off work and pays for travel to the campus."
+         ),
+         "msg_snippet": REPORT_HISTORY[3]["content"][:240]},
+        {"report_id": "mobile-report-2", "status": "pending", "created_at": "2026-11-10T04:20:00Z",
+         "reporter_email": "previewstudentwithaverylongenrollmentandscholarshipinquiry@students.preview.example",
+         "reporter_uid": "preview-student", "conv_id": "preview-conversation",
+         "reason": "Incorrect Information", "other_text": "", "msg_snippet": REPORT_HISTORY[1]["content"][:240]},
+        {"report_id": "mobile-report-3", "status": "done", "created_at": "2026-11-09T02:15:00Z",
+         "reporter_email": "previewstudentwithaverylongenrollmentandscholarshipinquiry@students.preview.example",
+         "reporter_uid": "preview-student", "conv_id": "preview-conversation",
+         "reason": "Incomplete Answer", "other_text": "", "msg_snippet": REPORT_HISTORY[5]["content"][:240]},
+    ]
+    status = request.args.get("status")
+    return jsonify([report for report in reports if report["status"] == status] if status else reports)
+
+
+@app.get("/admin/reports/api/conversation/<uid>/<conv_id>")
+def admin_report_conversation(uid, conv_id):
+    if (uid, conv_id) != ("preview-student", "preview-conversation"):
+        return jsonify({"messages": []})
+    return jsonify({"messages": REPORT_HISTORY})
+
+
+@app.get("/admin/calendar/api/list")
+def admin_calendar():
+    return jsonify({"success": True, "state": {
+        "today": ADMIN_PREVIEW_TODAY,
+        "active": [{
+            "key": "mobile-calendar-active",
+            "label": "Transferee enrollment, document evaluation, and scholarship application assistance",
+            "start": "2026-11-02", "end": "2026-11-20", "days_left": 9,
+            "note": (
+                "Bring original records and photocopies, allow extra time for subject-credit "
+                "evaluation, and confirm any missing-document arrangements with the Registrar "
+                "before proceeding to the Cashier or selecting a class schedule."
+            ),
+            "set_by": "previewregistrarandenrollmentcoordination@staff.preview.example",
+        }],
+        "upcoming": [{
+            "key": "mobile-calendar-upcoming",
+            "label": "Final examination consultation and clearance review for graduating students",
+            "start": "2026-12-01", "end": "2026-12-05", "days_until_start": 20,
+            "note": "Consult your program coordinator about outstanding requirements before requesting clearance.",
+            "set_by": "previewacademiccoordination@staff.preview.example",
+        }],
+        "past": [{
+            "key": "mobile-calendar-past", "label": "Midterm assessment and make-up examination requests",
+            "start": "2026-10-26", "end": "2026-10-30", "days_since_end": 12,
+            "note": "The regular request window has ended; exceptional cases need the program coordinator's review.",
+            "set_by": "previewacademiccoordination@staff.preview.example",
+        }],
+    }, "stats": {"active": 1, "upcoming": 1, "past": 1}})
+
+
+@app.get("/admin/announcements/api/list")
+def admin_announcements():
+    return jsonify({"success": True, "today": ADMIN_PREVIEW_TODAY, "announcements": [
+        {
+            "key": "mobile-announcement-live", "priority": "urgent",
+            "title": "Enrollment advisory for transferees and returning students submitting documents during the extended evaluation window",
+            "body": (
+                "Students travelling from outside the city should confirm the status of their "
+                "credential evaluation before booking transport. Bring the original documents "
+                "and a complete set of photocopies, and keep the acknowledgement from your "
+                "previous school if an official transcript is still being processed. Scholarship "
+                "applications have separate requirements and do not automatically reserve an "
+                "enrollment slot. For this preview notice, the coordination contact is "
+                "previewenrollmentandscholarshipcoordination@students.preview.example."
+            ),
+            "audience": "all", "starts_on": "2026-11-09", "expires_on": "2026-11-20",
+            "active": True, "live": True, "expired": False, "pinned": True,
+            "posted_by": "previewstudentaffairsandcommunications@staff.preview.example",
+        },
+        {
+            "key": "mobile-announcement-expired", "priority": "info",
+            "title": "Library orientation and borrowing-policy briefing has concluded",
+            "body": "The orientation sessions are finished. Students who could not attend may request the briefing notes at the library desk.",
+            "audience": "students", "starts_on": "2026-10-19", "expires_on": "2026-10-23",
+            "active": True, "live": False, "expired": True, "pinned": False,
+            "posted_by": "previewlibraryservices@staff.preview.example",
+        },
+    ], "stats": {"active": 1, "urgent": 1, "expired": 1}})
+
+
 @app.get("/files")
 def files():
     return jsonify({"success": True, "files": [
-        {"name": "Samar-College-2024.pdf", "size": 2411002, "last_modified": "2026-08-01"},
-        {"name": "Samar-College-update.pdf", "size": 881233, "last_modified": "2026-09-01"},
+        {"name": "Samar-College-2024.pdf", "size": 2411002, "uploaded_at": "2026-08-01T08:00:00Z"},
+        {"name": "Samar-College-update.pdf", "size": 881233, "uploaded_at": "2026-09-01T08:00:00Z"},
+        {"name": "SamarCollegeTransfereeEnrollmentRequirementsAndScholarshipApplicationGuidelinesForAcademicYear20262027.pdf",
+         "size": 3187456, "uploaded_at": "2026-11-11T08:30:00Z"},
     ]})
 
 

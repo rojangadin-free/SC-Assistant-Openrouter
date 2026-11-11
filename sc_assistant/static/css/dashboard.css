@@ -127,12 +127,12 @@
 .file-list { display: flex; flex-direction: column; gap: 0.75rem; }
 .file-item { display: flex; align-items: center; justify-content: space-between; padding: 0.8rem 1rem; background: var(--bg-main); border-radius: 8px; border: 1px solid var(--border); transition: border-color 0.2s; }
 .file-item:hover { border-color: var(--text-tertiary); }
-.file-info { display: flex; align-items: center; gap: 12px; }
-.file-icon { width: 36px; height: 36px; border-radius: 8px; background: var(--upload-bg); color: var(--upload-text); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
-.file-details { display: flex; flex-direction: column; }
-.file-name { font-weight: 500; font-size: 0.9rem; color: var(--text-primary); }
-.file-meta { display: flex; align-items: center; gap: 10px; font-size: 0.8rem; color: var(--text-tertiary); margin-top: 2px; }
-.file-actions { display: flex; gap: 6px; }
+.file-info { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.file-icon { width: 36px; height: 36px; border-radius: 8px; background: var(--upload-bg); color: var(--upload-text); display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 1.1rem; }
+.file-details { display: flex; flex-direction: column; min-width: 0; }
+.file-name { font-weight: 500; font-size: 0.9rem; color: var(--text-primary); overflow-wrap: anywhere; }
+.file-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 0.8rem; color: var(--text-tertiary); margin-top: 2px; }
+.file-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .file-action { width: 32px; height: 32px; border-radius: 6px; background: transparent; border: 1px solid transparent; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; }
 .file-action:hover { background: var(--bg-surface); color: var(--sc-green); border-color: var(--border); }
 /* Alpha tint rather than the flat #fee2e2 pastel: the ink is var(--ui-danger-ink),
@@ -153,9 +153,22 @@
 .back-button:hover { background: var(--border); }
 .section-header h2 { font-size: 1.5rem; font-weight: 700; color: var(--text-primary); margin: 0; }
 
+.admin-editor-grid { display: grid; gap: .6rem; align-items: end; }
+.admin-editor-grid > * { min-width: 0; }
+.calendar-editor-grid { grid-template-columns: 1.4fr .9fr .9fr 1.4fr auto; }
+.announcement-editor-grid { grid-template-columns: 1fr 1fr 1fr 1fr auto; }
+.dashboard-content .calendar-scan-year { width: 6.5rem; font-size: .85rem; }
+.calendar-preview-query { flex: 1; min-width: 16rem; }
+.report-details-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+.report-context { padding: 1.25rem; }
+.mobile-table-hint { display: none; }
+
 /* === USER LIST MODALS & TABLES === */
+#reportDetailModal { padding: 16px; }
+#reportDetailBox { width: min(700px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+#reportDetailBox .report-message, #rd-details-grid > div { min-width: 0; overflow-wrap: anywhere; }
 #editUserModal { padding: 16px; }
-body:has(#editUserModal.active) #notification { z-index: 10000; }
+body:has(#editUserModal.active, #reportDetailModal.active) #notification { z-index: 10000; }
 #editUserBox { width: min(500px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }
 #editUserBox .form-input { font-size: 1rem; }
 .form-input { width: 100%; padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-main); color: var(--text-primary); font-size: 0.95rem; transition: all 0.2s; font-family: inherit; }
@@ -164,6 +177,8 @@ body:has(#editUserModal.active) #notification { z-index: 10000; }
 
 .user-list-container { @extend .dashboard-card-base; }
 .user-list-container h3 { font-size: 1.15rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
+.user-search { margin-bottom: 12px; }
+.user-search-status { margin: 6px 0 0; font-size: .8125rem; line-height: 1.5; color: var(--text-secondary); }
 #userListLoader { text-align: center; padding: 2rem; }
 #userListLoader .loader-spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--sc-green); border-radius: 50%; animation: spin 0.8s linear infinite; margin: auto; }
 

@@ -632,7 +632,7 @@ primary_model = ChatOpenAI(
     },
     timeout=10,
     max_retries=1,
-    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=11264),
+    max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=15360),
 )
 
 fallback_model = ChatOpenAI(

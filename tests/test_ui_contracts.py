@@ -103,6 +103,37 @@ class UIContracts(unittest.TestCase):
             self.assertTrue({"id", "username", "email", "role", "status", "joined"} <= user.keys())
             self.assertIn(user["role"], ("user", "admin"))
 
+    def test_user_search_is_labeled_and_announces_results(self):
+        _, dom = self.page("/dashboard")
+        search = dom.by_id("userSearch")[1]
+        self.assertEqual(search["type"], "search")
+        self.assertEqual(search["aria-controls"], "userListTable")
+        self.assertEqual(search["aria-describedby"], "userSearchStatus")
+        self.assertIn("disabled", search)
+        self.assertTrue(any(tag == "label" and attrs.get("for") == "userSearch" for tag, attrs in dom.elements))
+        self.assertEqual(dom.by_id("userSearchStatus")[1]["role"], "status")
+
+    def test_admin_mobile_editors_keep_controls_without_fixed_inline_grids(self):
+        html, dom = self.page("/dashboard")
+        self.assertIn("admin-editor-grid calendar-editor-grid", html)
+        self.assertIn("admin-editor-grid announcement-editor-grid", html)
+        self.assertNotIn("grid-template-columns:1.4fr .9fr .9fr 1.4fr auto", html)
+        self.assertNotIn("grid-template-columns:1fr 1fr 1fr 1fr auto", html)
+        for ident in ("calPreviewQ", "calScanYear"):
+            self.assertNotIn("style", dom.by_id(ident)[1])
+        self.assertIsNotNone(dom.by_id("userTableHint"))
+        self.assertIsNotNone(dom.by_id("reportsTableHint"))
+
+    def test_report_dialog_has_accessible_controls_and_scrollable_context(self):
+        _, dom = self.page("/dashboard")
+        modal = dom.by_id("reportDetailModal")[1]
+        self.assertEqual(modal["role"], "dialog")
+        self.assertEqual(modal["aria-modal"], "true")
+        self.assertEqual(modal["aria-labelledby"], "reportDetailTitle")
+        self.assertEqual(dom.by_id("rd-full-conversation")[1]["tabindex"], "0")
+        for ident in ("toggleFullScreenBtn", "closeReportDetailBtn", "cancelReportDetailBtn", "rdIgnoreBtn", "rdDoneBtn"):
+            self.assertEqual(dom.by_id(ident)[1]["type"], "button")
+
     def test_styles_keep_accessibility_layer_and_scoped_utilities(self):
         for path in ("/", "/dashboard", "/login"):
             _, dom = self.page(path)

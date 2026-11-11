@@ -40,10 +40,14 @@ $(document).ready(function() {
   // User list elements
   const userListLoader = $('#userListLoader');
   const userListBody = $('#userListBody');
+  const userSearch = $('#userSearch');
+  const userSearchStatus = $('#userSearchStatus');
+  let userAccounts = [];
 
   // Edit User Modal Elements
   // Keep the fixed overlay outside the dashboard's animated/clipped content.
   const editUserModal = $('#editUserModal').appendTo(document.body);
+  $('#reportDetailModal').appendTo(document.body);
   const editUserForm = $('#editUserForm');
   const closeEditUserModal = $('#closeEditUserModal');
   const cancelEditUser = $('#cancelEditUser');
@@ -131,9 +135,20 @@ $(document).ready(function() {
   // and is not a place to be restored to.
   $(document).on('click', '.menu-item[id$="MenuItem"]', function() {
     closeEditModal(false);
+    if (window.closeReportDetail) window.closeReportDetail(false);
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      requestAnimationFrame(() => {
+        $('.dashboard-content, .page-content').each(function() {
+          this.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        });
+      });
+    }
     rememberSection(this.id);
   });
-  $(window).on('pagehide', () => closeEditModal(false));
+  $(window).on('pagehide', function() {
+    closeEditModal(false);
+    if (window.closeReportDetail) window.closeReportDetail(false);
+  });
 
   // Replay the stored click. Returns false when there is nothing usable to
   // restore, so the caller can fall back to the landing screen.
@@ -515,61 +530,74 @@ $(document).ready(function() {
   }
 
   // ===== NEW User List Logic =====
+  function renderUserList() {
+    const terms = userSearch.val().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const filtered = userAccounts.filter(user => {
+      const text = [user.username, user.email, user.id].filter(Boolean).join(' ').toLowerCase();
+      return terms.every(term => text.includes(term));
+    });
+    userListBody.empty();
+    $('#userListTable').toggleClass('is-empty', filtered.length === 0);
+    userSearchStatus.text(terms.length
+      ? `${filtered.length} of ${userAccounts.length} users`
+      : `${userAccounts.length} user${userAccounts.length === 1 ? '' : 's'}`);
+    if (!filtered.length) {
+      userListBody.append($('<tr>').append($('<td>', { colspan: 6, class: 'sc-empty sc-empty--sm' })
+        .text(terms.length ? 'No users match this search.' : 'No users found.')));
+      return;
+    }
+    const rows = document.createDocumentFragment();
+    filtered.forEach(user => {
+      const joinedDate = new Date(user.joined).toLocaleDateString('en-US', {
+        year: 'numeric', month: 'short', day: 'numeric'
+      });
+      const status = String(user.status || 'UNKNOWN');
+      const role = String(user.role || 'user');
+      const name = String(user.username || user.id || '');
+      const statusClass = status === 'CONFIRMED' ? 'status-confirmed' : 'status-unconfirmed';
+      const row = $('<tr>');
+      // Account names and attributes are text, never interpolated markup.
+      row.append($('<td>').text(name), $('<td>').text(user.email || ''),
+        $('<td>').append($('<span>').addClass(statusClass).text(status.charAt(0) + status.slice(1).toLowerCase())),
+        $('<td>').text(role.charAt(0).toUpperCase() + role.slice(1).toLowerCase()),
+        $('<td>').text(joinedDate));
+      const edit = $('<button>', { type: 'button', class: 'file-action edit-user', title: 'Edit' })
+        .attr({ 'data-id': user.id, 'data-username': name, 'data-email': user.email || '', 'data-role': role })
+        .data({ id: user.id, username: name, email: user.email || '', role: role })
+        .append($('<i>', { class: 'fas fa-pen' }));
+      const remove = $('<button>', { type: 'button', class: 'file-action delete-user', title: 'Delete' })
+        .attr({ 'data-id': user.id, 'data-username': name })
+        .data({ id: user.id, username: name })
+        .append($('<i>', { class: 'fas fa-trash' }));
+      row.append($('<td>').append(edit, remove));
+      rows.appendChild(row[0]);
+    });
+    userListBody.append(rows);
+  }
+
+  userSearch.on('input search', renderUserList);
+
   function loadUserList() {
     userListLoader.show();
     userListBody.empty();
+    $('#userListTable').addClass('is-empty');
+    userAccounts = [];
+    userSearch.prop('disabled', true);
+    userSearchStatus.text('Loading users...');
 
     $.get("/api/dashboard/users", function(response) {
       userListLoader.hide();
-      if (!response.success || !response.users || response.users.length === 0) {
-        userListBody.html('<tr><td colspan="6" style="padding: 1rem; text-align: center; color: var(--text-secondary);">No users found.</td></tr>');
+      if (!response.success || !Array.isArray(response.users)) {
+        userSearchStatus.text('Search is unavailable until users can be loaded.');
+        userListBody.html('<tr><td colspan="6" class="sc-empty">Failed to load users.</td></tr>');
         return;
       }
-      
-      response.users.forEach(user => {
-        const joinedDate = new Date(user.joined).toLocaleDateString('en-US', {
-          year: 'numeric', month: 'short', day: 'numeric'
-        });
-        
-        const statusClass = user.status === 'CONFIRMED' ? 'status-confirmed' : 'status-unconfirmed';
-        const statusText = user.status.charAt(0) + user.status.slice(1).toLowerCase();
-        
-        const roleText = user.role.charAt(0).toUpperCase() + user.role.slice(1).toLowerCase();
-        
-        // ALL INLINE STYLES REMOVED
-        const userRow = $(`
-          <tr>
-            <td>${user.username}</td>
-            <td>${user.email}</td>
-            <td>
-              <span class="${statusClass}">
-                ${statusText}
-              </span>
-            </td>
-            <td>${roleText}</td>
-            <td>${joinedDate}</td>
-            <td>
-              <button class="file-action edit-user" title="Edit" 
-                data-id="${user.id}" 
-                data-username="${user.username}" 
-                data-email="${user.email}" 
-                data-role="${user.role}">
-                <i class="fas fa-pen"></i>
-              </button>
-              <button class="file-action delete-user" title="Delete" 
-                data-id="${user.id}" 
-                data-username="${user.username}">
-                <i class="fas fa-trash"></i>
-              </button>
-            </td>
-          </tr>
-        `);
-
-        userListBody.append(userRow);
-      });
-      
+      userAccounts = response.users;
+      userSearch.prop('disabled', false);
+      renderUserList();
     }).fail(function() {
       userListLoader.hide();
+      userSearchStatus.text('Search is unavailable until users can be loaded.');
       userListBody.html('<tr><td colspan="6" style="padding: 1rem; text-align: center; color: var(--error-color);">Failed to load users.</td></tr>');
     });
   }
@@ -605,16 +633,17 @@ $(document).ready(function() {
       closeEditModal();
     }
   });
-  editUserModal.on('keydown', function(e) {
+  editUserModal.add($('#reportDetailModal')).on('keydown', function(e) {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      closeEditModal();
+      if (this.id === 'reportDetailModal') window.closeReportDetail();
+      else closeEditModal();
       return;
     }
     if (e.key !== 'Tab') return;
-    const controls = editUserModal.find('button, input:not([type="hidden"]), select')
-      .filter(':visible:not(:disabled)');
+    const controls = $(this).find('button, input:not([type="hidden"]), select, textarea, a[href], [tabindex]')
+      .filter(':visible:not(:disabled)').filter(function() { return this.tabIndex >= 0; });
     const first = controls[0];
     const last = controls[controls.length - 1];
     if (e.shiftKey && document.activeElement === first) {

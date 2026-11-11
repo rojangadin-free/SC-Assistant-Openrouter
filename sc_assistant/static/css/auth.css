@@ -89,25 +89,6 @@ body.auth-body .theme-toggle {
     position: absolute;
     top: 0;
     right: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 44px;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--con-r-ctl);
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: 1rem;
-    cursor: pointer;
-}
-
-body.auth-body .theme-toggle:hover {
-    border-color: var(--con-nav-ink);
-    background: var(--con-tint);
-    color: var(--con-nav-ink);
 }
 
 /* One centered surface for every authentication step; no separate sidebar. */

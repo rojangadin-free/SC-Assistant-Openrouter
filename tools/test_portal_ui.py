@@ -44,6 +44,20 @@ def main():
             await Promise.all(document.getAnimations().filter(a =>
               a.effect.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})));
         }""")
+        theme_toggle = page.locator("#themeToggle")
+        expect(theme_toggle).to_have_css("border-radius", "50%")
+        expect(theme_toggle).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+        expect(theme_toggle).to_have_css("box-shadow", "none")
+        expect(theme_toggle).to_have_css("font-size", "16px")
+        for side in ("top", "right", "bottom", "left"):
+            expect(theme_toggle).to_have_css(f"border-{side}-width", "0px")
+        toggle_box = theme_toggle.bounding_box()
+        assert toggle_box and toggle_box["width"] == toggle_box["height"] and toggle_box["width"] >= 44
+        for feedback in page.locator(".feedback-btn").all():
+            expect(feedback).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+            expect(feedback).to_have_css("box-shadow", "none")
+            for side in ("top", "right", "bottom", "left"):
+                expect(feedback).to_have_css(f"border-{side}-width", "0px")
         floating = page.locator(".chat-floating-controls")
         if floating.count():
             expect(page.locator(".chat-section .header, .chat-section .header-left")).to_have_count(0)
@@ -79,7 +93,7 @@ def main():
             welcomeAlignment,
             unnamedButtons: [...document.querySelectorAll('button')].filter(visible)
               .filter(el => !(el.textContent.trim() || el.getAttribute('aria-label') || el.title)).map(el => el.id || el.className),
-            smallInputs: [...document.querySelectorAll('input:not([type=hidden]),textarea,select')].filter(visible)
+            smallInputs: [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]),textarea,select')].filter(visible)
               .filter(el => parseFloat(getComputedStyle(el).fontSize)<16).map(el => el.id || el.className),
             typography: [...document.querySelectorAll('.college-brand-name,.message.assistant .message-bubble,.dashboard-header h1')]
               .filter(visible).map(el => ({selector:el.className, font:getComputedStyle(el).fontFamily,
@@ -212,6 +226,107 @@ def main():
         page.unroute(batch_url)
         page.remove_listener("request", note_report)
 
+    def exercise_admin_layouts(page, width, theme):
+        def open_section(menu, section):
+            if width <= 768 and "active" not in (page.locator("#sidebar").get_attribute("class") or ""):
+                page.locator("#hamburgerMenu").click()
+            page.locator("#" + menu + "MenuItem").click()
+            expect(page.locator("#" + section + "Section")).to_be_visible()
+            if width <= 768:
+                page.keyboard.press("Escape")
+                page.wait_for_function("[...document.querySelectorAll('.dashboard-content,.page-content')].every(el => el.scrollTop < 2)")
+
+        def assert_controls_fit():
+            clipped = page.evaluate("""() => {
+                const section = document.querySelector('.dashboard-section.active');
+                return [...section.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea,button')]
+                    .filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+                    .filter(el => !el.closest('.sc-scroll-x,.table-wrapper,.table-container'))
+                    .filter(el => { const r = el.getBoundingClientRect(); return r.left < -1 || r.right > innerWidth + 1; })
+                    .map(el => el.id || el.className);
+            }""")
+            assert not clipped, clipped
+
+        open_section("calendar", "calendar")
+        expect(page.locator("#calList .cal-card")).to_have_count(3)
+        columns = page.locator(".calendar-editor-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length")
+        assert columns == (1 if width <= 600 else 2 if width <= 1100 else 5)
+        assert_controls_fit()
+        capture(page, f"calendar-mobile-layout-{width}-{theme}")
+        page.locator('[data-key="mobile-calendar-active"] .cal-edit').click()
+        expect(page.locator("#calLabel")).to_be_focused()
+        expect(page.locator("#calLabel")).to_be_in_viewport()
+        assert page.locator("#calLabel").input_value()
+        assert page.locator("#calStart").input_value()
+        page.locator("#calPreviewQ").fill("Can a transferee submit enrollment documents after the listed deadline?")
+        assert_controls_fit()
+
+        open_section("announcements", "announcements")
+        expect(page.locator("#annList .ann-card")).to_have_count(2)
+        columns = page.locator(".announcement-editor-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length")
+        assert columns == (1 if width <= 600 else 2 if width <= 1100 else 5)
+        page.locator('[data-key="mobile-announcement-live"] .ann-edit').click()
+        expect(page.locator("#annTitle")).to_be_focused()
+        expect(page.locator("#annTitle")).to_be_in_viewport()
+        expect(page.locator("#annSaveBtn")).to_contain_text("Save changes")
+        assert_controls_fit()
+        capture(page, f"announcement-mobile-edit-{width}-{theme}")
+        page.locator("#annCancelEditBtn").click()
+        expect(page.locator("#annTitle")).to_have_value("")
+        expect(page.locator("#annSaveBtn")).to_contain_text("Post")
+
+        open_section("reports", "reports")
+        expect(page.locator("#reportsTbody .r-view-btn")).to_have_count(2)
+        view_report = page.locator('.r-view-btn[data-id="mobile-report-1"]')
+        if width <= 768:
+            expect(page.locator("#reportsTable .r-done-btn").first).to_be_hidden()
+            expect(view_report).to_be_in_viewport()
+            scroller = page.locator("#reportsTable").locator("..").bounding_box()
+            button = view_report.bounding_box()
+            assert button and scroller and button["x"] + button["width"] <= scroller["x"] + scroller["width"] + 1
+        else:
+            expect(page.locator("#reportsTable .r-done-btn").first).to_be_visible()
+        capture(page, f"reports-mobile-table-{width}-{theme}")
+        view_report.click()
+        dialog = page.get_by_role("dialog", name="Report Detail", exact=True)
+        expect(page.locator("body > #reportDetailModal")).to_have_count(1)
+        expect(dialog).to_be_visible()
+        expect(page.locator("#rd-full-conversation .markdown-body table").first).to_be_visible()
+        expect(page.locator("#closeReportDetailBtn")).to_be_focused()
+        page.locator("#rdDoneBtn").scroll_into_view_if_needed()
+        expect(page.locator("#rdDoneBtn")).to_be_in_viewport(ratio=1)
+        box = page.locator("#reportDetailBox").bounding_box()
+        assert box and box["y"] >= 15 and box["y"] + box["height"] <= page.viewport_size["height"] - 15
+        assert box["x"] >= 15 and box["x"] + box["width"] <= width - 15
+        if width <= 768:
+            assert page.locator("#rd-details-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length") == 1
+        capture(page, f"report-mobile-detail-{width}-{theme}")
+        page.locator("#toggleFullScreenBtn").click()
+        expect(page.locator("#toggleFullScreenBtn")).to_have_attribute("aria-pressed", "true")
+        if width <= 768:
+            expect(page.locator("#closeReportDetailBtn")).to_be_visible()
+        capture(page, f"report-mobile-fullscreen-{width}-{theme}")
+        box = page.locator("#reportDetailBox").bounding_box()
+        assert box and box["y"] >= 0 and box["y"] + box["height"] <= page.viewport_size["height"] + 1
+        page.keyboard.press("Escape")
+        expect(dialog).to_be_hidden()
+        expect(page.locator("#toggleFullScreenBtn")).to_have_attribute("aria-pressed", "false")
+        expect(view_report).to_be_focused()
+        view_report.click()
+        page.locator("#usersMenuItem").evaluate("el => window.jQuery(el).trigger('click')")
+        expect(dialog).to_be_hidden()
+        expect(page.locator("#usersSection")).to_be_visible()
+        expect(page.locator("#userListBody .edit-user")).to_have_count(2)
+        if width <= 768:
+            expect(page.locator("#userTableHint")).to_be_visible()
+            expect(page.locator("#userListBody .edit-user").first).to_be_in_viewport()
+        capture(page, f"users-mobile-actions-{width}-{theme}")
+
+        open_section("uploads", "upload")
+        expect(page.locator("#fileList .file-item")).to_have_count(3)
+        assert_controls_fit()
+        capture(page, f"documents-mobile-filenames-{width}-{theme}")
+
     def exercise_user_editor(page, width, theme):
         if width <= 768:
             page.locator("#hamburgerMenu").click()
@@ -221,6 +336,64 @@ def main():
             page.keyboard.press("Escape")
         edit_button = page.locator("#userListBody .edit-user").first
         expect(page.locator("#userListBody .edit-user")).to_have_count(2)
+        search = page.get_by_role("searchbox", name="Search users", exact=True)
+        expect(search).to_be_enabled()
+        expect(page.locator("#userSearchStatus")).to_have_text("2 users")
+        search_requests = []
+
+        def record_user_load(request):
+            if request.url == base + "/api/dashboard/users":
+                search_requests.append(request)
+
+        page.on("request", record_user_load)
+        for query, expected_id in (("  JUAN  ", "preview-juan"), ("MARIA@SAMARCOLLEGE", "preview-maria"),
+                                   ("PREVIEW-JUAN", "preview-juan"), ("maria   preview-maria", "preview-maria")):
+            search.fill(query)
+            expect(page.locator("#userListBody .edit-user")).to_have_count(1)
+            expect(edit_button).to_have_attribute("data-id", expected_id)
+            expect(page.locator("#userSearchStatus")).to_have_text("1 of 2 users")
+        capture(page, f"user-search-{width}-{theme}")
+        edit_button.click()
+        expect(page.locator("#editUserCognitoUsername")).to_have_value("preview-maria")
+        page.locator("#cancelEditUser").click()
+        search.fill("<no matching user>")
+        expect(page.locator("#userListBody .edit-user")).to_have_count(0)
+        expect(page.locator("#userListBody")).to_have_text("No users match this search.")
+        expect(page.locator("#userSearchStatus")).to_have_text("0 of 2 users")
+        if width <= 768:
+            expect(page.locator("#userListTable thead")).to_be_hidden()
+            expect(page.locator("#userListBody td")).to_be_in_viewport(ratio=1)
+        capture(page, f"user-search-empty-{width}-{theme}")
+        search.fill("")
+        expect(page.locator("#userListBody .edit-user")).to_have_count(2)
+        assert not search_requests
+        page.remove_listener("request", record_user_load)
+        if width == 1280 and theme == "light":
+            users_url = base + "/api/dashboard/users"
+            literal_name = 'A "Quoted" <account>'
+            page.route(users_url, lambda route: route.fulfill(json={"success": True, "users": [{
+                "id": "null", "username": literal_name, "email": "literal@example.com", "role": "user",
+                "status": "CONFIRMED", "joined": "2026-11-01T08:00:00Z",
+            }]}))
+            page.locator("#usersMenuItem").click()
+            expect(search).to_be_enabled()
+            search.fill("<account>")
+            expect(page.locator("#userListBody td").first).to_have_text(literal_name)
+            expect(page.locator("#userListBody account")).to_have_count(0)
+            edit_button.click()
+            expect(page.locator("#editUserCognitoUsername")).to_have_value("null")
+            expect(page.locator("#editUserUsername")).to_have_value(literal_name)
+            page.locator("#cancelEditUser").click()
+            search.fill("")
+            page.unroute(users_url)
+            page.route(users_url, lambda route: route.fulfill(status=503, json={"success": False}))
+            page.locator("#usersMenuItem").click()
+            expect(page.locator("#userListBody")).to_have_text("Failed to load users.")
+            expect(search).to_be_disabled()
+            page.unroute(users_url)
+            page.locator("#usersMenuItem").click()
+            expect(search).to_be_enabled()
+            expect(page.locator("#userListBody .edit-user")).to_have_count(2)
         modal = page.get_by_role("dialog", name="Edit User", exact=True)
         expect(page.locator("body > #editUserModal")).to_have_count(1)
         expect(modal).to_be_hidden()
@@ -264,6 +437,7 @@ def main():
         expect(modal).to_be_hidden()
 
         update_url = base + "/api/dashboard/users/update"
+        search.fill("preview-juan")
         page.route(update_url, lambda route: route.fulfill(
             status=400, json={"success": False, "message": "Preview update rejected."}))
         edit_button.click()
@@ -285,6 +459,10 @@ def main():
         expect(modal).to_be_hidden()
         payload = parse_qs(saved.value.post_data)
         assert payload == {"cognito_username": ["preview-juan"], "username": ["Edited preview user"], "role": ["admin"]}
+        expect(search).to_be_enabled()
+        expect(search).to_have_value("preview-juan")
+        expect(page.locator("#userListBody .edit-user")).to_have_count(1)
+        search.fill("")
         expect(page.locator("#userListBody .edit-user")).to_have_count(2)
 
         edit_button.click()
@@ -303,7 +481,8 @@ def main():
         browser = playwright.chromium.launch(channel="msedge", headless=True)
         try:
             for width in (1280, 820, 390, 320):
-                context = browser.new_context(viewport={"width": width, "height": 900 if width > 820 else 812})
+                context = browser.new_context(viewport={"width": width, "height": 900 if width > 820 else 812},
+                                              is_mobile=width <= 768, has_touch=width <= 768)
                 context.route("**/*", route_request)
                 page = context.new_page()
                 page.on("pageerror", lambda error: errors.append(str(error)))
@@ -359,6 +538,33 @@ def main():
                 exercise_user_editor(page, width, "dark")
                 page.locator("#themeToggle").click()
                 exercise_user_editor(page, width, "light")
+                exercise_admin_layouts(page, width, "light")
+                page.locator("#themeToggle").click()
+                exercise_admin_layouts(page, width, "dark")
+                page.goto(base + "/settings", wait_until="networkidle")
+                for theme in ("light", "dark"):
+                    if (page.locator("body").get_attribute("data-theme") or "light") != theme:
+                        page.locator("#themeToggle").click()
+                    page.mouse.move(0, 0)
+                    capture(page, f"settings-{width}-{theme}")
+                    toggle = page.locator("#themeToggle")
+                    toggle.hover()
+                    expect(toggle).to_have_css("border-top-width", "0px")
+                    expect(toggle).to_have_css("border-radius", "50%")
+                    expect(toggle).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+                    page.mouse.down()
+                    expect(toggle).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+                    page.mouse.move(0, 0)
+                    page.mouse.up()
+                    toggle.focus()
+                    page.keyboard.press("Tab")
+                    page.keyboard.press("Shift+Tab")
+                    expect(toggle).to_be_focused()
+                    assert toggle.evaluate("el => parseFloat(getComputedStyle(el).outlineWidth)") >= 2
+                    page.keyboard.press("Space")
+                    assert (page.locator("body").get_attribute("data-theme") or "light") != theme
+                    page.keyboard.press("Space")
+                    assert (page.locator("body").get_attribute("data-theme") or "light") == theme
                 context.close()
 
                 guest = browser.new_context(viewport={"width": width, "height": 900 if width > 820 else 812})

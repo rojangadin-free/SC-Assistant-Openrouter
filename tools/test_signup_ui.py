@@ -60,6 +60,15 @@ def main():
           await document.fonts.ready;
           await Promise.all(document.getAnimations().map(a => a.finished.catch(() => {})));
         }""")
+        theme_toggle = page.locator("#themeToggle")
+        expect(theme_toggle).to_have_css("border-radius", "50%")
+        expect(theme_toggle).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+        expect(theme_toggle).to_have_css("box-shadow", "none")
+        expect(theme_toggle).to_have_css("font-size", "16px")
+        for side in ("top", "right", "bottom", "left"):
+            expect(theme_toggle).to_have_css(f"border-{side}-width", "0px")
+        toggle_box = theme_toggle.bounding_box()
+        assert toggle_box and toggle_box["width"] == toggle_box["height"] and toggle_box["width"] >= 44
         if page.locator("#signupForm").is_visible():
             agreement = page.locator("#openEulaLink")
             expect(agreement).to_have_text("End User Agreement")
