@@ -264,9 +264,13 @@ $(document).ready(function() {
   }
 
   // ===== Notification Helper Function =====
+  let notificationTimer = null;
+  let notificationDetailsTimer = null;
   window.showNotification = function(message, type = 'success', details = null) {
     const notification = $('#notification');
     if (!notification.length) return;
+    clearTimeout(notificationTimer);
+    clearTimeout(notificationDetailsTimer);
 
     const isSuccess = type === 'success';
 
@@ -291,10 +295,12 @@ $(document).ready(function() {
       .addClass(type)
       .addClass('show');
 
-    setTimeout(() => {
+    notificationTimer = setTimeout(() => {
       notification.removeClass('show');
-      setTimeout(() => {
+      notificationTimer = null;
+      notificationDetailsTimer = setTimeout(() => {
         notification.find('.notification-details').remove();
+        notificationDetailsTimer = null;
       }, 300);
     }, 5000); 
   }

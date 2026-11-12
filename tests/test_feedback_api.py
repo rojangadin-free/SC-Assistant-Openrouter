@@ -177,7 +177,7 @@ def section(title):
 
 
 app = create_app()
-app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
+app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False, RATE_LIMIT_ENABLED=False)
 
 
 def client_as(email=None, is_admin=False, guest=False):

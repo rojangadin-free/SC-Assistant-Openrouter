@@ -4,7 +4,6 @@ from flask import (
 import os
 import tempfile
 import threading
-import datetime
 from botocore.exceptions import ClientError
 from pinecone import Pinecone
 
@@ -67,6 +66,8 @@ def _index_uploaded_files(job_id, staged, uid):
                 embeddings=embeddings,
                 progress=_progress,
             )
+            if not chunks or chunks < 0:
+                raise ValueError("No searchable passages were indexed. The file was not added to the document catalog.")
 
             # S3 and the metadata row come after a successful index. Ordered this
             # way so a file that cannot be indexed never appears in the file list

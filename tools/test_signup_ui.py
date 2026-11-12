@@ -312,6 +312,19 @@ def main():
                 health_before = context.request.get(base + "/__auth_test__/health").json()
                 writes = health_before["password_reset_writes"]
                 confirms = health_before["operations"].get("confirm_forgot_password", 0)
+                if width == 1280:
+                    limited_url = base + "/forgot-password"
+                    page.route(limited_url, lambda route: route.fulfill(status=429,
+                        headers={"Retry-After": "1"}, json={"success": False, "retry_after": 1,
+                        "message": "Too many code requests. Please try again shortly."}))
+                    page.locator("#sendCodeButton").click()
+                    expect(page.locator("#authMessage")).to_contain_text("Too many code requests")
+                    expect(page.locator("#sendCodeButton")).to_be_disabled()
+                    expect(page.locator("#newPassword")).to_have_value(password)
+                    expect(page.locator("#confirmPassword")).to_have_value(password)
+                    assert context.request.get(base + "/__auth_test__/health").json()["operations"] == health_before["operations"]
+                    page.unroute(limited_url)
+                    expect(page.locator("#sendCodeButton")).to_be_enabled(timeout=5000)
                 with page.expect_request(base + "/forgot-password") as requested:
                     if width == 1280:
                         page.locator("#resetEmail").press("Enter")

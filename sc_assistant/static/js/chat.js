@@ -480,9 +480,10 @@ $(document).ready(function() {
                     '</div>');
         setTimeout(function() { $sheet.fadeOut(200, function() { $(this).remove(); }); }, 2600);
       },
-      error: function() {
+      error: function(xhr) {
         // The sheet stays open so the tap can simply be repeated.
-        showNotification('Could not send that. Please try again.', 'error');
+        showNotification((xhr.responseJSON && xhr.responseJSON.message)
+          || 'Could not send that. Please try again.', 'error');
       }
     });
 

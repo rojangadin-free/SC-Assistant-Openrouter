@@ -2,7 +2,6 @@ import os
 import re
 import time
 import io
-import json
 import logging
 import tempfile
 from typing import Callable, List, Optional, Iterable, Tuple
@@ -39,7 +38,6 @@ from src.helper import (
     generate_chunk_id,
     is_low_value_chunk,
     is_heading_line,
-    detect_block_header,
     get_vision_client,
     encode_image
 )
@@ -559,19 +557,20 @@ def get_images_from_paragraph(paragraph, doc_obj):
 def _docx_table_to_markdown(table) -> str:
     """
     Convert a python-docx Table to a Markdown table string.
-    Deduplicates merged cells (they share the same _tc object).
+    Preserve row associations, including labels spanning multiple rows.
     """
     rows_data = []
-    seen_cells = set()
     for row in table.rows:
         row_cells = []
+        seen_cells = set()
         for cell in row.cells:
-            cell_id = id(cell._tc)
-            if cell_id in seen_cells:
-                row_cells.append("")  # merged-cell placeholder
+            # Keep actual XML elements alive; Python IDs can be reused for
+            # unrelated cells. Only horizontal spans repeat within this row.
+            if cell._tc in seen_cells:
+                row_cells.append("")
             else:
-                seen_cells.add(cell_id)
-                row_cells.append(cell.text.strip().replace("\n", " "))
+                seen_cells.add(cell._tc)
+                row_cells.append(cell.text.strip().replace("\n", " ").replace("|", r"\|"))
         rows_data.append(row_cells)
         
     if not rows_data:
@@ -595,7 +594,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
         doc = docx.Document(filepath)
     except Exception as e:
         logger.error(f"Failed to open DOCX {filename}: {e}")
-        return []
+        raise ValueError("The DOCX could not be read. Check that it is a valid Word document.") from e
         
     sections: List[dict] = []
     current_section: dict = {"heading": "", "lines": []}
@@ -663,7 +662,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
     flush_section()
     
     if not sections:
-        return []
+        raise ValueError("The DOCX contains no extractable text. Nothing was indexed.")
         
     documents = []
     for sec in sections:
@@ -855,11 +854,16 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
 
     for i, doc in enumerate(raw_docs):
         source = doc.metadata.get("source", "")
+        is_docx_section = doc.metadata.get("type") == "docx_section"
 
         # Reset trackers if we switch to a completely new PDF
         if source != current_source:
             current_header = "General College Information"
             current_source = source
+            previous_tail = ""
+
+        if is_docx_section:
+            current_header = doc.metadata.get("section_heading") or "General College Information"
             previous_tail = ""
 
         clean_metadata(doc)
@@ -873,7 +877,7 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
             parts.append(previous_tail)
         parts.append(doc.page_content)
 
-        if i + 1 < len(raw_docs):
+        if not is_docx_section and i + 1 < len(raw_docs):
             nxt = raw_docs[i + 1]
             if nxt.metadata.get("source") == source:
                 next_head = " ".join(nxt.page_content.split()[:STITCH_WORDS])
@@ -889,6 +893,8 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
             if len(words) >= STITCH_WORDS
             else doc.page_content
         )
+        if is_docx_section:
+            previous_tail = ""
 
         # PERSISTENT HEADERS: Pass the running header in, get the updated one back out
         chunks, current_header = smart_chunking(
@@ -1088,6 +1094,7 @@ def build_index(
         retriever.add_texts(
             [d.page_content for d in batch],
             metadatas=[d.metadata for d in batch],
+            ids=[d.metadata["chunk_id"] for d in batch],
         )
     logger.info("Index build complete.")
 
@@ -1125,16 +1132,6 @@ def append_file_to_index(
 
     filename = real_name if real_name else os.path.basename(filepath)
 
-    dim = get_embedding_dimension(embeddings)
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    ensure_index_exists(pc, index_name, dimension=dim)
-    
-    if os.path.exists(BM25_VALUES_FILE):
-        bm25 = BM25Encoder().load(BM25_VALUES_FILE)
-    else:
-        logger.warning("BM25 file not found - using default encoder.")
-        bm25 = BM25Encoder().default()
-        
     raw_docs: List[Document] = []
     lower = filename.lower()
     
@@ -1156,20 +1153,27 @@ def append_file_to_index(
             d.metadata["source"] = filename
             clean_metadata(d)
 
-    # Before chunking: `raw_docs` still has whole pages in reading order, which
-    # is what the date patterns were written against. After chunking the front
-    # matter has been split, stitched and re-headed, and "Effective August 2025"
-    # can end up in a different chunk from the words that qualify it.
-    _record_effective_date(filename, raw_docs)
+    if not any(doc.page_content.strip() for doc in raw_docs):
+        raise ValueError("No readable text was extracted. Nothing was indexed.")
 
     _tick("chunking")
     final_chunks = _chunk_and_dedup(raw_docs)
+    if not final_chunks:
+        raise ValueError("No searchable passages remained after extraction. Nothing was indexed.")
+
+    # Validate extraction locally before creating or modifying a remote index.
+    dim = get_embedding_dimension(embeddings)
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+    ensure_index_exists(pc, index_name, dimension=dim)
+    if os.path.exists(BM25_VALUES_FILE):
+        bm25 = BM25Encoder().load(BM25_VALUES_FILE)
+    else:
+        logger.warning("BM25 file not found - using default encoder.")
+        bm25 = BM25Encoder().default()
 
     # An uploaded document's vocabulary matters more than the seeded corpus's:
     # it is the NEW policy, so its terms are the ones students will be asking
     # about — and mistyping — first. See rag/spelling.py.
-    _learn_spelling_terms(final_chunks)
-
     if final_chunks:
 
 
@@ -1188,9 +1192,12 @@ def append_file_to_index(
             retriever.add_texts(
                 [d.page_content for d in batch],
                 metadatas=[d.metadata for d in batch],
+                ids=[d.metadata["chunk_id"] for d in batch],
             )
             _tick("indexing", batch_no, total_batches)
 
+    _record_effective_date(filename, raw_docs)
+    _learn_spelling_terms(final_chunks)
     logger.info(f"Appended {len(final_chunks)} chunks from {filename}")
     return len(final_chunks)
 

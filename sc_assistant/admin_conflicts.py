@@ -63,9 +63,16 @@ def _pages_from_pdf(path: str, name: str):
 
 def _pages_from_docx(path: str, name: str):
     from docx import Document as DocxDocument
+    from docx.table import Table
 
     d = DocxDocument(path)
-    yield name, None, "\n".join(p.text for p in d.paragraphs)
+    blocks = []
+    for block in d.iter_inner_content():
+        if isinstance(block, Table):
+            blocks.extend("\n".join(cell.text for cell in row.cells) for row in block.rows)
+        else:
+            blocks.append(block.text)
+    yield name, None, "\n\n".join(blocks)
 
 
 def _pages_from_txt(path: str, name: str):

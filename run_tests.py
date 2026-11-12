@@ -100,6 +100,7 @@ SUITES = [
     # builder. A failure here with freshness passing means the wiring broke, not
     # the parsing.
     ("Document precedence (newest wins)", "test_doc_priority.py"),
+    ("DOCX ingestion and upload safety", "test_docx_ingestion.py"),
 
 
     # Before the latency suite, because it decides whether the cross-encoder
@@ -118,6 +119,7 @@ SUITES = [
     ("Reranker concurrency (load)",      "test_capacity.py"),
     ("Bounded RAG pools and query cache", "test_runtime.py"),
     ("Cross-worker storage transactions", "test_storage_concurrency.py"),
+    ("Shared application request limits", "test_rate_limits.py"),
     ("Concurrent chat and admission",     "test_chat_concurrency.py"),
     ("SSE load-test protocol and safety", "test_loadtest_chat.py"),
 

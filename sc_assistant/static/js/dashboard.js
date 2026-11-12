@@ -317,6 +317,13 @@ $(document).ready(function() {
       })
       .fail(function(xhr) {
         stopPolling();
+        if (xhr.status === 429) {
+          const seconds = Number(xhr.getResponseHeader('Retry-After') || (xhr.responseJSON && xhr.responseJSON.retry_after));
+          const wait = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 3;
+          setStageLabel(`Checking indexing status again in ${wait} seconds`);
+          pollTimer = setTimeout(() => pollJob(jobId), Math.min(wait * 1000, 2147483647));
+          return;
+        }
         // 404 means the job is gone (pruned, or a restart wiped it) — terminal,
         // so stop rather than hammering the endpoint.
         const msg = xhr.status === 404

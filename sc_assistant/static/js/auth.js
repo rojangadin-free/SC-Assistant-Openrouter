@@ -227,7 +227,19 @@ $(document).ready(function() {
             .fail(function(xhr) {
                 syncSignupState(xhr.responseJSON);
                 syncResetState(xhr.responseJSON);
-                handleResetFailure();
+                if (xhr.status === 429) {
+                    const seconds = Number(xhr.getResponseHeader('Retry-After') || (xhr.responseJSON && xhr.responseJSON.retry_after));
+                    if (Number.isFinite(seconds) && seconds > 0) {
+                        const retryAt = Date.now() + Math.ceil(seconds) * 1000;
+                        if (url === '/forgot-password') resetResendAt = Math.max(resetResendAt, retryAt);
+                        if (url === '/resend-signup-code') signupResendAt = Math.max(signupResendAt, retryAt);
+                        if (!cooldownTimer && (Date.now() < resetResendAt || Date.now() < signupResendAt)) {
+                            cooldownTimer = setInterval(updateCooldowns, 1000);
+                        }
+                    }
+                } else {
+                    handleResetFailure();
+                }
                 const message = xhr.responseJSON && xhr.responseJSON.message;
                 showNotification(message || 'The request could not be completed. Check your connection and try again.', 'error');
                 updateControls();

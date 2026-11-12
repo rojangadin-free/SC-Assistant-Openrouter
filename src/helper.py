@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_openai import ChatOpenAI
 
-from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME, AGENTROUTER_API_KEY
+from config import OPENROUTER_API_KEY, FALLBACK_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,8 @@ def split_inline_bold_steps(text: str) -> str:
 def is_heading_line(line: str) -> bool:
     """True when a single line looks like a section heading."""
     s = (line or "").strip().strip("*#:•▪- \t")
+    if _MD_TABLE_ROW.match(s):
+        return False
     if not s or len(s) < 4 or len(s) > 120:
         return False
     if s.endswith((".", ";", ",")):
@@ -671,6 +673,14 @@ def smart_chunking(
 
         if block_tokens > max_tokens:
 
+            table_lines = [line.strip() for line in block.splitlines() if line.strip()]
+            separators = [i for i, line in enumerate(table_lines) if _MD_SEPARATOR.match(line)]
+            table_header = []
+            if len(separators) == 1:
+                separator = separators[0]
+                if separator > 0 and all(_MD_TABLE_ROW.match(line) for line in table_lines[separator - 1:]):
+                    table_header = table_lines[separator - 1:separator + 1]
+
             # Oversized block: split by lines first (keeps list items intact),
             # falling back to sentences for prose.
             units: List[str] = []
@@ -678,7 +688,7 @@ def smart_chunking(
                 line = line.strip()
                 if not line:
                     continue
-                if count(line) > max_tokens:
+                if count(line) > max_tokens and not (table_header and _MD_TABLE_ROW.match(line)):
                     units.extend(semantic_split_sentences(line))
                 else:
                     units.append(line)
@@ -687,6 +697,11 @@ def smart_chunking(
                 unit_tokens = count(unit)
                 if current_tokens + unit_tokens > max_tokens and current_parts:
                     emit_current()
+                    if table_header and _MD_TABLE_ROW.match(unit) and unit not in table_header:
+                        # Continuation rows need their column labels, not a tail
+                        # of unrelated overlap from the previous chunk.
+                        current_parts = list(table_header)
+                        current_tokens = sum(count(line) for line in table_header)
                 current_parts.append(unit)
                 current_tokens += unit_tokens
             continue
@@ -722,6 +737,15 @@ def is_low_value_chunk(text: str) -> bool:
         return True
     # Ignore our own [SECTION: ...] tag when judging value
     t = re.sub(r"^\[SECTION:[^\]]*\]\s*", "", text.strip()).strip()
+    table_body = False
+    for line in t.splitlines():
+        if _MD_SEPARATOR.match(line):
+            table_body = True
+        elif table_body and _MD_TABLE_ROW.match(line):
+            if any(character.isalnum() for character in line):
+                return False
+        elif line.strip():
+            table_body = False
     if len(t) < 40:
         return True
     alpha = sum(c.isalpha() for c in t)

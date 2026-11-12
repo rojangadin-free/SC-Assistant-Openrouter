@@ -170,6 +170,114 @@ ordering actually buys and why the worker count moves with this flag.
 
 
 
+### DOCX tables and re-indexing
+
+DOCX ingestion preserves native table rows and their office/person associations,
+including vertically merged labels. Markdown table rows are not section headings;
+large table chunks repeat their column labels. Empty or unreadable uploads fail
+instead of appearing as successfully indexed files. The conflict scanner also
+reads native DOCX tables, not just top-level paragraphs.
+
+Index writes now use source-aware chunk IDs, so identical passages in a PDF and
+a DOCX do not overwrite each other's source metadata. This is not automatic
+document-version replacement: already indexed, changed passages are not removed
+merely by appending the same filename again.
+
+For a DOCX affected by the earlier table-loss bug, retain the original file,
+deploy/restart with the fix, remove the affected document entry through the admin
+document manager, and upload it again. That removal also removes its stored S3
+copy and catalog entry, so keep the source file available first. Retire an old
+PDF only if it should no longer be used, or record the documents' genuine
+effective dates. Start a fresh chat when checking the corrected source.
+
+A newer roster can coexist with older editorial captions inside one document;
+keep those statements clearly labeled or remove obsolete content in the source.
+The application preserves names as written rather than guessing spelling or age
+from a filename. DOCX can still process faster than PDF: upload duration is not a
+completeness check.
+
+`python tests/test_docx_ingestion.py -v` exercises extraction, chunking, and index
+payloads with synthetic documents and mocked services. It does not use a live
+index or call OCR/LLM services.
+
+### Request-frequency limits
+
+[`sc_assistant/rate_limit.py`](sc_assistant/rate_limit.py) enables request-frequency
+limits by default. Each rule uses a fixed window starting with the first request
+for that identity. Atomic counters live in a **private SQLite file shared by
+Gunicorn workers on one container/host**, not by independent replicas. All workers
+must use the same file and stable `FLASK_SECRET_KEY`. `STORE_BACKEND=dynamodb` does
+not distribute these counters; independent replicas need a shared network-backed
+limiter before scaling.
+
+Authenticated activity outside auth routes is keyed by session `uid` (falling back
+to the signed-in user identifier if absent). Guest requests and auth routes use
+client-IP budgets. Login also consumes a separate budget for the normalized
+(trimmed, case-folded) username/email target **paired with that IP**. Resetting a
+session or starting another guest session does not reset the guest IP quota.
+Shared campus NAT can put many students behind one address, so guest/auth IP
+limits may need tuning; signed-in activity remains user-based.
+
+Exact defaults, in requests per window for each rule/identity:
+
+| Rule | Requests | Window (seconds) | Applies to |
+|---|---:|---:|---|
+| `api` | 300 | 60 | API/data reads and feedback batch reads |
+| `write` | 120 | 60 | Other POST/PUT/PATCH/DELETE requests |
+| `chat` | 20 | 60 | Authenticated chat |
+| `guest_chat` | 6 | 60 | Guest/unauthenticated chat |
+| `login` | 60 | 60 | Login attempts per IP |
+| `login_target` | 10 | 600 | Login attempts per normalized target + IP |
+| `signup` | 30 | 600 | Signup |
+| `code_send` | 20 | 600 | Password-recovery code requests and signup-code resends |
+| `verify` | 30 | 60 | Signup confirmation, password reset, and Settings password changes |
+| `feedback` | 60 | 60 | Feedback submissions |
+| `report` | 10 | 600 | Reports and escalations |
+| `upload` | 6 | 300 | Admin document uploads |
+| `scan` | 6 | 300 | Conflict scans and freshness upload scans |
+| `poll` | 600 | 60 | Upload-status polling |
+
+Configuration:
+
+- `RATE_LIMIT_ENABLED=true` is the default; `false` explicitly disables these
+  request-frequency limits, not the separate concurrency/recovery protections.
+- `RATE_LIMIT_STORAGE_PATH` is optional. When unset, the file is named
+  `<stem>.rate-limits.sqlite3` beside `SC_RUNTIME_DB`, or otherwise beside
+  `PASSWORD_RESET_STATE_PATH`. If neither is set, it uses a private directory
+  under the system temp directory. Keep it private, writable by the app, and on
+  persistent local storage in production.
+- `RATE_LIMIT_PROXY_HOPS=0` is the default and does not trust forwarded client IPs.
+  Set `1` **only when backend traffic is network-restricted to the trusted ALB**,
+  with `X-Forwarded-For` in append mode. This trusts the rightmost address appended
+  by the ALB, not a caller-supplied leftmost address. Gunicorn's
+  `FORWARDED_ALLOW_IPS` alone is not enough for client-IP attribution.
+- `RATE_LIMIT_RULES` is a partial JSON map of recognized rule names to
+  `[count, seconds]`; omitted rules retain their defaults. Both numbers must be
+  positive integers. Unknown names, malformed JSON, or invalid rule values fail
+  startup rather than silently disabling protection.
+
+Example partial override for the guest-chat and login IP budgets:
+
+```ini
+RATE_LIMIT_RULES={"guest_chat":[12,60],"login":[120,60]}
+```
+
+Quota exhaustion returns HTTP `429` JSON with `"success": false`, `message`,
+`error`, `"code": "rate_limited"`, and integer `retry_after` seconds, plus
+`Retry-After` and `Cache-Control: no-store` headers. If quota storage fails,
+protected work **fails closed with HTTP `503`**, the same fields/headers,
+`"code": "rate_limit_storage_unavailable"`, and a three-second retry. These
+rejections happen before downstream provider/database/indexing calls. `/health`,
+static/PWA resources, `OPTIONS`, and ordinary page navigation are unaffected by
+these limits or quota-storage failures. Persisted quota keys are HMAC digests,
+not raw IPs, emails, or passwords.
+
+Existing chat concurrency caps and recovery coordination/resend cooldowns remain
+separate and unchanged. Request-frequency limits do not replace WAF/network
+protection, payload-size limits, or work concurrency caps. See the
+[AWS guide](docs/AWS_NEW_ACCOUNT_DEPLOYMENT.md#request-frequency-limits) for the
+private volume path and ALB-only configuration.
+
 ### Testing on a phone
 
 Voice input and "Add to Home screen" both require a **secure context**. Browsers grant

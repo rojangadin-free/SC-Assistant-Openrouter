@@ -226,6 +226,32 @@ def main():
         page.unroute(batch_url)
         page.remove_listener("request", note_report)
 
+    def exercise_poll_rate_limit(page):
+        upload_url = base + "/upload"
+        poll_url = base + "/upload/status/rate-limit-preview"
+        polls = []
+
+        def status_response(route):
+            polls.append(route.request)
+            if len(polls) == 1:
+                route.fulfill(status=429, headers={"Retry-After": "1"},
+                              json={"success": False, "retry_after": 1, "message": "Wait before polling again."})
+            else:
+                route.fulfill(json={"success": True, "job": {"percent": 100, "status": "done", "done": True,
+                    "files": [{"filename": "rate-limit-preview.pdf", "status": "done", "percent": 100,
+                               "label": "Done", "chunks": 1}]}})
+
+        page.route(upload_url, lambda route: route.fulfill(status=202,
+                   json={"success": True, "job_id": "rate-limit-preview"}))
+        page.route(poll_url, status_response)
+        page.locator("#fileInput").set_input_files({"name": "rate-limit-preview.pdf", "mimeType": "application/pdf",
+                                                   "buffer": b"%PDF-1.4\nPreview fixture only.\n%%EOF"})
+        expect(page.locator("#uploadProgress h4")).to_contain_text("Checking indexing status again")
+        expect(page.locator("#uploadProgress h4")).to_have_text("Done", timeout=5000)
+        assert len(polls) == 2
+        page.unroute(upload_url)
+        page.unroute(poll_url)
+
     def exercise_admin_layouts(page, width, theme):
         def open_section(menu, section):
             if width <= 768 and "active" not in (page.locator("#sidebar").get_attribute("class") or ""):
@@ -535,6 +561,8 @@ def main():
                 if width <= 768:
                     page.keyboard.press("Escape")
                 capture(page, f"documents-{width}")
+                if width == 1280:
+                    exercise_poll_rate_limit(page)
                 exercise_user_editor(page, width, "dark")
                 page.locator("#themeToggle").click()
                 exercise_user_editor(page, width, "light")

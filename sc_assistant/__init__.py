@@ -15,6 +15,9 @@ def create_app():
     SESSION_COOKIE_SAMESITE="Lax",
 )
 
+    from .rate_limit import init_rate_limiter
+    init_rate_limiter(app)
+
     # ----------------------------------------------------------------------- #
     # Static asset cache-busting
     # ----------------------------------------------------------------------- #

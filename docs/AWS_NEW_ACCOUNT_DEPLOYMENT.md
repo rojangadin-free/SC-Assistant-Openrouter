@@ -62,6 +62,11 @@ coordination use local SQLite. Multiple workers in one container can share it;
 independent instances cannot. Do not add an Auto Scaling Group or multiple app
 replicas yet.
 
+Request-frequency counters also use a private SQLite file shared by Gunicorn
+workers on this **one container/host**, not independent replicas. The DynamoDB
+admin-store backend does not make request quotas distributed; scaling out needs
+a shared network-backed limiter as well as shared coordination state.
+
 ### Command Locations
 
 | Label | Meaning |
@@ -536,6 +541,9 @@ workers and normal releases; changing it invalidates existing sessions.
   "STORE_TABLE_NAME": "SCAssistantStores",
   "SC_RUNTIME_DB": "/var/lib/sc-assistant/runtime.sqlite3",
   "PASSWORD_RESET_STATE_PATH": "/var/lib/sc-assistant/password-reset.sqlite3",
+  "RATE_LIMIT_ENABLED": "true",
+  "RATE_LIMIT_STORAGE_PATH": "/var/lib/sc-assistant/request-limits.sqlite3",
+  "RATE_LIMIT_PROXY_HOPS": "1",
   "SESSION_COOKIE_SECURE": "true",
   "FORWARDED_ALLOW_IPS": "*",
   "GUNICORN_CMD_ARGS": "--keep-alive 190",
@@ -568,6 +576,68 @@ an approved offline indexing process.
 `FORWARDED_ALLOW_IPS=*` is safe for this topology only when port 8080 is restricted
 to the trusted ALB security group as specified in Phase 09. It is not a safe
 setting for an unrestricted, directly exposed Gunicorn server.
+
+### Request-Frequency Limits
+
+`sc_assistant/rate_limit.py` applies **default-on, fixed-window request-frequency
+limits**, with each window starting at the first request for that rule/identity.
+Keep `RATE_LIMIT_ENABLED=true`; `false` explicitly disables this layer. The
+[exact defaults and rule scopes](../README.md#request-frequency-limits) cover
+API reads, writes, chat, auth, feedback/reports, uploads/scans, and status polling.
+Existing chat concurrency caps and password-recovery coordination/resend
+cooldowns remain separate and unchanged.
+
+The template sets
+`RATE_LIMIT_STORAGE_PATH=/var/lib/sc-assistant/request-limits.sqlite3` on the
+private `sc-assistant-state` volume mounted in Phase 11. Keep it private and
+writable by the app; workers must share that file and the stable Flask secret.
+The setting is optional: without it, the limiter uses `<stem>.rate-limits.sqlite3`
+beside `SC_RUNTIME_DB`, else beside `PASSWORD_RESET_STATE_PATH`, or a private
+system-temp directory if neither is set. The explicit persistent path above
+avoids relying on temporary/container-local storage across replacement.
+
+`RATE_LIMIT_PROXY_HOPS` defaults to `0`, which does not trust forwarded client IPs.
+The template deliberately sets `"RATE_LIMIT_PROXY_HOPS": "1"` **only for this
+guide's network-restricted, ALB-only backend traffic**. Keep the Phase 09 rule
+allowing port 8080 only from the ALB security group, and keep the ALB's
+`X-Forwarded-For` processing in append mode. The limiter trusts the **rightmost
+address appended by the ALB**, not a caller-supplied leftmost address. Do not use
+`1` for a directly exposed backend. `FORWARDED_ALLOW_IPS` handles Gunicorn's
+forwarded-scheme trust; even `*` is not enough for client-IP attribution.
+
+Guest requests and auth routes have IP-based quotas, which may need tuning for
+many students behind a shared campus NAT. Authenticated activity outside auth
+routes uses `uid` (or the signed-in user identifier if absent). Login additionally
+has a normalized (trimmed, case-folded) username/email-target-plus-IP budget;
+raising `login` alone leaves `login_target` unchanged. Resetting sessions does
+not reset the guest IP quota.
+
+`RATE_LIMIT_RULES` accepts a **partial JSON map** of rule names to
+`[count, seconds]`, both positive integers. Omitted rules retain their defaults;
+unknown names, malformed JSON, and invalid values fail startup. To illustrate
+tuning only guest-chat and login IP budgets, merge this property into the full
+runtime secret, **not as a replacement for the whole secret**. Its value must
+remain a single-line JSON-encoded string for the Phase 11 environment conversion:
+
+```json
+{
+  "RATE_LIMIT_RULES": "{\"guest_chat\":[12,60],\"login\":[120,60]}"
+}
+```
+
+Quota exhaustion returns HTTP `429` JSON with `"success": false`, `message`,
+`error`, `"code": "rate_limited"`, and integer `retry_after` seconds. Responses
+include `Retry-After` and `Cache-Control: no-store`. A quota-storage failure
+**fails closed with HTTP `503`** for protected work, with the same fields/headers,
+`"code": "rate_limit_storage_unavailable"`, and a three-second retry. Rejections
+happen before downstream provider/database/indexing calls. `/health`, static/PWA
+resources, `OPTIONS`, and ordinary page navigation remain unaffected by this
+limiter, so healthy ALB checks do not prove quota storage is writable. Persisted
+quota keys are HMAC digests, never raw IPs, emails, or passwords.
+
+This layer does not replace WAF/network protection, payload-size limits, or work
+concurrency caps. Retain the ALB-only ingress restrictions when opening public
+access, and retain the private named volume during controlled replacements.
 
 > **Checkpoint 06:** The secret contains real deployment values, no unreplaced
 > placeholders, no static AWS credentials, and a non-default Flask secret. Its
@@ -1186,6 +1256,9 @@ Start with the symptom, not with broader permissions or weakened security.
 | Site times out only on a tester's phone/network | Check that network's public IP against the pilot ALB rules. | Opening backend port 8080 publicly |
 | ALB target is unhealthy | Check container logs, local `/health`, target port/path, and ALB-to-EC2 security-group access. | Treating a running EC2 instance as a running app |
 | Login loops or signup reports missing state | Use the HTTPS hostname and verify secure-cookie/forwarded-proto configuration. | Turning off cookie security in production |
+| Requests return `429` / `rate_limited`, especially on campus Wi-Fi | Respect `Retry-After`; review the relevant guest/auth IP budget and ALB-only client-IP attribution in Phase 06. | Resetting guest sessions, trusting arbitrary forwarded headers, or disabling protection for everyone |
+| Protected work returns `503` / `rate_limit_storage_unavailable` while `/health` works | Check the private SQLite path, named-volume mount, write permissions, and disk space. | Treating a healthy ALB target as proof of quota storage or bypassing fail-closed protection |
+| Startup rejects `RATE_LIMIT_RULES` | Use recognized names and positive integer `[count, seconds]` pairs; preserve JSON string escaping in the runtime secret. | Assuming unknown or invalid rules are silently ignored |
 | S3 upload/download fails | Check the configured bucket, both region variables, IAM object/bucket permissions, and reuse of the SigV4 client. | Making the bucket public |
 | Admin upload returns "Document indexing is paused" | Set `WEB_INDEXING_ENABLED=true`, refresh the runtime environment file, and recreate the container as described in Phase 13. | Changing only Secrets Manager or restarting the same container |
 | Dashboard is empty | Empty new tables may be normal. Also check backend selection and access errors, which can look like empty defaults. | Running demo seed/migration scripts blindly |
