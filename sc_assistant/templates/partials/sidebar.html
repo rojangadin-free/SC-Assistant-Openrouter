@@ -233,6 +233,13 @@
         </span>
         <i class="fas fa-arrow-right" aria-hidden="true"></i>
       </a>
+    {% elif active_page == 'dashboard' %}
+      <a href="{{ url_for('auth.logout') }}" class="user-account-button" id="logoutButton"
+         title="Logout" aria-label="Logout">
+        <img src="{{ user.avatar_url if user.avatar_url else 'https://ui-avatars.com/api/?name=' ~ user.username ~ '&background=fbbc05&color=0d4503&bold=true' }}" alt="" class="profile-avatar">
+        <span>{{ user.username if user.username else 'Account' }}</span>
+        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
+      </a>
     {% else %}
       {# ── Registered user dropdown ── #}
       <button type="button" class="user-account-button" id="userAccountButton" aria-controls="userDropdown">

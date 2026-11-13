@@ -101,6 +101,7 @@ SUITES = [
     # the parsing.
     ("Document precedence (newest wins)", "test_doc_priority.py"),
     ("DOCX ingestion and upload safety", "test_docx_ingestion.py"),
+    ("Catalog context and PDF fallbacks", "test_catalog_ingestion.py"),
 
 
     # Before the latency suite, because it decides whether the cross-encoder

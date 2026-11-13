@@ -83,6 +83,22 @@ class UIContracts(unittest.TestCase):
         for ident in ("analyticsVolumeChart", "analyticsHourlyChart", "analyticsTopicsChart", "analyticsDays"):
             self.assertIsNotNone(dom.by_id(ident), ident)
 
+    def test_dashboard_has_direct_logout_without_an_account_settings_dropdown(self):
+        _, dom = self.page("/dashboard")
+        for ident in ("userAccountButton", "userDropdown", "settingsButton", "profileButton"):
+            self.assertIsNone(dom.by_id(ident), ident)
+        tag, logout = dom.by_id("logoutButton")
+        self.assertEqual(tag, "a")
+        self.assertEqual(logout["aria-label"], "Logout")
+        self.assertTrue(logout["href"].endswith("/logout"))
+        self.assertIsNotNone(dom.by_id("confirmLogoutButton"))
+        self.assertIsNotNone(dom.by_id("cancelLogout"))
+
+    def test_chat_keeps_the_registered_account_dropdown(self):
+        _, dom = self.page("/")
+        for ident in ("userAccountButton", "userDropdown", "settingsButton", "profileButton", "logoutButton"):
+            self.assertIsNotNone(dom.by_id(ident), ident)
+
     def test_user_editor_is_a_named_dialog_with_non_submit_close_controls(self):
         _, dom = self.page("/dashboard")
         modal = dom.by_id("editUserModal")[1]

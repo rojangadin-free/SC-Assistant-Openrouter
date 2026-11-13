@@ -165,9 +165,10 @@ has finished. A write already in flight cannot be rolled back by disconnecting.
 - Gunicorn has `--timeout 120` and `--graceful-timeout 120`. The first is a worker
   liveness timeout, not a per-request deadline. The graceful timeout allows the
   normal 90-second response budget during worker recycling.
-- The Docker image defaults `WEB_INDEXING_ENABLED=false`. Uploads get a clear 503
-  while paused, so OCR/indexing does not compete with the beta. Enable it outside
-  testing hours; this is an operator setting, not a durable indexing queue.
+- The Docker image and deployment command enable `WEB_INDEXING_ENABLED=true`
+  for online administrator uploads. An explicit runtime value of `false` can
+  still pause ingestion for maintenance. Bulk OCR/indexing competes with chat
+  resources, so schedule large batches carefully; this is not a durable queue.
 - Retain proxy streaming settings: no response buffering/transformation and an
   idle timeout longer than the heartbeat interval. Never deploy during a test.
 - Both configured answer models currently use OpenRouter. A fallback model does

@@ -188,7 +188,7 @@ body, .main-section { background: var(--con-canvas); }
 .conversation-item:hover { background: var(--con-tint); }
 .conversation-item.active-conversation { background: var(--con-tint-strong); color: var(--con-nav-ink); border-left-color: var(--con-nav-ink); }
 .user-account-section { border-top: 1px solid var(--border); }
-.user-account-button { width: 100%; border: 0; border-radius: var(--con-r-ctl); text-align: left; font-family: inherit; font-size: 0.875rem; font-weight: 500; }
+.user-account-button { width: 100%; border: 0; border-radius: var(--con-r-ctl); text-align: left; text-decoration: none; font-family: inherit; font-size: 0.875rem; font-weight: 500; }
 .user-account-button:hover { background: var(--con-tint); }
 .guest-signin-button {
   display: flex;

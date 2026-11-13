@@ -38,6 +38,7 @@ from src.helper import (
     generate_chunk_id,
     is_low_value_chunk,
     is_heading_line,
+    is_major_heading,
     get_vision_client,
     encode_image
 )
@@ -384,29 +385,49 @@ def process_pdf(filepath: str, filename: str,
                 ocr_needed = True
 
             page_type = "pdf"
+            extraction_method = "native"
             if ocr_needed:
                 logger.info(f"    p{page_num}: OCR triggered (word_boxes={word_boxes})")
                 columns = detect_columns(fitz_page)
                 if len(columns) > 1:
                     # OCR each column separately - much more accurate on multi-column scans
                     column_texts = []
+                    missing_columns = False
                     for col_i, col_rect in enumerate(columns):
                         try:
                             col_img = render_region_image(fitz_page, col_rect, zoom=3.5)
-                            col_text = ocr_column(col_img, col_i, len(columns))
+                            col_text = clean_text(ocr_column(col_img, col_i, len(columns)) or "")
                             if col_text.strip():
                                 column_texts.append(col_text)
+                            else:
+                                missing_columns = True
                         except Exception as e:
+                            missing_columns = True
                             logger.warning(f"Column OCR failed p{page_num} col{col_i}: {e}")
-                    page_text = clean_text("\n\n".join(column_texts)) if column_texts else extracted
+                    if column_texts:
+                        if missing_columns and extracted.strip():
+                            column_texts.append(extracted)
+                        page_text = clean_text("\n\n".join(column_texts))
+                        page_type = "pdf_ocr"
+                        extraction_method = "mixed_ocr_native" if missing_columns and extracted.strip() else "ocr"
+                    else:
+                        page_text = extracted
+                        extraction_method = "native_fallback"
                 else:
                     try:
                         img = render_page_image(fitz_page, zoom=3.5)
-                        page_text = clean_text(ocr_page_image(img))
+                        ocr_text = clean_text(ocr_page_image(img) or "")
+                        page_text = ocr_text if ocr_text.strip() else extracted
+                        if ocr_text.strip():
+                            page_type = "pdf_ocr"
+                            extraction_method = "ocr"
+                        else:
+                            extraction_method = "native_fallback"
+                            logger.warning(f"OCR returned no text for {filename} p{page_num}; retaining native extraction")
                     except Exception as e:
                         logger.warning(f"OCR failed {filename} p{page_num}: {e}")
                         page_text = extracted
-                page_type = "pdf_ocr"
+                        extraction_method = "native_fallback"
             else:
                 page_text = extracted
 
@@ -425,6 +446,8 @@ def process_pdf(filepath: str, filename: str,
                             "source": filename,
                             "page": page_num,
                             "type": page_type,
+                            "extraction_method": extraction_method,
+                            "ocr_requested": ocr_needed,
                         },
                     )
                 )
@@ -605,18 +628,47 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
             sections.append({
                 "heading": current_section["heading"],
                 "lines": list(current_section["lines"]),
+                "collection_heading": current_section.get("collection_heading", ""),
             })
             
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
             text = block.text.strip()
-            level = get_heading_level(block)
+            native_level = get_heading_level(block)
+            level = native_level
+            in_catalog = bool(current_section.get("collection_heading"))
+            # Some catalogs use the same Word heading level for the collection,
+            # a college, and a degree. Keep those related labels together, while
+            # respecting an unrelated all-caps section even in Normal style.
+            style_name = (block.style.name or "").lower()
+            if in_catalog and level is None and not style_name.startswith("list") and is_major_heading(text):
+                level = 1
             
             if level is not None and text:
+                catalog_child = re.match(
+                    r"^(?:(?:college|school|department|faculty)\s+of\b|"
+                    r"(?:bachelor|master|doctor|associate|diploma|certificate)\b|"
+                    r"(?:graduate|undergraduate|degree|basic)\s+(?:studies|school|programs?|education)\b|"
+                    r"training\s+offerings?\b|(?:senior|junior)\s+high\b|elementary\b|pre[- ]?school\b)",
+                    text, re.I,
+                )
+                if in_catalog and (native_level is None or native_level >= current_section["level"]) and (
+                    catalog_child or (native_level is not None and native_level > current_section["level"])
+                ):
+                    current_section["lines"].append(f"{'#' * level} {text}")
+                    context_buffer.append(text)
+                    context_buffer = context_buffer[-5:]
+                    continue
                 flush_section()
+                catalog = re.search(
+                    r"\b(?:course\s+offerings?|programs?\s+offered|program\s+offerings?|"
+                    r"(?:academic|degree|training)\s+(?:programs?|offerings?))\b", text, re.I,
+                )
                 current_section = {
                     "heading": text,
                     "lines": [f"{'#' * level} {text}"],
+                    "level": level,
+                    "collection_heading": text if catalog else "",
                 }
                 context_buffer = [text]
                 continue
@@ -675,6 +727,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
                         "source": filename,
                         "type": "docx_section",
                         "section_heading": sec["heading"][:200],
+                        **({"collection_heading": sec["collection_heading"][:200]} if sec.get("collection_heading") else {}),
                     },
                 )
             )
@@ -903,6 +956,11 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
         )
 
         for idx, text in enumerate(chunks):
+            collection = doc.metadata.get("collection_heading")
+            section_match = re.match(r"^\[SECTION:\s*([^\]]*)\]", text)
+            if collection and section_match and section_match.group(1).strip() != collection:
+                section_path = f"{collection} / {section_match.group(1).strip()}"
+                text = f"[SECTION: {section_path}]" + text[section_match.end():]
             if is_low_value_chunk(text):
                 continue
 

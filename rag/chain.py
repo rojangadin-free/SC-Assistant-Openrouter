@@ -53,8 +53,8 @@ from rag.progress import emit as emit_phase
 
 
 from config import (
-    INDEX_NAME, CHAT_MODEL_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
-    PINECONE_API_KEY, OPENROUTER_API_KEY, AGENTROUTER_API_KEY
+    INDEX_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
+    PINECONE_API_KEY
 )
 
 # Student records
@@ -814,8 +814,17 @@ def docs_to_context(docs, dates=None) -> str:
 
     context_parts = []
     for i, d in enumerate(docs):
-        source = d.metadata.get("source", "Unknown")
-        page   = d.metadata.get("page", "?")
+        metadata = getattr(d, "metadata", None) or {}
+        source = metadata.get("source", "Unknown")
+        page = metadata.get("page", "?")
+        headings = []
+        for key in ("collection_heading", "section_heading", "section", "header"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                value = " ".join(value.split())[:300]
+                if value not in headings:
+                    headings.append(value)
+        heading_context = "".join(f"Section: {heading}\n" for heading in headings)
 
         rank = priority.get(doc_key(source))
         if not rank:
@@ -833,6 +842,7 @@ def docs_to_context(docs, dates=None) -> str:
         text   = (
             f"[DOCUMENT {i + 1}]{priority_tag}\n"
             f"Source: {source} | Page: {page}\n"
+            f"{heading_context}"
             f"Content:\n{d.page_content}"
         )
         context_parts.append(text)
@@ -1212,7 +1222,7 @@ def create_graph():
                 "citations": build_citations(final_docs),
             }
 
-        except Exception as e:
+        except Exception:
             import traceback
             print(f"[chain] Unhandled error: {traceback.format_exc()}")
             return {

@@ -566,8 +566,10 @@ code-validity rules. Losing the state file requires outstanding requests to star
 again with a new code.
 
 `WEB_INDEXING_ENABLED=true` enables administrator document uploads/indexing in
-the running web application. It is required for Phase 12B and deliberately
-overrides the Docker image's disabled default. This is not a public web-crawling
+the running web application. It is required for Phase 12B and matches the image
+and deployment defaults. Older containers or explicit runtime overrides can
+still have it set to `false`; recreate the app container with the updated
+environment to change that. This is not a public web-crawling
 switch. Perform initial ingestion during the restricted pilot and avoid large
 indexing batches during busy chat periods. Keep it true if administrators need
 ongoing uploads; set it false only when deliberately pausing ingestion or using
@@ -1260,7 +1262,7 @@ Start with the symptom, not with broader permissions or weakened security.
 | Protected work returns `503` / `rate_limit_storage_unavailable` while `/health` works | Check the private SQLite path, named-volume mount, write permissions, and disk space. | Treating a healthy ALB target as proof of quota storage or bypassing fail-closed protection |
 | Startup rejects `RATE_LIMIT_RULES` | Use recognized names and positive integer `[count, seconds]` pairs; preserve JSON string escaping in the runtime secret. | Assuming unknown or invalid rules are silently ignored |
 | S3 upload/download fails | Check the configured bucket, both region variables, IAM object/bucket permissions, and reuse of the SigV4 client. | Making the bucket public |
-| Admin upload returns "Document indexing is paused" | Set `WEB_INDEXING_ENABLED=true`, refresh the runtime environment file, and recreate the container as described in Phase 13. | Changing only Secrets Manager or restarting the same container |
+| Admin upload says document indexing is paused or disabled | Set `WEB_INDEXING_ENABLED=true`, refresh the runtime environment file, and recreate the container as described in Phase 13. | Changing only Secrets Manager or restarting the same container |
 | Dashboard is empty | Empty new tables may be normal. Also check backend selection and access errors, which can look like empty defaults. | Running demo seed/migration scripts blindly |
 | Chat gives no grounded answers | Check index name, 384 dimensions, dotproduct metric, corpus population, encoder consistency, and provider access. | Assuming an empty index is a working knowledge base |
 | Container exits with code 137 | Inspect memory pressure and instance sizing. | Deploying three model-loading workers on a micro instance |

@@ -178,6 +178,19 @@ large table chunks repeat their column labels. Empty or unreadable uploads fail
 instead of appearing as successfully indexed files. The conflict scanner also
 reads native DOCX tables, not just top-level paragraphs.
 
+Explicit program catalogs also retain their collection context when a Word file
+uses the same heading level for the catalog, a college, and a degree. Related
+entries stay under the catalog until an unrelated section begins; continuation
+chunks retain the catalog label. Generation receives the stored section/header
+metadata as well as the full passage text. This does not hard-code program names
+or infer source priority from a filename.
+
+Readable native DOCX catalog text does not need page OCR. PDF extraction still
+uses text-quality checks to select OCR where needed. Empty or failed OCR now
+retains available native text, and partial column OCR retains the native fallback.
+PDF metadata records `extraction_method` and `ocr_requested` so the path is
+inspectable. This is not a guarantee that every scan is legible.
+
 Index writes now use source-aware chunk IDs, so identical passages in a PDF and
 a DOCX do not overwrite each other's source metadata. This is not automatic
 document-version replacement: already indexed, changed passages are not removed
@@ -199,6 +212,11 @@ completeness check.
 `python tests/test_docx_ingestion.py -v` exercises extraction, chunking, and index
 payloads with synthetic documents and mocked services. It does not use a live
 index or call OCR/LLM services.
+
+`python tests/test_catalog_ingestion.py -v` checks complete catalog grouping,
+college/major continuity, generation metadata, and selective PDF OCR fallbacks.
+Re-index affected files after an ingestion change; existing vectors are not
+rewritten by changing the application code alone.
 
 ### Request-frequency limits
 

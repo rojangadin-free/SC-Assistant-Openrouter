@@ -386,6 +386,39 @@ class TableChunkingTests(IngestionTestCase):
             self.assertEqual(lines.count(row), 1)
 
 
+class UploadConfigurationTests(IngestionTestCase):
+    def test_online_uploads_are_enabled_by_default_but_still_admin_only(self):
+        from flask import Flask, jsonify, request, session
+
+        tree = ast.parse((ROOT / "sc_assistant/admin.py").read_text(encoding="utf-8"))
+        handler = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "upload_file")
+        handler.decorator_list = []
+        namespace = {"os": os, "request": request, "session": session, "jsonify": jsonify,
+                     "is_admin": lambda: session.get("role") == "admin"}
+        exec(compile(ast.Module(body=[handler], type_ignores=[]), "upload_configuration", "exec"), namespace)
+        app = Flask("upload_configuration_test")
+        app.secret_key = "offline-upload-test"
+        app.add_url_rule("/upload", view_func=namespace["upload_file"], methods=["POST"])
+        for flag, role, expected in ((None, "admin", 400), ("true", "admin", 400),
+                                     ("false", "admin", 503), ("true", "user", 403), ("true", None, 403)):
+            with self.subTest(flag=flag, role=role), patch.dict(os.environ, {}, clear=False):
+                if flag is None:
+                    os.environ.pop("WEB_INDEXING_ENABLED", None)
+                else:
+                    os.environ["WEB_INDEXING_ENABLED"] = flag
+                client = app.test_client()
+                if role:
+                    with client.session_transaction() as state:
+                        state.update(user="preview@example.com", role=role)
+                response = client.post("/upload")
+                self.assertEqual(response.status_code, expected)
+                if expected == 400:
+                    self.assertEqual(response.get_json()["message"], "No file part")
+                elif expected == 503:
+                    self.assertIn("WEB_INDEXING_ENABLED", response.get_json()["message"])
+        self.assert_no_index_work()
+
+
 class NativeExtractionTests(IngestionTestCase):
     def test_conflict_scanner_includes_native_table_rows_in_reading_order(self):
         document = docx.Document()

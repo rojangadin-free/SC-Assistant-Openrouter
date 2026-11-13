@@ -112,7 +112,7 @@ def upload_file():
     if os.getenv("WEB_INDEXING_ENABLED", "true").strip().lower() not in ("1", "true", "yes", "on"):
         return jsonify({
             "success": False,
-            "message": "Document indexing is paused during the beta. Enable WEB_INDEXING_ENABLED outside testing hours.",
+            "message": "Document indexing is disabled by server configuration. Enable WEB_INDEXING_ENABLED in the app's runtime environment.",
         }), 503
     if "files[]" not in request.files:
         return jsonify({"success": False, "message": "No file part"}), 400
