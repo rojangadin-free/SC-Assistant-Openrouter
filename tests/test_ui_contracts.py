@@ -76,7 +76,7 @@ class UIContracts(unittest.TestCase):
     def test_dashboard_navigation_is_native_and_keeps_existing_ids(self):
         _, dom = self.page("/dashboard")
         for ident in ("analyticsMenuItem", "reportsMenuItem", "escalationsMenuItem", "feedbackMenuItem",
-                      "conflictsMenuItem", "uploadsMenuItem", "usersMenuItem", "calendarMenuItem", "announcementsMenuItem"):
+                      "conflictsMenuItem", "gapsMenuItem", "uploadsMenuItem", "usersMenuItem"):
             tag, attrs = dom.by_id(ident)
             self.assertEqual(tag, "button", ident)
             self.assertEqual(attrs["type"], "button", ident)
@@ -129,14 +129,29 @@ class UIContracts(unittest.TestCase):
         self.assertTrue(any(tag == "label" and attrs.get("for") == "userSearch" for tag, attrs in dom.elements))
         self.assertEqual(dom.by_id("userSearchStatus")[1]["role"], "status")
 
-    def test_admin_mobile_editors_keep_controls_without_fixed_inline_grids(self):
+    def test_dashboard_uses_documents_without_manual_calendar_or_announcements(self):
         html, dom = self.page("/dashboard")
-        self.assertIn("admin-editor-grid calendar-editor-grid", html)
-        self.assertIn("admin-editor-grid announcement-editor-grid", html)
-        self.assertNotIn("grid-template-columns:1.4fr .9fr .9fr 1.4fr auto", html)
-        self.assertNotIn("grid-template-columns:1fr 1fr 1fr 1fr auto", html)
-        for ident in ("calPreviewQ", "calScanYear"):
-            self.assertNotIn("style", dom.by_id(ident)[1])
+        for ident in ("calendarMenuItem", "announcementsMenuItem", "calendarSection", "announcementsSection",
+                      "sidebarCalendarBadge", "sidebarAnnouncementsBadge", "calSaveBtn", "annSaveBtn"):
+            self.assertIsNone(dom.by_id(ident), ident)
+        for endpoint in ("/admin/calendar/", "/admin/announcements/"):
+            self.assertNotIn(endpoint, html)
+        self.assertEqual(dom.by_id("fileInput")[1]["type"], "file")
+        self.assertIn("multiple", dom.by_id("fileInput")[1])
+        self.assertIsNotNone(dom.by_id("uploadSection"))
+
+    def test_chat_does_not_display_or_poll_manual_announcements(self):
+        for path in ("/", "/guest-chat"):
+            html, dom = self.page(path)
+            self.assertIsNone(dom.by_id("announcementBanner"))
+            self.assertNotIn("ann-notice", html)
+            self.assertIsNotNone(dom.by_id("repliesToggle"))
+        script = Path("sc_assistant/static/js/chat.js").read_text(encoding="utf-8")
+        self.assertNotIn("/api/announcements", script)
+        self.assertNotIn("ANN_POLL_MS", script)
+
+    def test_admin_mobile_tables_keep_scroll_hints(self):
+        _, dom = self.page("/dashboard")
         self.assertIsNotNone(dom.by_id("userTableHint"))
         self.assertIsNotNone(dom.by_id("reportsTableHint"))
 

@@ -691,7 +691,7 @@ check("the template still drives the normal path",
 # --------------------------------------------------------------------------- #
 #  A reload keeps you where you were
 #
-#  All ten screens are one HTML document switched by an .active class, so a
+#  All screens are one HTML document switched by an .active class, so a
 #  reload always threw the admin back to the landing screen. That is the wrong
 #  behaviour on a page you work in: uploading a document, reloading to check it
 #  indexed, and losing your place every time is a loop with no way out.
@@ -707,7 +707,7 @@ check("the last section is remembered",
 check("...and restored on load",
       "window.restoreLastSection = function()" in dash_js)
 
-# Delegated on the shared id suffix. Binding each of the ten items by hand would
+# Delegated on the shared id suffix. Binding each menu item by hand would
 # mean editing that list for every new screen, and forgetting is silent.
 check("every menu item is recorded by one delegated handler",
       "'.menu-item[id$=\"MenuItem\"]'" in dash_js)
@@ -758,8 +758,7 @@ section("14. The sidebar reads in a usable order")
 positions = {}
 for item_id in ("analyticsMenuItem", "escalationsMenuItem", "reportsMenuItem",
                 "gapsMenuItem", "feedbackMenuItem", "conflictsMenuItem",
-                "uploadsMenuItem", "calendarMenuItem", "announcementsMenuItem",
-                "usersMenuItem"):
+                "uploadsMenuItem", "usersMenuItem"):
     marker = f'id="{item_id}"'
     check(f"'{item_id}' is in the menu exactly once", html.count(marker) == 1)
     positions[item_id] = html.index(marker)
@@ -787,8 +786,13 @@ check("Ask a Human is no longer buried mid-list",
       sorted(positions.values()).index(positions["escalationsMenuItem"]) == 1)
 
 # Knowledge base, then the rarely-used account screen.
-check("uploads leads the knowledge-base group",
-      in_order("uploadsMenuItem", "calendarMenuItem", "announcementsMenuItem"))
+check("documents precede account administration",
+      in_order("uploadsMenuItem", "usersMenuItem"))
+for removed in ("calendarMenuItem", "announcementsMenuItem"):
+    check(f"the manual '{removed}' screen is no longer in the menu",
+          f'id="{removed}"' not in html)
+    check(f"activity rows cannot link to the removed '{removed}' screen",
+          f"'#{removed}'" not in dash_js)
 check("User Management sits below the day-to-day work",
       positions["usersMenuItem"] == max(positions.values()))
 
@@ -824,8 +828,7 @@ print("\n--- Badges survive the collapse ---")
 # disappeared in exactly the state where a one-glance signal matters most.
 # They are siblings of the label now.
 for badge in ("sidebarEscalationBadge", "sidebarReportBadge", "sidebarGapBadge",
-              "sidebarFeedbackBadge", "sidebarConflictBadge",
-              "sidebarCalendarBadge", "sidebarAnnouncementsBadge"):
+              "sidebarFeedbackBadge", "sidebarConflictBadge"):
     check(f"'{badge}' is present", html.count(f'id="{badge}"') == 1)
     # The label span closes before the badge opens: proof they are siblings.
     before = html[:html.index(f'id="{badge}"')]

@@ -111,7 +111,7 @@ $(document).ready(function() {
   //  each time is the loop this removes.
   //
   //  What is stored is the MENU ITEM ID, not a section name. Every one of the
-  //  ten screens is opened by clicking a menu item, and each of those handlers
+  //  screens is opened by clicking a menu item, and each of those handlers
   //  already does the whole job — switch section, retitle the header, load the
   //  data, build charts on first reveal. Restoring by replaying that click
   //  reuses all of it. Storing "uploads" instead would mean a second mapping
@@ -760,8 +760,6 @@ $(document).ready(function() {
     gaps:         '#gapsMenuItem',
     feedback:     '#feedbackMenuItem',
     conflicts:    '#conflictsMenuItem',
-    calendar:     '#calendarMenuItem',
-    announcements:'#announcementsMenuItem',
     reports:      '#reportsMenuItem',
     uploads:      '#uploadsMenuItem',
     users:        '#usersMenuItem'

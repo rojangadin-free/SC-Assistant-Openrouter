@@ -153,12 +153,6 @@
 .back-button:hover { background: var(--border); }
 .section-header h2 { font-size: 1.5rem; font-weight: 700; color: var(--text-primary); margin: 0; }
 
-.admin-editor-grid { display: grid; gap: .6rem; align-items: end; }
-.admin-editor-grid > * { min-width: 0; }
-.calendar-editor-grid { grid-template-columns: 1.4fr .9fr .9fr 1.4fr auto; }
-.announcement-editor-grid { grid-template-columns: 1fr 1fr 1fr 1fr auto; }
-.dashboard-content .calendar-scan-year { width: 6.5rem; font-size: .85rem; }
-.calendar-preview-query { flex: 1; min-width: 16rem; }
 .report-details-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
 .report-context { padding: 1.25rem; }
 .mobile-table-hint { display: none; }

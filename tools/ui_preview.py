@@ -19,8 +19,8 @@ nothing about production.
 
 It is deliberately NOT a test double for the API. Payload shapes are copied from
 what the front-end reads (see chat.js) only as far as is needed to make the page
-look like a page: a conversation list with entries in it, an announcement banner
-with a notice in it, an answer that streams in token by token. Those are the
+look like a page: a conversation list with entries in it, populated dashboard
+tables, and an answer that streams in token by token. Those are the
 states worth reviewing, and they are exactly the states you never see on an
 empty dev database.
 """
@@ -212,6 +212,7 @@ def clear():
 
 @app.get("/api/announcements")
 def announcements():
+    # Legacy data stays populated so UI tests catch any accidental banner polling.
     return jsonify({
         "success": True,
         "viewer": "student",

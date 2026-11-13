@@ -42,7 +42,7 @@ import tempfile      # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from typing import Optional  # noqa: E402
-from unittest.mock import patch  # noqa: E402
+from unittest.mock import Mock, patch  # noqa: E402
 
 # A temp vocabulary, set BEFORE rag.spelling is imported: the module reads the
 # path at import time, and the real spell_vocab.json is a build artefact whose
@@ -604,9 +604,8 @@ namespace = {
     "source_priority": lambda *args, **kwargs: {}, "doc_key": lambda source: source,
     "get_doc_dates": lambda: {},
     "authority_block": lambda *args: "", "freshness_block": lambda *args, **kwargs: "",
-    "calendar_block": lambda *args: "", "announcement_block": lambda **kwargs: "",
     "resolve_role": lambda *args, **kwargs: "student",
-    "announcement_audience": lambda role: "students", "role_block": lambda role: "",
+    "role_block": lambda role: "",
     "emit_phase": lambda *args, **kwargs: None,
     "system_prompt": "Documents:\n{retrieved_docs}\nHistory:\n{chat_history}",
     "build_citations": lambda docs: [doc.metadata["chunk_id"] for doc in docs],
@@ -802,17 +801,25 @@ language_cases = [
     ("Pila an bayad sa enrollment?", english_history, "test-image"),
     ("", local_history, "test-image"),
 ]
+notice_doc = SimpleNamespace(
+    page_content=("NOTICE: Walang pasok sa November 16, 2026. "
+                  "Enrollment extended until November 20, 2026."),
+    metadata={"source": "campus-notice.pdf", "page": 2, "chunk_id": "notice"},
+)
 language_policy = namespace["response_language_prompt"]
 with patch.object(reranker, "_load_model", return_value=None):
     with patch.dict(namespace, {
         "system_prompt": answer_prompts.system_prompt,
-        "announcement_block": lambda **kwargs: "<announcements>Walang pasok bukas.</announcements>",
+        "retriever": SimpleNamespace(invoke=lambda query: [notice_doc]),
     }):
         for question, prior, image in language_cases:
             snapshot, state = chat_snapshot(question, prior, image)
             label = f"{question!r} (image={bool(image)})"
             check(f"language policy is last in the system prompt: {label}",
                   bool(language_policy) and snapshot["messages"][0].endswith(language_policy))
+            if question:
+                check(f"the retrieved notice remains reference material: {label}",
+                      notice_doc.page_content in snapshot["messages"][0])
             text = snapshot["messages"][-1]
             if image:
                 text = text[0]["text"].split("\n\n[System Note - Image Analysis Provided]:", 1)[0]
@@ -820,6 +827,134 @@ with patch.object(reranker, "_load_model", return_value=None):
                   len(snapshot["messages"]) == 2 and text == question)
             check(f"language handling does not rewrite stored input/history: {label}",
                   state["input"] == question and state["chat_history"] == prior)
+
+
+# ============================================================
+section("12. Calendar and announcement answers use documents, not manual feeds")
+# ============================================================
+from rag import freshness  # noqa: E402
+
+check("chat no longer imports manual calendar/announcement providers", not any(
+    isinstance(item, ast.ImportFrom) and (
+        item.module in ("rag.calendar", "rag.announcements")
+        or (item.module == "rag.roles"
+            and any(alias.name == "announcement_audience" for alias in item.names))
+    ) for item in tree.body
+))
+check("the prompt has no manual-feed placeholders or authority rules", all(
+    marker not in answer_prompts.system_prompt for marker in (
+        "{calendar_context}", "{announcements}", "<calendar>", "<announcements>",
+        "THE CALENDAR SECTION IS THE AUTHORITY", "ANNOUNCEMENTS BEAT EVERY DOCUMENT",
+    )
+))
+
+calendar_doc = SimpleNamespace(
+    page_content=("ACADEMIC CALENDAR: Enrollment closes November 15, 2026. "
+                  "Classes meet on November 16, 2026."),
+    metadata={"source": "academic-calendar.pdf", "page": 3, "chunk_id": "calendar"},
+)
+date_records = {
+    "academic-calendar.pdf": {"filename": "academic-calendar.pdf", "effective_date": "2026-06-01"},
+    "campus-notice.pdf": {"filename": "campus-notice.pdf", "effective_date": "2026-11-12"},
+}
+# Assertions must also inspect calls: call_llm catches provider exceptions.
+manual_providers = {
+    name: Mock(side_effect=AssertionError(f"{name} must not be consulted"))
+    for name in ("calendar_block", "announcement_block", "announcement_audience")
+}
+verified_facts = "<verified_facts>Registrar: Dr. Verified Person.</verified_facts>"
+fact_provider = Mock(return_value=verified_facts)
+student_record = {"full_name": "Test Student"}
+student_context = "STUDENT PERSONAL RECORD\nName: Test Student\nSchedule: PRIVATE_SCHEDULE_0830"
+uid_lookup = Mock(return_value=student_record)
+email_lookup = Mock(return_value=student_record)
+student_formatter = Mock(return_value=student_context)
+
+# Real date/role helpers, with the date snapshot supplied in memory. A missing
+# snapshot must fail rather than fall through to a local or live metadata store.
+with patch.object(reranker, "_load_model", return_value=None), patch.object(
+    freshness, "get_doc_dates", side_effect=AssertionError("Unexpected metadata-store read"),
+):
+    with patch.dict(namespace, {
+        **manual_providers,
+        "system_prompt": answer_prompts.system_prompt,
+        "retriever": SimpleNamespace(invoke=lambda query: [calendar_doc, notice_doc]),
+        "FINAL_TOP_K": 2,
+        "get_doc_dates": lambda: date_records,
+        "source_priority": freshness.source_priority, "doc_key": freshness.doc_key,
+        "freshness_block": freshness.freshness_block, "authority_block": fact_provider,
+        "resolve_role": roles.resolve_role, "role_block": roles.role_block,
+        "datetime": SimpleNamespace(now=lambda: datetime(2026, 11, 13)),
+        "get_student_by_uid": uid_lookup, "get_student_by_email": email_lookup,
+        "format_student_context": student_formatter,
+    }):
+        for label, question, identity, expected_role in (
+            ("guest calendar", "When is enrollment?", {"role": "guest"}, "guest"),
+            ("student notice", "Are classes suspended?", {"role": "student"}, "student"),
+            ("staff calendar", "When is enrollment?", {"role": "registrar"}, "faculty"),
+            ("legacy faculty notice", "Are classes suspended?", {"is_faculty": True}, "faculty"),
+            ("unlabelled calendar", "When is enrollment?", {}, "student"),
+        ):
+            result = node({"input": question, "chat_history": [], **identity})
+            messages = result["messages_to_llm"]
+            assembled = messages[0].content if messages else ""
+            check(f"{label}: the accepted question still reaches the answer model",
+                  len(messages) == 2 and messages[-1].content == question)
+            check(f"{label}: both retrieved documents and their citations survive",
+                  all(doc.page_content in assembled
+                      and f"Source: {doc.metadata['source']} | Page: {doc.metadata['page']}" in assembled
+                      for doc in (calendar_doc, notice_doc))
+                  and result["citations"] == ["calendar", "notice"])
+            check(f"{label}: effective dates rank the notice above the calendar",
+                  "[DOCUMENT 1] [SUPERSEDED \u2014 effective 2026-06-01;" in assembled
+                  and "[DOCUMENT 2] [MOST RECENT SOURCE \u2014 effective 2026-11-12]" in assembled
+                  and "<document_dates>\n" in assembled
+                  and "campus-notice.pdf \u2014 effective 2026-11-12 (NEWEST)" in assembled
+                  and "A NEWER DOCUMENT SUPERSEDES AN OLDER ONE" in assembled)
+            check(f"{label}: today's date still grounds the answer",
+                  "The current date is November 13, 2026." in assembled)
+            check(f"{label}: admin-verified facts still receive the question and evidence",
+                  verified_facts in assembled and "ADMIN-VERIFIED FACTS OUTRANK EVERYTHING" in assembled
+                  and fact_provider.call_args.args[:2] == (question, question)
+                  and all(doc.page_content in fact_provider.call_args.args[2]
+                          for doc in (calendar_doc, notice_doc)))
+            check(f"{label}: role guidance is unchanged",
+                  roles.role_block(expected_role) in assembled)
+        check("role alone never fetches a student record",
+              not uid_lookup.called and not email_lookup.called and not student_formatter.called)
+
+        for consent in (True, False):
+            # Exercise the UID path and its existing email fallback without AWS.
+            uid_lookup.return_value = student_record if consent else None
+            uid_lookup.reset_mock()
+            email_lookup.reset_mock()
+            student_formatter.reset_mock()
+            result = node({
+                "input": "What is my schedule?", "chat_history": [], "role": "student",
+                "uid": "test-account-uid", "user_email": "student@example.invalid",
+                "data_consent": consent,
+            })
+            messages = result["messages_to_llm"]
+            assembled = messages[0].content if messages else ""
+            check(f"consent={consent}: only the account holder's UID is looked up",
+                  uid_lookup.call_count == 1 and uid_lookup.call_args.args == ("test-account-uid",))
+            if consent:
+                check("consenting students retain their formatted personal record",
+                      student_context in assembled and student_formatter.call_count == 1
+                      and student_formatter.call_args.args == (student_record,)
+                      and not email_lookup.called)
+            else:
+                check("a missing UID record still falls back to the account email",
+                      email_lookup.call_count == 1
+                      and email_lookup.call_args.args == ("student@example.invalid",))
+                check("consent opt-out retains only the basic profile, never the private schedule",
+                      "Name: Test Student" in assembled
+                      and "explicitly opted out" in assembled
+                      and "PRIVATE_SCHEDULE_0830" not in assembled
+                      and not student_formatter.called)
+
+        for name, provider in manual_providers.items():
+            check(f"{name} is never consulted during prompt assembly", not provider.called)
 
 
 print(f"\n{'='*60}")

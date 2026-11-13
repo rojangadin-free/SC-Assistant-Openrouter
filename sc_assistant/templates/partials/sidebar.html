@@ -60,9 +60,9 @@
       {# ═══════════════════════════════════════════════════════════════════════
          ORDER OF THIS MENU
 
-         These ten sections were added one at a time and the menu was left in the
+         These sections were added one at a time and the menu was left in the
          order they were built — an order that means something to whoever built it
-         and nothing to anyone else. Finding a screen meant reading all ten
+         and nothing to anyone else. Finding a screen meant reading all the
          labels, and the most urgent item ("Ask a Human", where a student is
          actually waiting for a reply) sat eighth.
 
@@ -156,35 +156,12 @@
               style="display:none;">0</span>
       </button>
 
-      {# ── What the assistant knows, and what it is telling students today. ─ #}
+      {# Source documents supply the assistant's reference material. #}
       <div class="menu-group"><span>Knowledge base</span></div>
 
-      {# First in this group: everything the assistant can answer from arrives
-         through here, so it is the most-visited screen of the three. #}
       <button type="button" class="menu-item" id="uploadsMenuItem" title="Manage source documents">
         <i class="fas fa-cloud-upload-alt"></i>
         <span>Documents</span>
-      </button>
-
-      {# Badge counts periods that are OPEN RIGHT NOW. Green, because unlike the
-         "Needs attention" badges this is not a problem to fix — it is what the
-         assistant is currently telling students is happening. #}
-      <button type="button" class="menu-item" id="calendarMenuItem" title="Academic calendar">
-        <i class="fas fa-calendar-day"></i>
-        <span>Academic calendar</span>
-        <span id="sidebarCalendarBadge" class="sc-count sc-count--green"
-              style="display:none;">0</span>
-      </button>
-
-      {# Amber, neither red nor green: an announcement is not a defect to fix and
-         not business as usual. The count is what students are being shown right
-         now, which is the one number an admin needs at a glance during a
-         suspension. #}
-      <button type="button" class="menu-item" id="announcementsMenuItem" title="Announcements shown to students">
-        <i class="fas fa-bullhorn"></i>
-        <span>Announcements</span>
-        <span id="sidebarAnnouncementsBadge" class="sc-count sc-count--amber"
-              style="display:none;">0</span>
       </button>
 
       {# ── Accounts. Real work, done rarely, so it is out of the way. ─────── #}
@@ -196,7 +173,7 @@
       </button>
 
       {# Below a divider because this is not a dashboard section — it opens the
-         student chat in a new tab. Flush in the list it read as an eleventh
+         student chat in a new tab. Flush in the list it read as another
          screen, and losing the dashboard to a mis-click is a poor reward for
          being one pixel out. #}
       <div class="menu-divider"></div>

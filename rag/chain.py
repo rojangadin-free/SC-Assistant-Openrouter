@@ -22,9 +22,7 @@ from rag.freshness import freshness_block, source_priority, doc_key, get_doc_dat
 
 from rag.citations import build_citations
 
-from rag.calendar import calendar_block
-from rag.announcements import announcement_block
-from rag.roles import resolve_role, announcement_audience, role_block
+from rag.roles import resolve_role, role_block
 
 from rag.language import language_variants
 from rag.dictation import dictation_variants
@@ -751,9 +749,7 @@ class ChatState(TypedDict):
     uid: Optional[str]
     user_email: Optional[str]
     data_consent: Optional[bool]
-    # Faculty see faculty-only announcements; students never do. Defaults to
-    # False, i.e. the student view, because leaking an internal notice to a
-    # student is the worse of the two mistakes.
+    # Legacy faculty flag; still shapes the answer's point of view.
     is_faculty: Optional[bool]
     # Who is asking: "guest" | "student" | "faculty". Shapes WHICH SIDE of a
     # process the answer describes — the steps a student performs, or the steps
@@ -1057,10 +1053,9 @@ def create_graph():
                         future.cancel()
 
             # Retrieval is done; everything from here to the answer call is
-            # prompt assembly — verified facts, document dates, calendar,
-            # announcements, role. Cheap individually, but the history summary
-            # below is another LLM call on a long conversation, so this is a real
-            # phase and not a rounding error.
+            # prompt assembly: verified facts, document dates, and role guidance.
+            # The history summary below is another LLM call on a long
+            # conversation, so this is a real phase and not a rounding error.
             emit_phase(
                 progress,
                 "preparing",
@@ -1072,7 +1067,7 @@ def create_graph():
             )
 
             # Whatever the optimizer did or did not do, the search text used for
-            # the keyword-gated blocks below is what retrieval actually ran with.
+            # verified-fact matching below is what retrieval actually ran with.
             standalone_query = pick_search_query(user_text, standalone_query)
 
 
@@ -1123,26 +1118,9 @@ def create_graph():
                 print(f"  Applied document dates:\n{document_dates}")
 
 
-            # Timing, pre-computed. The prompt already carries today's date, but
-            # a date is not a deadline: "is June 15 still open on June 3, and how
-            # many days is that" is arithmetic, and arithmetic is what an LLM
-            # does confidently and wrongly. Only questions that mention timing
-            # get this block, so ordinary questions pay nothing for it.
-            calendar_context = calendar_block(f"{user_text} {standalone_query}")
-            if calendar_context:
-                print(f"  Applied calendar context:\n{calendar_context}")
-
-            # Live announcements ("classes suspended tomorrow"). Unlike the
-            # calendar this is NOT keyword-gated: a suspension is relevant to
-            # "is the library open", "should i go to campus" and "what time is my
-            # class", and guessing that list in advance is how the one phrasing
-            # nobody thought of gets the document's answer during a typhoon.
-            #
-            # The audience is derived from the role rather than read straight off
-            # `is_faculty`, because that flag was never populated by any caller:
-            # every request — the registrar's included — resolved to the student
-            # feed, which made faculty-scoped notices undeliverable in practice.
-            # `is_faculty` is still honoured so an older caller keeps working.
+            # Which SIDE of a process to describe. A teacher asking "how do I
+            # enroll a student" needs their own steps, not the queue a student
+            # stands in. Always present: there is always somebody asking.
             asker_role = resolve_role(
                 state.get("role"),
                 is_guest=bool(state.get("role") == "guest"),
@@ -1150,16 +1128,6 @@ def create_graph():
             if state.get("is_faculty") and asker_role != "faculty":
                 asker_role = "faculty"
 
-            announcements = announcement_block(
-                audience=announcement_audience(asker_role)
-            )
-            if announcements:
-                print(f"  Applied announcements:\n{announcements}")
-
-            # Which SIDE of a process to describe. A teacher asking "how do I
-            # enroll a student" needs their own steps, not the queue a student
-            # stands in. Always present — there is always somebody asking, and
-            # leaving it unsaid is what made everyone a student by default.
             asker = role_block(asker_role)
             print(f"  Asker role: {asker_role}")
 
@@ -1174,12 +1142,7 @@ def create_graph():
                 retrieved_docs=context_str,
                 verified_facts=verified_facts,
                 document_dates=document_dates,
-                announcements=announcements,
                 asker=asker,
-                calendar_context=calendar_context,
-
-
-
                 chat_history=history_str,
                 student_context=student_context,
                 current_date=datetime.now().strftime("%B %d, %Y")

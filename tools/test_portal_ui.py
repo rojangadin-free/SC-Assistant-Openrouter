@@ -25,10 +25,14 @@ def main():
 
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    errors, audit = [], []
+    errors, audit, retired_requests = [], [], []
 
     def route_request(route):
         url = urlsplit(route.request.url)
+        if url.netloc == origin.netloc and url.path.startswith((
+            "/api/announcements", "/admin/calendar/", "/admin/announcements/",
+        )):
+            retired_requests.append(route.request.url)
         if url.hostname == "ui-avatars.com":
             route.fulfill(content_type="image/svg+xml", body='<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="24" fill="#e4ece5"/><text x="24" y="30" text-anchor="middle" fill="#24462c" font-family="sans-serif" font-size="16">JD</text></svg>')
         elif url.netloc == origin.netloc or (route.request.method == "GET" and url.hostname in (
@@ -68,9 +72,8 @@ def main():
             toggle = floating.locator("#themeToggle")
             expect(toggle).to_have_css("pointer-events", "auto")
             box = toggle.bounding_box()
-            content = page.locator("#announcementBanner")
-            if not content.is_visible():
-                content = page.locator("#messagesContainer")
+            expect(page.locator("#announcementBanner, .ann-notice")).to_have_count(0)
+            content = page.locator("#messagesContainer")
             content_box = content.bounding_box()
             assert box and box["width"] >= 44 and box["height"] >= 44
             assert content_box and box["y"] + box["height"] <= content_box["y"] + 1
@@ -273,33 +276,29 @@ def main():
             }""")
             assert not clipped, clipped
 
-        open_section("calendar", "calendar")
-        expect(page.locator("#calList .cal-card")).to_have_count(3)
-        columns = page.locator(".calendar-editor-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length")
-        assert columns == (1 if width <= 600 else 2 if width <= 1100 else 5)
-        assert_controls_fit()
-        capture(page, f"calendar-mobile-layout-{width}-{theme}")
-        page.locator('[data-key="mobile-calendar-active"] .cal-edit').click()
-        expect(page.locator("#calLabel")).to_be_focused()
-        expect(page.locator("#calLabel")).to_be_in_viewport()
-        assert page.locator("#calLabel").input_value()
-        assert page.locator("#calStart").input_value()
-        page.locator("#calPreviewQ").fill("Can a transferee submit enrollment documents after the listed deadline?")
-        assert_controls_fit()
+        expect(page.locator(
+            "#calendarMenuItem, #announcementsMenuItem, #calendarSection, #announcementsSection, "
+            "#sidebarCalendarBadge, #sidebarAnnouncementsBadge"
+        )).to_have_count(0)
+        expect(page.locator('.sidebar .menu-item[id$="MenuItem"]')).to_have_count(8)
 
-        open_section("announcements", "announcements")
-        expect(page.locator("#annList .ann-card")).to_have_count(2)
-        columns = page.locator(".announcement-editor-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length")
-        assert columns == (1 if width <= 600 else 2 if width <= 1100 else 5)
-        page.locator('[data-key="mobile-announcement-live"] .ann-edit').click()
-        expect(page.locator("#annTitle")).to_be_focused()
-        expect(page.locator("#annTitle")).to_be_in_viewport()
-        expect(page.locator("#annSaveBtn")).to_contain_text("Save changes")
-        assert_controls_fit()
-        capture(page, f"announcement-mobile-edit-{width}-{theme}")
-        page.locator("#annCancelEditBtn").click()
-        expect(page.locator("#annTitle")).to_have_value("")
-        expect(page.locator("#annSaveBtn")).to_contain_text("Post")
+        # Persisted navigation from the removed screens must not restore a blank page.
+        for saved in ("calendarMenuItem", "announcementsMenuItem"):
+            page.evaluate("saved => localStorage.setItem('dashboardLastSection', saved)", saved)
+            page.reload(wait_until="networkidle")
+            expect(page.locator("#analyticsSection")).to_be_visible()
+            expect(page.locator(".dashboard-section.active")).to_have_count(1)
+            expect(page.locator(".header-left span")).to_have_text("Overview")
+            expect(page.locator("#kpiQuestions")).to_have_text("412")
+        if width <= 768:
+            page.locator("#hamburgerMenu").click()
+        capture(page, f"dashboard-navigation-{width}-{theme}")
+        if width <= 768:
+            page.keyboard.press("Escape")
+        for section in ("analytics", "escalations", "gaps", "conflicts", "feedback"):
+            open_section(section, section)
+            expect(page.locator(".dashboard-section.active")).to_have_count(1)
+            assert_controls_fit()
 
         open_section("reports", "reports")
         expect(page.locator("#reportsTbody .r-view-btn")).to_have_count(2)
@@ -349,6 +348,9 @@ def main():
         capture(page, f"users-mobile-actions-{width}-{theme}")
 
         open_section("uploads", "upload")
+        page.reload(wait_until="networkidle")
+        expect(page.locator("#uploadSection")).to_be_visible()
+        assert page.evaluate("localStorage.getItem('dashboardLastSection')") == "uploadsMenuItem"
         expect(page.locator("#fileList .file-item")).to_have_count(3)
         assert_controls_fit()
         capture(page, f"documents-mobile-filenames-{width}-{theme}")
@@ -642,9 +644,10 @@ def main():
                 page.keyboard.press("Enter")
                 expect(page.locator("#loginForm")).to_be_visible()
                 guest.close()
-            print(json.dumps({"errors": errors, "audit": audit}, indent=2))
+            print(json.dumps({"views": len(audit), "errors": errors, "retired_requests": retired_requests, "audit": audit}, indent=2))
             if not args.diagnostic:
                 assert not errors, errors
+                assert not retired_requests, retired_requests
         finally:
             browser.close()
 

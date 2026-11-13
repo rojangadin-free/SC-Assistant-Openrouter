@@ -371,10 +371,6 @@ body, .main-section { background: var(--con-canvas); }
 
 @media (max-width: 1100px) {
   .page-content { padding: 24px; }
-  .dashboard-content .admin-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dashboard-content .calendar-editor-grid > :first-child,
-  .dashboard-content .calendar-editor-grid > :nth-child(4),
-  .dashboard-content .admin-editor-grid > button { grid-column: 1 / -1; }
   .dashboard-content .sc-input, .dashboard-content .sc-textarea, .dashboard-content .sc-select { font-size: 16px; min-width: 0; }
 }
 @media (max-width: 768px) {
@@ -399,7 +395,6 @@ body, .main-section { background: var(--con-canvas); }
   .dashboard-content .sc-toolbar-right > label { grid-column: 1 / -1; }
   .dashboard-content .sc-toolbar-right > input, .dashboard-content .sc-toolbar-right > select { width: 100%; min-width: 0; }
   .dashboard-content .sc-row > input, .dashboard-content .sc-row > select { min-width: 0; max-width: 100%; }
-  .dashboard-content .calendar-preview-query { flex-basis: 100%; width: 100%; min-width: 0; }
   .dashboard-content .sc-btn, .dashboard-content .file-action, .dashboard-content .back-button,
   #reportDetailModal button, #editUserModal button { min-height: 44px; min-width: 44px; }
   .dashboard-content .sc-input, .dashboard-content .sc-textarea, .dashboard-content .sc-select { font-size: 16px; }
@@ -432,13 +427,6 @@ body, .main-section { background: var(--con-canvas); }
   #rdActions > #rdDoneBtn { flex-basis: 100%; }
   #reportDetailBox.modal-fullscreen { width: calc(100vw - 32px) !important; max-width: calc(100vw - 32px) !important; height: calc(100dvh - 32px) !important; }
   #reportDetailBox.modal-fullscreen #closeReportDetailBtn { display: inline-flex !important; }
-}
-@media (max-width: 600px) {
-  .dashboard-content .admin-editor-grid { grid-template-columns: minmax(0, 1fr); }
-  .dashboard-content .sc-row:has(> #calPreviewQ) > .sc-select,
-  .dashboard-content .sc-row:has(> #annPreviewAudience) > .sc-select { width: 100%; }
-  .dashboard-content .sc-row:has(> #calPreviewQ) > .sc-btn,
-  .dashboard-content .sc-row:has(> #annPreviewAudience) > .sc-btn { width: 100%; }
 }
 @media (max-width: 480px) {
   .dashboard-content .sc-toolbar-right { grid-template-columns: minmax(0, 1fr); }

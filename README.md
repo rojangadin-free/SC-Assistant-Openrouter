@@ -419,21 +419,25 @@ python tools/check_data_conflicts.py && python store_index.py
 ## Admin
 
 Admin work happens on one page, **`/dashboard`** (plus `/admin/reports/` for generated
-reports). Each feature is a panel there, backed by its own JSON API namespace:
+reports). Supporting JSON API namespaces include:
 
-| API namespace | Panel |
+| API namespace | Purpose |
 |---|---|
 | `/admin/conflicts/…` | Pin the correct value when documents disagree |
 | `/admin/gaps/…` | Questions the assistant couldn't answer |
 | `/admin/feedback/…` | Answer votes and the Ask-a-Human queue |
-| `/admin/calendar/…` | Academic periods and deadlines |
-| `/admin/announcements/…` | Post and expire notices |
 | `/admin/freshness/…` | Document dates, and the pre-index upload scan |
 | `/admin/analytics/…` | Volume, top topics, refusal rate |
 | `/admin/reports/` | Generated reports (its own page) |
 
-`/api/announcements` is the one public endpoint of that set — the chat page reads it to
-draw the banner for students.
+Upload official academic calendars and notices through **Documents**. The manual
+Academic Calendar and Announcements panels and chat announcement banners are removed.
+Chat uses retrieved documents for these topics, with the existing effective-date
+priority rules; upload order alone does not establish priority.
+
+Existing manual records and their legacy calendar/announcement APIs are preserved,
+but chat no longer reads those records or polls `/api/announcements`. Uploading a
+document does not create automatic countdowns, scheduled banners, or audience targeting.
 
 ---
 

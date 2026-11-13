@@ -441,77 +441,6 @@
       font-weight: 600;
     }
 
-    /* ── Pinned announcements ────────────────────────── */
-    /* Above the scroll area, not inside it. An announcement that scrolls away is
-       an announcement the student can miss, which defeats the entire point of
-       posting it rather than waiting to be asked. */
-    .announcement-banner {
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 10px 18px 4px;
-    }
-    .ann-notice {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      border-left-width: 4px;
-      background: var(--bg-surface);
-      font-size: .82rem;
-      color: var(--text-primary);
-      line-height: 1.45;
-    }
-    /* Colour carries urgency, but never alone — each level also states its own
-       word ("Urgent", "Reminder"), so it survives a colourblind reader and a
-       dark theme. */
-    .ann-notice.urgent    { border-left-color: #c0392b; background: rgba(192,57,43,.07); }
-    .ann-notice.important { border-left-color: #d4920a; background: rgba(212,146,10,.07); }
-    .ann-notice.info      { border-left-color: #3b82f6; background: rgba(59,130,246,.06); }
-    .ann-notice > i { margin-top: 2px; flex-shrink: 0; }
-    .ann-notice.urgent    > i { color: #c0392b; }
-    .ann-notice.important > i { color: #d4920a; }
-    .ann-notice.info      > i { color: var(--ui-info-ink); }
-    .ann-notice-text { flex: 1; min-width: 0; }
-    .ann-notice-kind {
-      font-size: var(--text-xs);
-      /* 800 is a real weight now: base.html loads Inter as a 400–800 variable
-         font. It used to request only 400/500/600/700, so this label was being
-         faux-bolded — the browser smearing 700 outward, which is exactly the
-         blurring you do not want on 10px uppercase. */
-      font-weight: 800;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      opacity: .85;
-    }
-    .ann-notice-title { font-weight: 700; display: block; }
-    .ann-notice-body { opacity: .9; }
-    .ann-notice-until {
-      display: block;
-      margin-top: 3px;
-      font-size: var(--text-xs);
-      color: var(--text-secondary);
-    }
-    /* Dismiss hides it for this browser only, and only until the notice changes.
-       Server-side "read" state would be wrong here: a suspension is not a message
-       to one person, and someone else using the same account still needs to see it. */
-    .ann-notice-close {
-      background: none;
-      border: none;
-      color: var(--text-secondary);
-      font-size: 1rem;
-      line-height: 1;
-      padding: 0 2px;
-      opacity: .55;
-      cursor: pointer;
-      transition: opacity .2s, color .2s;
-    }
-    .ann-notice-close:hover { opacity: 1; color: #c0392b; }
-
-
     /* ── Modal (Ask a human) ─────────────────────────── */
     .report-modal-overlay {
       position: fixed;
@@ -644,13 +573,6 @@
     <div class="loader-overlay" id="conversationLoader" style="display: none;">
       <div class="loader-spinner"></div>
     </div>
-
-    {# Pinned notices. Deliberately ABOVE the message list rather than inside
-       it: a student who opens the chat during a suspension needs to see it
-       without asking, and a message bubble would scroll away the moment they
-       typed. Filled by chat.js from /api/announcements; stays empty (and
-       invisible) when there is nothing live. #}
-    <div id="announcementBanner" class="announcement-banner" style="display:none;"></div>
 
     {# tabindex="-1" makes this a valid skip-link destination: without it the
        browser scrolls the transcript into view but leaves focus on <body>, so
