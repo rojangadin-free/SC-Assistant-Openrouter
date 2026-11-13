@@ -20,12 +20,13 @@ from aws.s3 import get_s3_presigned_url
 from aws.dynamodb import (
     upsert_conversation, list_conversations,
     get_conversation, delete_conversation_from_db,
-    save_report
+    save_report, record_guest_conversation
 )
 from rag.gaps import looks_unanswered, record_gap
 from rag.feedback import record_vote, remove_vote, get_vote, get_votes
 from rag.roles import resolve_role
 from rag.progress import ProgressChannel
+from rag.topic_usage import classify_topic, record_topic_usage, suggested_questions
 
 
 
@@ -60,6 +61,15 @@ def chat_page():
         "is_guest": _is_guest(),
     }
     return render_template("chat.html", user=user_obj, start_new=str(start_new).lower())
+
+
+@bp.get("/api/suggestions")
+def chat_suggestions():
+    if not session.get("user"):
+        return jsonify({"success": False, "error": "Please open a chat session first."}), 401
+    response = jsonify({"success": True, "suggestions": suggested_questions()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @bp.route("/get", methods=["POST"])
@@ -400,8 +410,24 @@ def chat():
                 budget.remaining()
                 if guest:
                     chat_runtime.save_guest(session_id, full_history_to_save)
+                    budget.remaining()
+                    # The conditional marker is safe to retry on every completed
+                    # turn, including after temporary guest history expires.
+                    try:
+                        record_guest_conversation(session_id)
+                    except Exception:  # noqa: BLE001 - optional accounting must not reject the answer
+                        print("[chat] Guest conversation count could not be recorded (non-fatal).")
                 elif uid:
                     upsert_conversation(uid, conv_id, full_history_to_save, created_at)
+
+                budget.remaining()
+                try:
+                    topic = classify_topic(msg, history=current_db_history, has_image=has_image)
+                    if topic is not None:
+                        budget.remaining()
+                        record_topic_usage(topic, answer_msg_id)
+                except Exception:  # noqa: BLE001 - optional accounting must not reject the answer
+                    print("[chat] Topic usage could not be recorded (non-fatal).")
 
             work["future"] = preparation_pool.submit(persist)
             work["future"].add_done_callback(release_if_closed)
@@ -414,7 +440,7 @@ def chat():
             work["future"].result()
             budget.remaining()
 
-            # 🚀 3. If guest, yield done and exit WITHOUT saving to the DynamoDB database
+            # Guests receive no saved-history ID; their conversation row is metadata-only.
             if guest:
                 yield f"data: {json.dumps({'type': 'done', 'conv_id': None, 'new_conversation_created': False, 'new_conv_title': None, 'unanswered': unanswered, 'citations': shown_citations, 'msg_id': answer_msg_id})}\n\n"
                 return
@@ -480,18 +506,8 @@ def submit_report():
     """
     Body: {msg_id, msg_snippet, reason, other_text, conv_id, question, sources[]}
 
-    This is where a report is *created*, and the only place. It is reached by
-    answering "What went wrong?" after a 👎.
-
-    The downvote deliberately no longer files one by itself. A bare 👎 says an
-    answer was unhelpful, which is a number; a report is a work order that an
-    admin will open, read and act on. Filing one for every thumb filled the queue
-    with rows whose only content was "someone disliked this", and the reasoned
-    complaints — the ones that name a wrong figure or an outdated date — were
-    buried among them. The vote is still recorded either way (see
-    /chat/feedback), so nothing is lost by waiting for the reason: the
-    satisfaction metric counts the thumb, the queue holds only what someone
-    actually explained.
+    Choosing a reason under the report flag creates the report directly. No vote
+    is required or written; merely opening or closing the options files nothing.
 
     `save_report()` is keyed on `msg_id`, so picking a second reason for the same
     answer corrects that row instead of adding another.
@@ -504,35 +520,51 @@ def submit_report():
         return jsonify({"error": "Not authenticated"}), 401
     if _is_guest():
         return jsonify({"error": "Guests cannot submit reports. Please log in."}), 403
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "Invalid report body."}), 400
+    for field, limit in (("msg_id", 200), ("reason", 100), ("other_text", 300),
+                         ("msg_snippet", 1000), ("question", 4000)):
+        value = data.get(field, "")
+        if not isinstance(value, str) or len(value) > limit:
+            return jsonify({"success": False, "message": f"Invalid report {field}."}), 400
+    msg_id, reason = data.get("msg_id", "").strip(), data.get("reason", "").strip()
+    other_text = data.get("other_text", "").strip()
+    if not msg_id or not reason or (reason == "Others" and not other_text):
+        return jsonify({"success": False, "message": "Choose a reason and provide details for Something else."}), 400
+    conv_id, sources = data.get("conv_id"), data.get("sources")
+    if sources is None:
+        sources = []
+    if conv_id is not None and (not isinstance(conv_id, str) or len(conv_id) > 200):
+        return jsonify({"success": False, "message": "Invalid report conversation."}), 400
+    if (not isinstance(sources, list) or len(sources) > 50
+            or any(not isinstance(source, str) or len(source) > 512 for source in sources)):
+        return jsonify({"success": False, "message": "Invalid report sources."}), 400
     try:
-        data        = request.get_json()
-        msg_snippet = data.get("msg_snippet", "")
-        reason      = data.get("reason", "")
-        other_text  = data.get("other_text", "")
-        conv_id     = data.get("conv_id")
-        msg_id      = data.get("msg_id", "")
-
-        save_report({
+        report_id = save_report({
             "reporter_email": session.get("user"),
             "reporter_uid":   session.get("uid"),
             "conv_id":        conv_id,
             "msg_id":         msg_id,
             "reason":         reason,
             "other_text":     other_text,
-            "msg_snippet":    msg_snippet,
+            "msg_snippet":    data.get("msg_snippet", ""),
             "question":       data.get("question", ""),
-            "sources":        data.get("sources") or [],
-            "source":         "downvote",
+            "sources":        sources,
+            "source":         "report",
         })
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        print(f"Error saving report: {e}")
-        return jsonify({"error": str(e)}), 500
+        if not report_id:
+            raise RuntimeError("Report was not saved.")
+        return jsonify({"status": "ok", "success": True})
+    except Exception:
+        print("[chat] Report could not be saved.")
+        return jsonify({"success": False, "message": "Could not submit your report. Please try again."}), 500
 
 
 @bp.route("/feedback", methods=["POST"])
 def submit_feedback():
     """
+    Legacy voting API; the current chat UI uses /chat/report instead.
     Body: {msg_id, verdict: "up"|"down"|null, question, answer, sources[], comment}
     An explicit null retracts this session's vote without deleting a filed report.
 
@@ -611,7 +643,7 @@ def submit_feedback():
 
 @bp.route("/feedback/<msg_id>", methods=["GET"])
 def read_feedback(msg_id):
-    """Lets the UI restore the 👍/👎 state for a single answer."""
+    """Legacy vote lookup for previously recorded feedback."""
     if not session.get("user"):
         return jsonify({"success": False, "message": "Not authenticated"}), 401
     vote = get_vote(msg_id)
@@ -623,6 +655,7 @@ def read_feedback(msg_id):
 @bp.route("/feedback/batch", methods=["POST"])
 def read_feedback_batch():
     """
+    Legacy batch lookup for retained votes and older clients.
     Body: {msg_ids: [...]} → {votes: {msg_id: vote}}
 
     Reopening a conversation has to restore the thumb on every answer in it. Done

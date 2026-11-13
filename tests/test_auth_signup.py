@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import re
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -20,6 +21,8 @@ class SignupTests(unittest.TestCase):
         self.app = create_test_app(self.cognito, SimpleNamespace(time=lambda: self.now))
         self.client = self.app.test_client()
         self.ns = self.app.extensions["auth_test"]["namespace"]
+        self.login_events = self.app.extensions["auth_test"]["login_events"]
+        self.addCleanup(self.app.extensions["auth_test"]["reset_tmp"].cleanup)
 
     def signup(self, **changes):
         self.client.get("/signup")
@@ -55,7 +58,8 @@ class SignupTests(unittest.TestCase):
         self.assertNotIn(b'id="signupIdNotice"', signup.data)
 
     def test_signup_is_excluded_from_the_pwa_cache(self):
-        from sc_assistant.pwa import CACHE_VERSION, bp_pwa
+        with patch.dict(sys.modules, {"config": SimpleNamespace(FLASK_SECRET_KEY="offline-test-secret")}):
+            from sc_assistant.pwa import CACHE_VERSION, bp_pwa
         self.app.register_blueprint(bp_pwa)
         script = self.client.get("/sw.js").get_data(as_text=True)
         for path in ("/signup", "/confirm-signup", "/resend-signup-code"):
@@ -214,8 +218,15 @@ class SignupTests(unittest.TestCase):
         expected_hash = base64.b64encode(hmac.new(b"offline-secret", b"student.oneoffline-client", hashlib.sha256).digest()).decode()
         self.assertEqual(confirmed_call["SecretHash"], expected_hash)
         self.assertFalse(self.client.post("/login", data={**credentials, "email": "2024001"}).get_json()["success"])
+        self.assertEqual(self.login_events, [])
         logged_in = self.client.post("/login", data=credentials)
         self.assertTrue(logged_in.get_json()["success"])
+        self.assertEqual(len(self.login_events), 1)
+        event = self.login_events[0]
+        self.assertEqual(set(event), {"id", "at", "uid", "display_name", "email"})
+        self.assertEqual(event["uid"], "test-sub-student.one")
+        self.assertEqual(event["display_name"], "student.one")
+        self.assertEqual(event["email"], "test.student@samarcollege.edu.ph")
         with self.client.session_transaction() as state:
             self.assertEqual(state["user"], "test.student@samarcollege.edu.ph")
             self.assertEqual(state["username"], "student.one")
@@ -360,6 +371,7 @@ class SignupTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         with self.client.session_transaction() as state:
             self.assertIsNone(state.get("uid"))
+        self.assertEqual(self.login_events, [])
 
     def test_verified_account_is_preferred_over_abandoned_signup(self):
         self.cognito.list_users = Mock(side_effect=[
@@ -386,6 +398,114 @@ class SignupTests(unittest.TestCase):
         self.assertTrue(response.get_json()["success"])
         with self.client.session_transaction() as state:
             self.assertEqual(state["cognito_username"], "0002024001")
+
+    def test_failed_and_missing_credentials_never_record_a_signin(self):
+        self.cognito.users["owner"] = {"password": "ExamplePass123!", "confirmed": True,
+            "attributes": {"email": "owner@example.invalid", "email_verified": "true", "name": "Owner"}}
+        for credentials in ({}, {"email": "owner"}, {"password": "ExamplePass123!"},
+                            {"email": "owner", "password": "wrong"},
+                            {"email": "missing", "password": "ExamplePass123!"}):
+            with self.subTest(credentials=credentials):
+                response = self.client.post("/login", data=credentials)
+                self.assertFalse(response.get_json()["success"])
+                self.assertEqual(self.login_events, [])
+
+    def test_missing_or_unverified_token_email_never_records_a_signin(self):
+        base = {"sub": "verified-sub", "email": "owner@example.invalid", "email_verified": True}
+        for changes, status in (({"email": None}, 503), ({"email": ""}, 503),
+                                ({"email_verified": False}, 403), ({"email_verified": "false"}, 403),
+                                ({"email_verified": None}, 403)):
+            with self.subTest(changes=changes), patch.dict(self.ns, {"login_user": Mock(return_value={
+                "success": True, "auth_result": {"IdToken": "SECRET_ID_TOKEN"},
+            })}), patch.object(self.ns["jwt"], "get_unverified_claims", return_value={**base, **changes}):
+                response = self.client.post("/login", data={"email": "owner", "password": "ExamplePass123!"})
+                self.assertEqual(response.status_code, status)
+                self.assertFalse(response.get_json()["success"])
+                self.assertEqual(self.login_events, [])
+                with self.client.session_transaction() as state:
+                    self.assertIsNone(state.get("uid"))
+
+    def test_login_events_use_verified_session_identity_and_name_fallbacks_for_all_roles(self):
+        cases = (({"name": "<b>Display & Name</b>", "cognito:username": "account-name"}, "<b>Display & Name</b>", "user"),
+                 ({"name": "", "cognito:username": "account-name"}, "account-name", "staff"),
+                 ({}, "verified.owner", "admin"))
+        for identity, expected_name, role in cases:
+            claims = {"sub": "verified-sub", "email": "verified.owner@example.invalid", "email_verified": "true",
+                      "custom:role": role, **identity}
+            with self.subTest(role=role), patch.dict(self.ns, {"login_user": Mock(return_value={
+                "success": True, "auth_result": {"IdToken": "SECRET_ID_TOKEN", "AccessToken": "SECRET_ACCESS_TOKEN"},
+            })}), patch.object(self.ns["jwt"], "get_unverified_claims", return_value=claims):
+                response = self.client.post("/login", data={"email": "typed-alias", "password": "SECRET_PASSWORD"})
+                self.assertTrue(response.get_json()["success"])
+                self.assertEqual(response.get_json()["redirect"], "/dashboard" if role == "admin" else "/chat")
+                event = self.login_events[-1]
+                self.assertEqual(set(event), {"id", "at", "uid", "display_name", "email"})
+                self.assertEqual(event["uid"], "verified-sub")
+                self.assertEqual(event["email"], "verified.owner@example.invalid")
+                self.assertEqual(event["display_name"], expected_name)
+                self.assertNotIn("SECRET", json.dumps(event))
+                self.assertNotIn("typed-alias", json.dumps(event))
+                with self.client.session_transaction() as state:
+                    self.assertEqual(event["display_name"], state["username"])
+                    self.assertEqual(state["role"], role)
+        self.assertEqual(len(self.login_events), 3)
+
+    def test_repeated_successes_are_distinct_but_navigation_and_password_checks_are_not_events(self):
+        self.cognito.users["owner"] = {"password": "ExamplePass123!", "confirmed": True,
+            "attributes": {"email": "owner@example.invalid", "email_verified": "true", "name": "Owner"}}
+        credentials = {"email": "owner", "password": "ExamplePass123!"}
+        for _ in range(2):
+            self.assertTrue(self.client.post("/login", data=credentials).get_json()["success"])
+        self.assertEqual(len(self.login_events), 2)
+        self.assertEqual(len({event["id"] for event in self.login_events}), 2)
+        for path in ("/auth", "/chat", "/chat", "/signup", "/dashboard", "/login"):
+            self.client.get(path)
+        # Settings reuses this helper to verify the existing password.
+        self.assertTrue(self.ns["login_user"]("owner", "ExamplePass123!")["success"])
+        self.assertEqual(len(self.login_events), 2)
+        self.client.get("/logout")
+        self.now += 1
+        self.assertTrue(self.client.post("/login", data=credentials).get_json()["success"])
+        self.assertEqual(len({event["id"] for event in self.login_events}), 3)
+        self.assertNotEqual(self.login_events[-1]["at"], self.login_events[0]["at"])
+
+    def test_guest_signup_confirmation_and_password_recovery_do_not_record_signins(self):
+        self.assertTrue(self.client.post("/guest").get_json()["success"])
+        self.assertTrue(self.signup(email="owner@example.invalid").get_json()["success"])
+        self.now += 31
+        self.assertTrue(self.client.post("/resend-signup-code").get_json()["success"])
+        self.assertTrue(self.client.post("/confirm-signup", data={"code": "123456"}).get_json()["success"])
+        self.assertTrue(self.client.post("/forgot-password", data={"email": "owner@example.invalid"}).get_json()["success"])
+        self.assertTrue(self.client.post("/reset-password", data={
+            "code": "654321", "password": "ChangedPass456!", "confirmPassword": "ChangedPass456!",
+        }).get_json()["success"])
+        self.client.get("/password-reset")
+        self.assertEqual(self.login_events, [])
+
+    def test_failed_activity_writer_cannot_fail_auth_or_log_sensitive_error_details(self):
+        self.cognito.users["owner"] = {"password": "ExamplePass123!", "confirmed": True,
+            "attributes": {"email": "owner@example.invalid", "email_verified": "true", "name": "Owner"}}
+        attempts = []
+
+        def failed_writer(**identity):
+            attempts.append((identity, dict(self.ns["session"])))
+            raise OSError("SECRET_PASSWORD SECRET_TOKEN owner@example.invalid")
+
+        with patch.dict(self.ns, {"record_login": failed_writer}), patch("builtins.print") as output:
+            response = self.client.post("/login", data={"email": "owner", "password": "ExamplePass123!"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"success": True, "redirect": "/chat"})
+        self.assertEqual(len(attempts), 1)
+        identity, recorded_session = attempts[0]
+        self.assertEqual(identity, {"uid": "test-sub-owner", "display_name": "Owner", "email": "owner@example.invalid"})
+        self.assertEqual(recorded_session["uid"], identity["uid"])
+        self.assertTrue(recorded_session["start_new_chat"])
+        output.assert_called_once_with("[auth] Sign-in activity could not be recorded.")
+        with self.client.session_transaction() as state:
+            self.assertEqual(state["uid"], "test-sub-owner")
+            self.assertEqual(state["user"], "owner@example.invalid")
+            self.assertFalse(state["is_guest"])
+        self.assertEqual(self.login_events, [])
 
 
 if __name__ == "__main__":

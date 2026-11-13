@@ -430,6 +430,71 @@ reports). Supporting JSON API namespaces include:
 | `/admin/analytics/…` | Volume, top topics, refusal rate |
 | `/admin/reports/` | Generated reports (its own page) |
 
+**Total conversations** includes currently saved account chats and recorded guest
+chats across all dates, not individual messages or feedback votes. A guest chat
+adds one metadata-only marker to `Conversations` after its first completed reply.
+Conditional writes prevent follow-ups and retries from counting it again. The
+marker contains only an opaque conversation key, a guest type, and its creation
+time; counting does not add guest transcripts, IP addresses, emails, or names.
+
+Opening or clearing an empty guest chat does not increase the count. A new guest
+chat counts only after a completed reply; the existing guest-page reload behavior
+starts a new temporary chat. Guest markers survive temporary-history expiry, but
+historical guest chats from before this update are not backfilled. Existing
+temporary context, content-gap logging, and feedback behavior are unchanged.
+
+The chart date selector does not change the total. Deleting a saved account thread
+reduces it, while clearing temporary guest history leaves its opaque count
+marker intact. The existing table needs `dynamodb:PutItem` for markers and
+`dynamodb:Scan` for the paginated count; no new table is needed. An unavailable
+count is shown as unavailable rather than zero.
+
+**Most asked topics** counts completed account and guest questions directly, even
+without a feedback vote. Local rules group transient text into school-topic
+categories; only category totals and hashed reply IDs are stored, not raw questions,
+answers, contact details, or images. Short contextual follow-ups can retain their
+subject; greetings and acknowledgements are skipped. An unclassified/image-only
+question uses **Other questions** rather than guessing its image content.
+
+The chart follows the selected Manila-date window (up to 365 days). Each completed
+reply adds one topic event; voting, escalating, or replying to staff does not add
+another. New tracking is not mixed with the old, incomplete feedback-derived
+question counts, so earlier untracked questions are not backfilled. The legacy
+feedback-topic APIs remain available for their existing quality workflows.
+
+Usage is stored in small monthly documents in the existing `STORE_BACKEND`, with
+bounded recent-event hashes for in-flight write retries. No new AWS table is needed.
+For file mode, put `TOPIC_USAGE_DIR` on shared persistent storage (default:
+`topic_usage`). A failed usage read shows a chart-unavailable message instead of
+pretending no questions were asked.
+
+The chat welcome screen uses the same default 14-day topic rankings for its three
+suggested questions. It refreshes on an empty chat and **New chat**, without
+replacing a draft or a focused suggestion. Popular categories map to curated,
+public-safe questions; other users' wording, counts, and identifiers are not
+published. Empty/unavailable rankings use common enrollment, program, and fee
+questions. Suggestions work for guest and account sessions; the full analytics
+endpoints remain admin-only.
+
+Chat answers now have a single icon-only **Report** control instead of voting
+buttons. Opening or closing its options files nothing; choosing a reason submits
+directly to Reports with the question, answer excerpt, and citations. Reports
+still require sign-in. Guests see a sign-in prompt and can use **Ask a human**
+with contact details instead. Existing votes/reports and the legacy feedback APIs
+are retained, but the chat UI no longer submits or restores votes.
+
+**Recent activity** includes successful named sign-ins with the account's display
+name, email, and sign-in time. Tracking begins when this version is running; account
+creation dates are not used to invent earlier logins. This is recent history, not
+an online-presence indicator or a permanent security audit log. Refresh the feed to
+see new entries without reloading the page.
+
+Sign-in history uses the configured `STORE_BACKEND`, retaining up to 1,000 events
+within 30 days and a bounded payload size. DynamoDB mode uses the existing shared
+store table; in file mode, set `LOGIN_ACTIVITY_FILE` to a path on shared persistent
+storage. Failed recording does not prevent a successful sign-in. Passwords, tokens,
+and IP addresses are not stored in these events.
+
 Upload official academic calendars and notices through **Documents**. The manual
 Academic Calendar and Announcements panels and chat announcement banners are removed.
 Chat uses retrieved documents for these topics, with the existing effective-date

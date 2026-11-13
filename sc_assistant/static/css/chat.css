@@ -145,9 +145,6 @@
 
 /* Report Row */
 .message-report-row { display: flex; padding-left: 44px; margin-top: 4px; }
-.report-btn { background: none; border: none; padding: 4px; color: var(--text-tertiary); font-size: 0.8rem; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
-.message.assistant:hover .report-btn { opacity: 1; }
-.report-btn:hover { color: var(--ui-danger-ink); }
 
 /* --- TYPING INDICATOR (inside the assistant's own bubble) --- */
 /* This used to be a pill floating 100px above the input, absolutely positioned
@@ -178,9 +175,7 @@
 /* An empty .streaming-text is still a block, and under the dots it would add a
    second, blank line to the bubble. */
 .message.is-thinking .streaming-text:empty { display: none; }
-/* Nothing to vote on until there is an answer. The row is in the placeholder
-   from the moment it is created, so without this the thumbs appear next to three
-   blinking dots. */
+/* Do not show the report row alongside an empty typing indicator. */
 .message.is-thinking .message-report-row { display: none; }
 
 /* The dots are wrapped now, so the blink rules target the wrapper's children
@@ -450,7 +445,7 @@
   .message.assistant .avatar { margin-right: 8px; }
   .message.user .avatar { margin-left: 8px; }
 
-  /* Matches the new 28px + 8px, so the thumbs still line up with the first
+  /* Matches the new 28px + 8px, so the report icon lines up with the first
      character of the answer above them. */
   .message-report-row { padding-left: 36px; }
   .conv-actions { opacity: 1; }

@@ -364,10 +364,11 @@ body, .main-section { background: var(--con-canvas); }
 .faq-btn:hover { background: var(--con-tint); border-color: var(--con-nav-ink); color: var(--text-primary); transform: none; box-shadow: none; }
 .source-badge { border-radius: 4px; }
 .message-report-row { opacity: 1; }
-.feedback-group { gap: 2px; }
-.feedback-btn { width: 44px; min-height: 44px; border-radius: var(--con-r-ctl); border: 0; background: transparent; box-shadow: none; color: var(--text-secondary); font-size: 0.9rem; }
-.feedback-btn:hover { transform: none; }
-.feedback-up:hover, .feedback-up.voted { color: var(--con-nav-ink); }
+.report-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; min-height: 44px; padding: 0; border-radius: 50%; border: 0; background: transparent; box-shadow: none; opacity: 1; color: var(--text-secondary); font-size: 0.9rem; cursor: pointer; }
+.report-btn:hover, .report-btn[aria-expanded="true"] { color: var(--ui-danger-ink); background: transparent; box-shadow: none; transform: none; }
+.report-btn[aria-expanded="true"] i { font-weight: 900; }
+.report-btn:focus-visible { outline: 2px solid var(--con-nav-ink); outline-offset: 2px; }
+.report-btn:disabled { opacity: .45; cursor: wait; }
 
 @media (max-width: 1100px) {
   .page-content { padding: 24px; }

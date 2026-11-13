@@ -28,6 +28,7 @@ from aws.cognito import (
     signup_mutation_lock,
 )
 from config import COGNITO_USER_POOL_ID
+from rag.login_activity import record_login
 
 from .reset_state import ResetFlowError, reset_flows
 from .utils import is_admin
@@ -247,6 +248,10 @@ def login():
         
         session['start_new_chat'] = True
         redirect_url = url_for("admin.dashboard") if is_admin() else url_for("chat.chat_page")
+        try:
+            record_login(uid=session["uid"], display_name=session["username"], email=session["user"])
+        except Exception:  # noqa: BLE001 - reporting must not undo a successful sign-in
+            print("[auth] Sign-in activity could not be recorded.")
         return jsonify({"success": True, "redirect": redirect_url})
         
     return jsonify(result)

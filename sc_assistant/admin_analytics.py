@@ -15,7 +15,7 @@ is exactly the kind of off-by-one that makes an admin distrust every other numbe
 on the screen.
 
 Read-only by design. There is no POST here and there should never be one — every
-figure is derived from the feedback, gap and escalation stores, so the only honest
+figure is derived from saved conversations, feedback, gaps and escalations, so the only honest
 way to change a number on this page is to change what actually happened. An
 endpoint that could edit a metric would turn the dashboard from evidence into
 decoration.
@@ -23,15 +23,16 @@ decoration.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, current_app, jsonify, request, session
 
-from .utils import is_admin
 from rag.analytics import (
     DEFAULT_DAYS,
     overview,
-    top_topics,
     suspect_documents,
+    top_topics,
 )
+
+from .utils import is_admin
 
 bp_analytics = Blueprint("analytics", __name__, url_prefix="/admin/analytics")
 
@@ -72,7 +73,15 @@ def api_overview():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
 
     try:
-        return jsonify({"success": True, "analytics": overview(_days_arg())})
+        analytics = overview(_days_arg())
+        try:
+            from aws.dynamodb import count_conversations
+
+            analytics["totals"]["conversations"] = count_conversations()
+        except Exception as exc:  # noqa: BLE001 - an optional metric must not hide the other analytics
+            analytics["totals"]["conversations"] = None
+            current_app.logger.warning("Conversation count unavailable (%s).", type(exc).__name__)
+        return jsonify({"success": True, "analytics": analytics})
     except Exception as e:
         # A failed chart must read as a failed chart. Returning zeros here would
         # be worse than an error: "0 questions, 0% answered" is a plausible-looking

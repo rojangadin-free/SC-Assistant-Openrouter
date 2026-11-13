@@ -163,19 +163,17 @@
          how wiring gets broken.
 
 
-         Everything on this screen is derived from what actually happened (votes,
-         gaps, escalations): there is no form and no save button, because the only
-         honest way to change a figure here is to change the corpus or work the
-         queue.
+         Figures come from saved conversations and recorded activity, not values
+         entered into a dashboard form.
          ══════════════════════════════════════════════════════════ -->
     <div id="analyticsSection" class="dashboard-section active">
       <div class="dashboard-header">
         <h1>Overview</h1>
-        <p>Review student requests, recent activity, and recorded answer feedback.</p>
+        <p>Review conversations, user sign-ins, and requests awaiting a response.</p>
       </div>
 
-      {# Triage first, and deliberately ABOVE the window selector: everything
-         below is "in the last N days", but a student waiting for a reply is not
+      {# Triage first, and deliberately ABOVE the window selector: the charts
+         use the selected window, but a student waiting for a reply is not
          a statistic with a date range — it is a person, and the count is now. #}
       <div class="sc-card sc-accent-red sc-mb" id="attentionCard">
         <div class="sc-cardhead">
@@ -228,19 +226,9 @@
 
       <div class="analytics-kpis">
         <div class="analytics-kpi">
-          <p class="analytics-kpi-label" title="Questions recorded through feedback, content gaps, or staff requests">Questions tracked</p>
-          <h3 class="analytics-kpi-value" id="kpiQuestions">—</h3>
-          <span class="analytics-kpi-delta" id="kpiQuestionsDelta">vs. previous 7 days</span>
-        </div>
-        <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Answered</p>
-          <h3 class="analytics-kpi-value" id="kpiAnsweredRate">—</h3>
-          <span class="analytics-kpi-delta" id="kpiAnsweredRateDelta">vs. previous 7 days</span>
-        </div>
-        <div class="analytics-kpi">
-          <p class="analytics-kpi-label">Helpful feedback</p>
-          <h3 class="analytics-kpi-value" id="kpiSatisfaction">—</h3>
-          <span class="analytics-kpi-delta" id="kpiSatisfactionDelta">vs. previous 7 days</span>
+          <p class="analytics-kpi-label" title="Saved account chats plus completed guest chats, across all dates. Each guest conversation counts once.">Total conversations</p>
+          <h3 class="analytics-kpi-value" id="kpiConversations">—</h3>
+          <span class="analytics-kpi-delta" id="kpiConversationsNote">Account + guest chats</span>
         </div>
         <div class="analytics-kpi">
           <p class="analytics-kpi-label">Awaiting staff reply</p>
@@ -250,16 +238,6 @@
       </div>
 
       <div class="analytics-grid">
-        <div class="analytics-card analytics-card-wide">
-          <div class="analytics-card-head">
-            <h3>Answered vs. unanswered</h3>
-            <span class="analytics-muted" id="analyticsSeriesNote"></span>
-          </div>
-          <div class="analytics-chart">
-            <canvas id="analyticsVolumeChart"></canvas>
-          </div>
-        </div>
-
         <div class="analytics-card">
           <div class="analytics-card-head">
             <h3>Busiest hours</h3>
@@ -273,56 +251,10 @@
         <div class="analytics-card">
           <div class="analytics-card-head">
             <h3>Most asked topics</h3>
+            <span class="analytics-muted">Completed account + guest questions</span>
           </div>
           <div class="analytics-chart">
             <canvas id="analyticsTopicsChart"></canvas>
-          </div>
-        </div>
-      </div>
-
-      <div class="analytics-grid">
-        <!-- The document roadmap: what students ask that the corpus cannot answer.
-             This is the list that decides what to upload next. -->
-        <div class="analytics-card analytics-card-wide">
-          <div class="analytics-card-head">
-            <h3>Unanswered topics</h3>
-            <span class="analytics-muted">What to document next</span>
-          </div>
-          <div class="table-container">
-            <table class="analytics-table">
-              <thead>
-                <tr>
-                  <th>Topic</th>
-                  <th>Asked</th>
-                  <th>Unanswered</th>
-                  <th>Last asked</th>
-                </tr>
-              </thead>
-              <tbody id="analyticsUnansweredBody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- The actionable end of the feedback loop: a 👎 says an answer was bad,
-             the sources stored with it say which page to fix. -->
-        <div class="analytics-card analytics-card-wide">
-          <div class="analytics-card-head">
-            <h3>Documents to review</h3>
-            <span class="analytics-muted">Pages under downvoted answers</span>
-          </div>
-          <div class="table-container">
-            <table class="analytics-table">
-              <thead>
-                <tr>
-                  <th>Source</th>
-                  <th>Cited</th>
-                  <th>👍</th>
-                  <th>👎</th>
-                  <th>Satisfaction</th>
-                </tr>
-              </thead>
-              <tbody id="analyticsDocumentsBody"></tbody>
-            </table>
           </div>
         </div>
       </div>
@@ -335,8 +267,12 @@
         <div class="sc-cardhead">
           <div>
             <h3 class="sc-h3--tight">Recent activity</h3>
-            <p class="sc-lead--sm" id="activityWindowNote">The newest events first.</p>
+            <p class="sc-lead--sm" id="activityWindowNote">Sign-ins, uploads, and other recent events, newest first.</p>
           </div>
+          <button type="button" class="sc-btn sc-btn--ghost sc-btn--xs" id="refreshActivitiesBtn"
+                  aria-label="Refresh recent activity">
+            <i class="fas fa-rotate"></i> Refresh
+          </button>
         </div>
         <div class="activity-list sc-mt6">
           <p class="sc-lead--sm">Loading…</p>
@@ -452,55 +388,6 @@
           <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading unanswered questions…
         </div>
       </div>
-    </div>
-
-
-    <!-- ══════════════════════════════════════════════════════════
-         ANSWER QUALITY — what the students themselves think.
-         Conflicts and gaps are found by inspecting documents; this is the only
-         screen driven by the readers of the answers.
-         ══════════════════════════════════════════════════════════ -->
-    <div id="feedbackSection" class="dashboard-section">
-      <div class="section-header">
-        <h2>Answer Quality</h2>
-      </div>
-
-      <div class="sc-card sc-mb sc-accent-red">
-        <div class="sc-statrow">
-          <div>
-            <div id="fbStatHelpful" class="sc-stat-num sc-stat-num--ok">–</div>
-            <div class="sc-stat-cap">Helpful</div>
-          </div>
-          <div>
-            <div id="fbStatUnhelpful" class="sc-stat-num sc-stat-num--bad">–</div>
-            <div class="sc-stat-cap">Not helpful</div>
-          </div>
-          <div>
-            <div id="fbStatRate" class="sc-stat-num">–</div>
-            <div class="sc-stat-cap">Satisfaction</div>
-          </div>
-          <div class="sc-push">
-            <button id="refreshFeedbackBtn"
-                    class="sc-btn sc-btn--red">
-              <i class="fas fa-sync-alt"></i> Refresh
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <h3 class="sc-h3 sc-h3--mid">
-        Documents ranked by downvotes
-      </h3>
-      <div id="fbSourceList" class="sc-list sc-list--xtight sc-mb-lg">
-        <div class="sc-empty sc-empty--sm">
-          <i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…
-        </div>
-      </div>
-
-      <h3 class="sc-h3 sc-h3--mid">
-        Latest answers marked "not helpful"
-      </h3>
-      <div id="fbRecentList" class="sc-list sc-list--xtight"></div>
     </div>
 
 
@@ -913,15 +800,8 @@
     //  answers "is any of it working?", which is a question no single conflict
     //  or gap can answer.
     //
-    //  Two rules hold this screen honest:
-    //
-    //  1. One request. Totals, series and tables are quoted against each other
-    //     ("78% of 214"), so they must come from one snapshot. Separate fetches
-    //     can interleave with a student's vote and render a page whose headline
-    //     and chart disagree by one — the kind of off-by-one that makes an admin
-    //     stop trusting every other number here.
-    //  2. Missing data renders as "not enough data", never as 0. A confident 0%
-    //     is an answer someone will act on; a blank is a question they will ask.
+    //  Fetch the visible metrics and charts together. Missing data is shown as
+    //  unavailable rather than being mistaken for a real zero.
     // ══════════════════════════════════════════════════════════════
     let analyticsLoaded = false;
     let analyticsCharts = {};   // id -> Chart, so a reload replaces rather than stacks
@@ -931,28 +811,6 @@
     function cssVar(name, fallback) {
       const v = getComputedStyle(document.documentElement).getPropertyValue(name);
       return (v && v.trim()) || fallback;
-    }
-
-    function pct(v) {
-      return (v === null || v === undefined) ? '—' : Math.round(v * 100) + '%';
-    }
-
-    // Deltas are the only numbers here allowed to be coloured, and "more
-    // questions" is grey rather than green: volume is traffic, not quality.
-    function renderDelta($el, value, kind) {
-      if (value === null || value === undefined) {
-        $el.text('Not enough data yet').css('color', 'var(--text-tertiary)');
-        return;
-      }
-      const isPctMetric = kind === 'rate';
-      const shown = isPctMetric
-        ? (value >= 0 ? '+' : '') + Math.round(value * 100) + ' pts'
-        : (value >= 0 ? '+' : '') + value;
-      const colour = kind === 'neutral' ? 'var(--text-tertiary)'
-                   : value > 0 ? 'var(--ui-success-ink)'
-                   : value < 0 ? 'var(--ui-danger-ink)'
-                   : 'var(--text-tertiary)';
-      $el.text(shown + ' vs. previous 7 days').css('color', colour);
     }
 
     function destroyChart(id) {
@@ -976,7 +834,7 @@
 
     // Chart.js is a CDN script. If it does not arrive — offline, blocked, or the
     // service worker answering badly — `new Chart` throws, and it throws PART WAY
-    // through renderAnalytics(), so the tables further down never render either.
+    // through renderAnalytics(), so later charts never render either.
     // One missing external file would blank the screen. The charts are a nice
     // reading of the numbers; the numbers are the point, so a chart failure is
     // contained here and reported in the chart's own box.
@@ -1030,7 +888,10 @@
     const showAnalytics = window.showAnalytics;
 
 
-    $(document).on('click', '#analyticsRefreshBtn', function() { loadAnalytics(); });
+    $(document).on('click', '#analyticsRefreshBtn', function() {
+      loadAnalytics();
+      if (window.loadTriage) window.loadTriage();
+    });
     $(document).on('change', '#analyticsDays', function() { loadAnalytics(); });
 
     function loadAnalytics() {
@@ -1058,8 +919,9 @@
       $('#analyticsGeneratedAt').text('—');
       // Blank the figures rather than leaving the previous load on screen: a
       // stale number next to an error banner is the worst of both.
-      $('#kpiQuestions, #kpiAnsweredRate, #kpiSatisfaction, #kpiPending').text('—');
-      ['analyticsVolumeChart', 'analyticsHourlyChart', 'analyticsTopicsChart']
+      $('#kpiConversations, #kpiPending').text('—');
+      $('#kpiConversationsNote').text('Count unavailable');
+      ['analyticsHourlyChart', 'analyticsTopicsChart']
         .forEach(id => chartPlaceholder(id, 'Unavailable'));
     }
 
@@ -1067,7 +929,6 @@
       const grid   = cssVar('--border', '#e5e7eb');
       const ink    = cssVar('--text-secondary', '#6b7280');
       const green  = cssVar('--con-chart-ok', '#4b805b');
-      const red    = cssVar('--con-chart-bad', '#ba635b');
       const blue   = cssVar('--con-chart-activity', '#536f80');
       const muted  = cssVar('--con-chart-muted', '#a6b7ac');
 
@@ -1077,14 +938,9 @@
 
       // ── Headline figures ────────────────────────────────────────
       const t = a.totals;
-      $('#kpiQuestions').text(t.questions_with_signal);
-      $('#kpiAnsweredRate').text(pct(t.answered_rate));
-      $('#kpiSatisfaction').text(pct(t.satisfaction));
+      $('#kpiConversations').text(t.conversations == null ? '—' : t.conversations.toLocaleString('en-PH'));
+      $('#kpiConversationsNote').text(t.conversations == null ? 'Count unavailable' : 'Account + guest chats');
       $('#kpiPending').text(a.response_times.pending_count);
-
-      renderDelta($('#kpiQuestionsDelta'), a.trend.delta.questions, 'neutral');
-      renderDelta($('#kpiAnsweredRateDelta'), a.trend.delta.answered_rate, 'rate');
-      renderDelta($('#kpiSatisfactionDelta'), a.trend.delta.satisfaction, 'rate');
 
       // The oldest wait, not the average: an average stays reassuring while one
       // student has been ignored for three weeks.
@@ -1097,45 +953,6 @@
               : Math.round(oldest) + ' hours'))
         .css('color', (oldest !== null && oldest !== undefined && oldest >= 48)
           ? 'var(--ui-danger-ink)' : 'var(--text-tertiary)');
-
-      // ── Answered vs. unanswered, by day ─────────────────────────
-      const series = a.series || [];
-      const hasVolume = series.some(d => d.total > 0);
-      $('#analyticsSeriesNote').text(
-        a.response_times.answered_count
-          ? 'Median escalation reply: ' + a.response_times.median_hours + 'h'
-          : '');
-
-      if (!hasVolume) {
-        chartPlaceholder('analyticsVolumeChart',
-          'No questions recorded in this window.');
-      } else {
-        clearPlaceholder('analyticsVolumeChart');
-        destroyChart('analyticsVolumeChart');
-        analyticsCharts.analyticsVolumeChart = drawChart(
-          'analyticsVolumeChart', {
-            type: 'bar',
-
-            data: {
-              labels: series.map(d => d.date.slice(5)),   // MM-DD; the year is noise
-              datasets: [
-                { label: 'Answered',   data: series.map(d => d.answered),   backgroundColor: green },
-                { label: 'Unanswered', data: series.map(d => d.unanswered), backgroundColor: red }
-              ]
-            },
-            options: {
-              responsive: true, maintainAspectRatio: false,
-              plugins: { legend: { position: 'bottom', labels: { color: ink, boxWidth: 12 } } },
-              // Stacked: the height is the day's demand, the red band is the part
-              // that was failed. Side-by-side bars hide that relationship.
-              scales: {
-                x: { stacked: true, grid: { display: false }, ticks: { color: ink } },
-                y: { stacked: true, beginAtZero: true, grid: { color: grid },
-                     ticks: { color: ink, precision: 0 } }
-              }
-            }
-          });
-      }
 
       // ── Hourly histogram ────────────────────────────────────────
       const hourly = a.hourly || [];
@@ -1173,9 +990,12 @@
 
       // ── Most asked topics ───────────────────────────────────────
       const topics = (a.top_topics || []).slice(0, 6);
-      if (!topics.length) {
+      if (a.topic_usage_available === false) {
         chartPlaceholder('analyticsTopicsChart',
-          'Not enough repeat questions to group yet.');
+          'Topic counts are temporarily unavailable. Try refreshing.');
+      } else if (!topics.length) {
+        chartPlaceholder('analyticsTopicsChart',
+          'No topic usage recorded for this date range yet.');
       } else {
         clearPlaceholder('analyticsTopicsChart');
         destroyChart('analyticsTopicsChart');
@@ -1185,7 +1005,7 @@
             data: {
               labels: topics.map(t => (t.topic || t.key || '').slice(0, 34)),
               datasets: [{
-                label: 'Questions',
+                label: 'Completed questions',
                 data: topics.map(t => t.total),
                 backgroundColor: green,
                 maxBarThickness: 28
@@ -1205,36 +1025,6 @@
           });
       }
 
-      // ── Unanswered topics: the upload roadmap ───────────────────
-      const gaps = a.unanswered_topics || [];
-      $('#analyticsUnansweredBody').html(
-        gaps.length
-          ? gaps.map(function(g) {
-              return '<tr>' +
-                '<td>' + esc(g.topic || g.key) + '</td>' +
-                '<td>' + g.total + '</td>' +
-                '<td class="analytics-bad">' + g.unanswered + '</td>' +
-                '<td>' + fmtWhen(g.last_asked) + '</td>' +
-              '</tr>';
-            }).join('')
-          : '<tr><td colspan="4" class="analytics-empty-row">' +
-            'Nothing unanswered — every question found an answer in your documents.</td></tr>');
-
-      // ── Documents to review ─────────────────────────────────────
-      const docs = a.suspect_documents || [];
-      $('#analyticsDocumentsBody').html(
-        docs.length
-          ? docs.map(function(d) {
-              return '<tr>' +
-                '<td>' + esc(d.source) + '</td>' +
-                '<td>' + d.total + '</td>' +
-                '<td class="analytics-good">' + d.up + '</td>' +
-                '<td class="analytics-bad">' + d.down + '</td>' +
-                '<td>' + pct(d.satisfaction) + '</td>' +
-              '</tr>';
-            }).join('')
-          : '<tr><td colspan="5" class="analytics-empty-row">' +
-            'No document has been downvoted.</td></tr>');
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -1651,175 +1441,6 @@
         gapsLoaded = true;
         applyGapStats(res.stats);
         renderGaps();
-      }
-    });
-
-    // ══════════════════════════════════════════════════════════════
-    //  ANSWER QUALITY
-    //
-    //  Conflicts and Gaps are found by inspecting the corpus. This screen is
-    //  the students' own verdict, and it is the only one that can catch an
-    //  answer that is confidently wrong — a document with no contradiction in
-    //  it and no missing page still reads badly if the wording misleads.
-    //
-    //  The headline list is by DOCUMENT rather than by question, because the
-    //  admin's next action is to open a file, not to read complaints.
-    // ══════════════════════════════════════════════════════════════
-    let fbTopics = [];
-    let feedbackLoaded = false;
-
-    $('#feedbackMenuItem').on('click', function() {
-      $('.dashboard-section').removeClass('active');
-      $('.menu-item').removeClass('active');
-      $('#feedbackSection').addClass('active');
-      $('#feedbackMenuItem').addClass('active');
-      $('.header-left span').text('Answer Quality');
-      if (!feedbackLoaded) loadFeedback();
-    });
-
-    $(document).on('click', '#backToAnalyticsFromFeedback', function() {
-      $('.dashboard-section').removeClass('active');
-      $('.menu-item').removeClass('active');
-      showAnalytics();
-    });
-
-    $(document).on('click', '#refreshFeedbackBtn', function() { loadFeedback(); });
-
-    function applyFeedbackStats(stats) {
-      if (!stats) return;
-      $('#fbStatHelpful').text(stats.up);
-      $('#fbStatUnhelpful').text(stats.down);
-      $('#fbStatRate').text(
-        stats.satisfaction === null || stats.satisfaction === undefined
-          ? '—'
-          : Math.round(stats.satisfaction * 100) + '%'
-      );
-      if (stats.down > 0) { $('#sidebarFeedbackBadge').text(stats.down).show(); }
-      else                { $('#sidebarFeedbackBadge').hide(); }
-    }
-
-    function loadFeedback() {
-      const $btn = $('#refreshFeedbackBtn').prop('disabled', true);
-      $('#fbSourceList').html('<div class="sc-empty sc-empty--sm"><i class="fas fa-spinner fa-spin"></i>&nbsp;Loading feedback…</div>');
-
-      $.getJSON('/admin/feedback/api/list?verdict=down')
-        .done(function(res) {
-          feedbackLoaded = true;
-          if (!res.success) {
-            $('#fbSourceList').html('<div class="sc-errorblock">' + esc(res.message || 'Could not load.') + '</div>');
-            return;
-          }
-          fbTopics = res.topics || [];
-          applyFeedbackStats(res.stats);
-          renderFeedback();
-        })
-        .fail(function(xhr) {
-          $('#fbSourceList').html('<div class="sc-errorblock">Could not load feedback' +
-            (xhr.status === 403 ? ' (admin access required).' : '.') + '</div>');
-        })
-        .always(function() { $btn.prop('disabled', false); });
-    }
-
-    // Every topic already knows which sources sat under its downvotes; rolling
-    // those up across topics turns "these answers were bad" into "this file is
-    // the problem", which is the form an admin can act on.
-    function rollUpSuspectSources(topics) {
-      const tally = {};
-      topics.forEach(function(t) {
-        (t.suspect_sources || []).forEach(function(s) {
-          if (!tally[s.source]) tally[s.source] = { source: s.source, downvotes: 0, topics: [] };
-          tally[s.source].downvotes += s.downvotes;
-          if (tally[s.source].topics.indexOf(t.topic) === -1) tally[s.source].topics.push(t.topic);
-        });
-      });
-      return Object.keys(tally).map(k => tally[k]).sort((a, b) => b.downvotes - a.downvotes);
-    }
-
-    function renderFeedback() {
-      const sources = rollUpSuspectSources(fbTopics);
-
-      if (!sources.length) {
-        $('#fbSourceList').html(
-          '<div class="sc-emptycard">' +
-          '<i class="fas fa-circle-check" style="font-size:2rem;color:var(--ui-success-ink);display:block;margin-bottom:.75rem;"></i>' +
-          'No document has been downvoted. Either the answers are landing, or no one has voted yet.</div>');
-      } else {
-        const max = sources[0].downvotes || 1;
-        $('#fbSourceList').html(sources.map(function(s) {
-          // The bar is relative to the worst offender, so the ranking is legible
-          // at a glance without the admin doing arithmetic on the counts.
-          const pct = Math.max(6, Math.round((s.downvotes / max) * 100));
-          return '' +
-          '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:.8rem 1rem;">' +
-            '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:baseline;">' +
-              '<strong style="color:var(--text-primary);font-size:.9rem;word-break:break-word;">' + esc(s.source) + '</strong>' +
-              '<span style="color:var(--ui-danger-ink);font-weight:700;font-size:.85rem;white-space:nowrap;">' + s.downvotes + ' 👎</span>' +
-            '</div>' +
-            '<div style="height:6px;border-radius:999px;background:var(--bg-main);margin:.5rem 0 .45rem;overflow:hidden;">' +
-              '<div style="height:100%;width:' + pct + '%;background:#ef4444;"></div>' +
-            '</div>' +
-            '<div style="font-size:.78rem;color:var(--text-secondary);">' +
-              'Blamed for: ' + s.topics.slice(0, 3).map(t => '“' + esc(t) + '”').join(', ') +
-              (s.topics.length > 3 ? ' +' + (s.topics.length - 3) + ' more' : '') +
-            '</div>' +
-          '</div>';
-        }).join(''));
-      }
-
-      if (!fbTopics.length) {
-        $('#fbRecentList').html('<div style="color:var(--text-secondary);font-size:.85rem;padding:.5rem 0;">Nothing marked "not helpful" yet.</div>');
-        return;
-      }
-
-      $('#fbRecentList').html(fbTopics.map(function(t) {
-        const bad = (t.examples || []).filter(e => e.verdict === 'down');
-        const ex = bad[0] || (t.examples || [])[0] || {};
-        return '' +
-        '<div class="fb-card admin-record-card" data-key="' + esc(t.key) + '">' +
-          '<div class="sc-cardhead">' +
-            '<strong style="color:var(--text-primary);font-size:.92rem;">' + esc(t.topic || '(no question recorded)') + '</strong>' +
-            '<span style="white-space:nowrap;font-size:.8rem;color:var(--text-secondary);">' +
-              '<span style="color:var(--ui-success-ink);font-weight:700;">' + t.up + ' 👍</span> · ' +
-              '<span style="color:var(--ui-danger-ink);font-weight:700;">' + t.down + ' 👎</span></span>' +
-          '</div>' +
-          (ex.answer_snippet
-            ? '<div style="margin-top:.5rem;font-size:.8rem;color:var(--text-secondary);font-style:italic;">“' + esc(ex.answer_snippet) + '”</div>'
-            : '') +
-          ((ex.sources || []).length
-            ? '<div style="margin-top:.5rem;font-size:.76rem;color:var(--text-tertiary);"><i class="fas fa-file-lines"></i> ' +
-                (ex.sources || []).map(esc).join(' | ') + '</div>'
-            : '') +
-          '<div style="margin-top:.6rem;display:flex;gap:.5rem;">' +
-            '<button class="fb-delete sc-btn sc-btn--ghost sc-btn--icon sc-btn--reg sc-push" title="Remove (test traffic)">' +
-              '<i class="fas fa-trash"></i></button>' +
-          '</div>' +
-        '</div>';
-      }).join(''));
-    }
-
-    $(document).on('click', '.fb-delete', function() {
-      const key = $(this).closest('.fb-card').data('key');
-      if (!confirm('Remove this topic and its votes?')) return;
-      $.ajax({
-        url: '/admin/feedback/api/delete',
-        method: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify({ key: key })
-      }).done(function(res) {
-        if (!res.success) { window.showNotification(res.message || 'Could not remove.', 'error'); return; }
-        window.showNotification(res.message, 'success');
-        loadFeedback();
-      }).fail(function() { window.showNotification('Could not remove.', 'error'); });
-    });
-
-    // Badge on page load — an admin should see there are complaints without
-    // having to open the screen first.
-    $.getJSON('/admin/feedback/api/list?verdict=down', function(res) {
-      if (res && res.success) {
-        fbTopics = res.topics || [];
-        feedbackLoaded = true;
-        applyFeedbackStats(res.stats);
-        renderFeedback();
       }
     });
 

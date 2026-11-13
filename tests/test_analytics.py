@@ -31,12 +31,18 @@ AWS credentials are needed.
 # tests/ but every import and relative path below assumes the repo root.
 import _bootstrap  # noqa: F401
 
+import ast
 import datetime
+import hashlib
 import json
 import os
 import sys
 import tempfile
 import types
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier, Lock
+from unittest.mock import Mock, patch
 
 _tmp = tempfile.mkdtemp(prefix="sc_analytics_test_")
 os.environ["STORE_BACKEND"] = "file"
@@ -46,6 +52,11 @@ os.environ["CONTENT_GAPS_FILE"] = os.path.join(_tmp, "content_gaps.json")
 os.environ["CONFLICT_RESOLUTIONS_FILE"] = os.path.join(_tmp, "conflict_resolutions.json")
 os.environ["CALENDAR_PERIODS_FILE"] = os.path.join(_tmp, "calendar_periods.json")
 os.environ["ANNOUNCEMENTS_FILE"] = os.path.join(_tmp, "announcements.json")
+os.environ["LOGIN_ACTIVITY_FILE"] = os.path.join(_tmp, "login_activity.json")
+os.environ["TOPIC_USAGE_DIR"] = os.path.join(_tmp, "topic_usage")
+os.environ["RATE_LIMIT_STORAGE_PATH"] = os.path.join(_tmp, "rate_limits.sqlite3")
+os.environ["PINECONE_API_KEY"] = "test-key-not-used"
+os.environ["RERANKER_ENABLED"] = "false"
 os.environ.setdefault("FLASK_SECRET_KEY", "test-secret")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
@@ -76,12 +87,13 @@ for _n in (
     "upsert_conversation", "list_conversations", "get_conversation",
     "delete_conversation_from_db", "list_reports", "update_report_status",
     "save_file_metadata", "delete_file_from_db", "find_report_by_msg",
-    "update_report_reason", "save_report",
+    "update_report_reason", "save_report", "record_guest_conversation",
 ):
     setattr(_fake_ddb, _n, lambda *a, **k: None)
 _fake_ddb.files_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.conversations_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.reports_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
+_fake_ddb.count_conversations = Mock(return_value=37)
 sys.modules["aws.dynamodb"] = _fake_ddb
 
 _fake_students = types.ModuleType("aws.students")
@@ -113,7 +125,9 @@ _fake_botocore_exc = types.ModuleType("botocore.exceptions")
 
 
 class _ClientError(Exception):
-    pass
+    def __init__(self, response, operation):
+        super().__init__(operation)
+        self.response = response
 
 
 _fake_botocore_exc.ClientError = _ClientError
@@ -479,9 +493,19 @@ check("payload is shaped for the dashboard",
 check("the endpoint agrees with the module",
       body["analytics"]["totals"]["answered"] == t["answered"],
       f"{body['analytics']['totals']['answered']} vs {t['answered']}")
+check("saved conversations are counted independently of feedback signals",
+      body["analytics"]["totals"]["conversations"] == 37
+      and body["analytics"]["totals"]["conversations"] != t["questions_with_signal"])
 
+_fake_ddb.count_conversations.reset_mock()
 check("student is refused", student_c.get("/admin/analytics/api/overview").status_code == 403)
 check("anonymous is refused", anon_c.get("/admin/analytics/api/overview").status_code == 403)
+check("guest is refused", client_as("guest").get("/admin/analytics/api/overview").status_code == 403)
+faculty_c = client_as("faculty@example.invalid")
+with faculty_c.session_transaction() as s:
+    s["role"] = "faculty"
+check("faculty is refused", faculty_c.get("/admin/analytics/api/overview").status_code == 403)
+check("unauthorized requests never read conversation counts", not _fake_ddb.count_conversations.called)
 check("student cannot read topics",
       student_c.get("/admin/analytics/api/topics").status_code == 403)
 check("student cannot read documents",
@@ -501,7 +525,23 @@ check("junk ?days= falls back to the default",
 r = admin_c.get("/admin/analytics/api/overview?days=99999")
 check("an absurd ?days= is clamped, not honoured",
       r.status_code == 200 and r.get_json()["analytics"]["window_days"] == 365,
-      str(r.get_json().get("analytics", {}).get("window_days")))
+       str(r.get_json().get("analytics", {}).get("window_days")))
+check("changing the chart window does not change the all-time conversation total",
+      r.get_json()["analytics"]["totals"]["conversations"] == 37)
+
+_fake_ddb.count_conversations.return_value = 0
+r = admin_c.get("/admin/analytics/api/overview?days=7")
+check("a real empty conversation table displays zero",
+      r.status_code == 200 and r.get_json()["analytics"]["totals"]["conversations"] == 0)
+_fake_ddb.count_conversations.side_effect = RuntimeError("private storage diagnostic")
+r = admin_c.get("/admin/analytics/api/overview")
+check("an unavailable count does not pretend there are zero conversations",
+      r.status_code == 200 and r.get_json()["analytics"]["totals"]["conversations"] is None)
+check("other analytics remain available when counting fails",
+      r.get_json()["analytics"]["totals"]["answered"] == t["answered"])
+check("count failures do not expose storage diagnostics", "private storage diagnostic" not in r.get_data(as_text=True))
+_fake_ddb.count_conversations.side_effect = None
+_fake_ddb.count_conversations.return_value = 37
 
 r = admin_c.get("/admin/analytics/api/topics?kind=bogus")
 check("an unknown ?kind= is rejected", r.status_code == 400, str(r.status_code))
@@ -513,7 +553,193 @@ check("the roadmap is reachable over HTTP",
 
 
 # ============================================================
-section("10. Empty stores read as 'nothing yet', not as failure")
+section("10. Saved conversations use count-only scans across every page")
+# Execute the real helpers without importing an AWS resource or any credentials.
+source = Path("aws/dynamodb.py")
+nodes = [n for n in ast.parse(source.read_text(encoding="utf-8")).body
+         if isinstance(n, ast.FunctionDef)
+         and n.name in {"count_conversations", "record_guest_conversation"}]
+table = Mock()
+scope = {"conversations_table": table, "ClientError": _ClientError,
+         "datetime": datetime, "hashlib": hashlib}
+exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), scope)
+count_saved = scope["count_conversations"]
+record_guest = scope["record_guest_conversation"]
+first_key = {"conv_id": "c2", "uid": "u1"}
+second_key = {"conv_id": "c3", "uid": "u2"}
+table.scan.side_effect = [
+    {"Count": 2, "LastEvaluatedKey": first_key},
+    {"Count": 0, "LastEvaluatedKey": second_key},
+    {"Count": 3},
+]
+check("counts every page, including after an empty page", count_saved() == 5)
+check("count reads no message payload and does not truncate results",
+      table.scan.call_args_list[0].kwargs == {"Select": "COUNT", "ConsistentRead": True})
+check("first continuation uses the complete composite key",
+      table.scan.call_args_list[1].kwargs["ExclusiveStartKey"] == first_key)
+check("later continuation uses the latest key",
+      table.scan.call_args_list[2].kwargs["ExclusiveStartKey"] == second_key)
+check("every page remains count-only",
+      all(c.kwargs["Select"] == "COUNT" for c in table.scan.call_args_list))
+table.scan.side_effect = [{"Count": 0}]
+check("an empty saved-chat table counts as zero", count_saved() == 0)
+table.scan.side_effect = [{"Count": 7}, {"Count": 6}]
+check("later reads reflect removed conversations instead of cached table metadata",
+      count_saved() == 7 and count_saved() == 6)
+table.scan.side_effect = [{"Count": 2, "LastEvaluatedKey": first_key}, RuntimeError("storage unavailable")]
+try:
+    count_saved()
+    check("a later page failure cannot return a partial total", False)
+except RuntimeError:
+    check("a later page failure cannot return a partial total", True)
+
+
+# ============================================================
+section("11. Guest markers are private, idempotent and included in totals")
+# ============================================================
+class _ConversationTable:
+    def __init__(self, rows):
+        self.rows = {(r["uid"], r["conv_id"]): dict(r) for r in rows}
+        self.lock = Lock()
+        self.put_calls, self.scan_calls = [], []
+        self.barrier = self.error = None
+
+    def put_item(self, **kwargs):
+        if self.barrier is not None:
+            self.barrier.wait(timeout=10)
+        with self.lock:
+            self.put_calls.append(kwargs)
+            assert kwargs.get("ConditionExpression") == (
+                "attribute_not_exists(conv_id) AND attribute_not_exists(uid)")
+            if self.error is not None:
+                raise self.error
+            item = kwargs["Item"]
+            key = (item["uid"], item["conv_id"])
+            if key in self.rows:
+                raise _ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+            self.rows[key] = dict(item)
+        return {}
+
+    def scan(self, **kwargs):
+        with self.lock:
+            self.scan_calls.append(kwargs)
+            assert kwargs == {"Select": "COUNT", "ConsistentRead": True}
+            return {"Count": len(self.rows)}
+
+
+account_rows = [
+    {"uid": "account-1", "conv_id": "account-chat-1", "title": "Account fixture",
+     "messages": [{"role": "user", "content": "Synthetic account question"}]},
+    {"uid": "account-1", "conv_id": "account-chat-2", "title": "Second fixture",
+     "messages": []},
+]
+table = _ConversationTable(account_rows)
+scope["conversations_table"] = table
+check("existing account rows count before any guest writes", count_saved() == 2)
+session_id = "synthetic-server-session-01"
+expected_id = "guest-" + hashlib.sha256(("guest-conversation:" + session_id).encode("utf-8")).hexdigest()
+first_at = datetime.datetime(2026, 3, 10, 2, tzinfo=datetime.timezone.utc)
+later_at = first_at + datetime.timedelta(days=1)
+clock = types.SimpleNamespace(datetime=Mock(wraps=datetime.datetime), timezone=datetime.timezone)
+clock.datetime.now.side_effect = [first_at, later_at]
+with patch.dict(scope, datetime=clock):
+    check("a new guest marker returns True", record_guest(session_id) is True)
+    first_marker = dict(table.rows[("guest", expected_id)])
+    check("a conditional duplicate returns False", record_guest(session_id) is False)
+check("repeat attempts use the same domain-hashed opaque ID",
+      [c["Item"]["conv_id"] for c in table.put_calls] == [expected_id, expected_id])
+check("marker timestamps explicitly use UTC",
+      first_marker["created_at"] == first_at.isoformat()
+      and all(c.args == (datetime.timezone.utc,) for c in clock.datetime.now.call_args_list))
+check("a later retry preserves the entire first marker and its timestamp",
+      table.rows[("guest", expected_id)] == first_marker
+      and table.put_calls[1]["Item"]["created_at"] == later_at.isoformat()
+      and count_saved() == 3)
+second_id = "synthetic-server-session-02"
+check("a distinct guest creates a distinct row",
+      record_guest(second_id) is True and count_saved() == 4)
+
+# Release each worker batch together rather than relying on scheduler timing.
+table.barrier = Barrier(8)
+concurrent_id = "synthetic-concurrent-session"
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(record_guest, [concurrent_id] * 64))
+check("64 concurrent writes of one guest create exactly once",
+      results.count(True) == 1 and results.count(False) == 63 and count_saved() == 5)
+parallel_ids = [f"synthetic-parallel-session-{i:02d}" for i in range(24)]
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(record_guest, parallel_ids))
+table.barrier = None
+check("parallel distinct guests each create and count once",
+      all(result is True for result in results) and count_saved() == 5 + len(parallel_ids))
+check("every valid attempt actually sends the composite-key condition",
+      len(table.put_calls) == 3 + 64 + len(parallel_ids)
+      and all(c["ConditionExpression"] == "attribute_not_exists(conv_id) AND attribute_not_exists(uid)"
+              for c in table.put_calls))
+guest_ids = [session_id, second_id, concurrent_id] + parallel_ids
+guest_rows = [r for r in table.rows.values() if r["uid"] == "guest"]
+check("guest markers have only four allowed fields, never message/title/email/IP fields",
+      len(guest_rows) == len(guest_ids)
+      and all(set(r) == {"uid", "conv_id", "conversation_type", "created_at"}
+              and r["conversation_type"] == "guest" for r in guest_rows))
+check("each guest has its own domain-separated SHA-256 marker",
+      {r["conv_id"] for r in guest_rows}
+      == {"guest-" + hashlib.sha256(("guest-conversation:" + sid).encode("utf-8")).hexdigest()
+          for sid in guest_ids})
+check("neither stored markers nor write arguments contain raw server session IDs",
+      all(sid not in json.dumps(guest_rows) and sid not in json.dumps(table.put_calls)
+          for sid in guest_ids))
+check("guest writes preserve existing account rows and their payloads",
+      all(table.rows[(r["uid"], r["conv_id"])] == r for r in account_rows))
+combined_count = len(account_rows) + len(guest_ids)
+check("the real count helper combines account rows and guest markers",
+      count_saved() == combined_count)
+
+puts_before = len(table.put_calls)
+for invalid_id in ("", " ", "\t\r\n", None, 0, False, b"session", [], {}):
+    try:
+        record_guest(invalid_id)
+        check(f"invalid guest ID {invalid_id!r} is rejected", False)
+    except ValueError:
+        check(f"invalid guest ID {invalid_id!r} is rejected", True)
+check("invalid IDs never attempt a table write", len(table.put_calls) == puts_before)
+for label, failure in (
+    ("unrelated ClientError", _ClientError({"Error": {"Code": "AccessDeniedException"}}, "PutItem")),
+    ("transport failure", ConnectionError("synthetic transport failure")),
+):
+    table.error = failure
+    try:
+        record_guest("synthetic-failed-session")
+        check(f"{label} propagates unchanged", False)
+    except Exception as exc:
+        check(f"{label} propagates unchanged", exc is failure)
+table.error = None
+check("failed writes add no markers", count_saved() == combined_count)
+
+_fake_ddb.count_conversations.side_effect = count_saved
+try:
+    puts_before = len(table.put_calls)
+    r = admin_c.get("/admin/analytics/api/overview")
+    check("admin API exposes the real combined conversation count",
+          r.status_code == 200
+          and r.get_json()["analytics"]["totals"]["conversations"] == combined_count)
+    scans_before = len(table.scan_calls)
+    _fake_ddb.count_conversations.reset_mock()
+    for label, client in (("student", student_c), ("anonymous", anon_c),
+                          ("guest", client_as("guest")), ("faculty", faculty_c)):
+        check(f"combined count remains inaccessible to {label}",
+              client.get("/admin/analytics/api/overview").status_code == 403)
+    check("unauthorized combined-count requests never reach the count helper or table",
+          not _fake_ddb.count_conversations.called and len(table.scan_calls) == scans_before)
+    check("combined-count API remains read-only", len(table.put_calls) == puts_before)
+    check("combined totals use only unfiltered, consistent count scans",
+          all(c == {"Select": "COUNT", "ConsistentRead": True} for c in table.scan_calls))
+finally:
+    _fake_ddb.count_conversations.side_effect = None
+
+
+# ============================================================
+section("12. Empty stores read as 'nothing yet', not as failure")
 # ============================================================
 for var in ("ANSWER_FEEDBACK_FILE", "CONTENT_GAPS_FILE", "ESCALATIONS_FILE"):
     with open(os.environ[var], "w", encoding="utf-8") as fh:
@@ -531,6 +757,68 @@ check("suspect documents is empty, not missing", blank["suspect_documents"] == [
 check("the endpoint still returns 200 on an empty corpus",
       admin_c.get("/admin/analytics/api/overview").status_code == 200)
 
+
+section("13. Most asked topics uses completed-question usage, not outcome signals")
+from rag.topic_usage import record_topic_usage
+
+usage_now = datetime.datetime.now(datetime.timezone.utc)
+usage_today = usage_now.astimezone(analytics.MANILA).date()
+check("an unused topic counter is genuinely empty",
+      analytics.overview(7, today=usage_today)["top_topics"] == [])
+record_topic_usage("enrollment", "guest-question-one", at=usage_now)
+record_topic_usage("enrollment", "account-question-one", at=usage_now)
+record_topic_usage("fees", "guest-follow-up", at=usage_now)
+record_topic_usage("enrollment", "guest-question-one", at=usage_now)
+record_topic_usage("programs", "older-question", at=usage_now - datetime.timedelta(days=20))
+record_topic_usage("offices", "future-question", at=usage_now + datetime.timedelta(days=1))
+expected_usage = [
+    {"key": "enrollment", "topic": "Admissions and enrollment", "total": 2},
+    {"key": "fees", "topic": "Tuition and payments", "total": 1},
+]
+usage = analytics.overview(7, today=usage_today)
+check("unvoted account and guest questions both reach Most asked topics",
+      usage["topic_usage_available"] is True and usage["top_topics"] == expected_usage)
+check("successful follow-ups count as questions, not new conversations",
+      sum(row["total"] for row in usage["top_topics"]) == 3)
+check("anonymous topic usage does not fabricate feedback or answer-quality signals",
+      usage["totals"]["questions_with_signal"] == 0 and usage["totals"]["votes"] == 0)
+check("the selected wider date window includes older topic usage",
+      {row["key"] for row in analytics.overview(30, today=usage_today)["top_topics"]}
+      == {"enrollment", "fees", "programs"})
+
+with patch.object(analytics, "_events", return_value=[
+    {"at": usage_now, "date": usage_today, "hour": 8, "topic": "enrollment",
+     "label": "Synthetic private question", "kind": kind, "verdict": "down" if kind == "answered" else "",
+     "sources": []}
+    for kind in ("answered", "unanswered", "escalated", "resolved")
+]):
+    check("votes, gaps, escalations and staff replies do not count the same ask again",
+          analytics.overview(7, today=usage_today)["top_topics"] == expected_usage)
+
+r = admin_c.get("/admin/analytics/api/overview?days=7")
+check("the admin API returns canonical usage rows and availability",
+      r.status_code == 200 and r.get_json()["analytics"]["top_topics"] == expected_usage
+      and r.get_json()["analytics"]["topic_usage_available"] is True)
+with patch.object(analytics, "most_asked_topics", side_effect=RuntimeError("private store diagnostic")) as reader:
+    for label, client in (("student", student_c), ("guest", client_as("guest")),
+                          ("faculty", faculty_c), ("anonymous", anon_c)):
+        check(f"{label} cannot read usage statistics",
+              client.get("/admin/analytics/api/overview").status_code == 403)
+    check("unauthorized clients do not reach the usage store", not reader.called)
+    with patch("builtins.print") as output:
+        r = admin_c.get("/admin/analytics/api/overview")
+    failed_usage = r.get_json()["analytics"]
+    check("unavailable topic storage does not fail the dashboard endpoint",
+          r.status_code == 200 and r.get_json()["success"] is True)
+    check("unavailable topic usage is explicitly distinguished from no questions",
+          failed_usage["top_topics"] == [] and failed_usage["topic_usage_available"] is False)
+    check("other overview metrics survive a topic-store failure",
+          failed_usage["totals"]["conversations"] == 37 and "response_times" in failed_usage)
+    check("topic-store failures expose neither response nor log diagnostics",
+          "private store diagnostic" not in r.get_data(as_text=True)
+          and "private store diagnostic" not in str(output.call_args_list))
+check("topic usage recovers after a temporary store failure",
+      admin_c.get("/admin/analytics/api/overview?days=7").get_json()["analytics"]["top_topics"] == expected_usage)
 
 # ------------------------------------------------------------------ summary
 print("\n" + "=" * 60)

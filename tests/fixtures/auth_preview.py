@@ -13,8 +13,11 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
 
 from flask import (
     Blueprint,
@@ -241,13 +244,23 @@ def create_test_app(cognito=None, clock=None):
     app.testing = True
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     bp = Blueprint("auth", __name__)
-    from sc_assistant.reset_state import ResetFlowError, ResetFlowStore
+    # Import the real local reset store without loading operator config/.env.
+    with patch.dict(sys.modules, {"config": SimpleNamespace(FLASK_SECRET_KEY=app.secret_key)}):
+        from sc_assistant.reset_state import ResetFlowError, ResetFlowStore
     reset_tmp = tempfile.TemporaryDirectory(prefix="sc_reset_preview_")
     reset_store = ResetFlowStore(os.path.join(reset_tmp.name, "reset.sqlite3"), clock=clock.time)
+    login_events = []
+
+    def record_login(*, uid, display_name, email):
+        event = {"id": uuid4().hex, "at": datetime.fromtimestamp(clock.time(), timezone.utc).isoformat(),
+                 "uid": uid, "display_name": display_name, "email": email}
+        login_events.append(event)
+        return event
+
     namespace.update(bp=bp, render_template=render_template, jsonify=jsonify, request=request,
                      session=session, redirect=redirect, url_for=url_for, time=clock or time, secrets=secrets,
                      is_admin=lambda: session.get("role") == "admin", reset_flows=reset_store,
-                     ResetFlowError=ResetFlowError)
+                     ResetFlowError=ResetFlowError, record_login=record_login)
     tree = ast.parse((ROOT / "sc_assistant/auth.py").read_text(encoding="utf-8"))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "sc_assistant/auth.py", "exec"), namespace)  # noqa: S102
@@ -258,7 +271,7 @@ def create_test_app(cognito=None, clock=None):
     app.add_url_rule("/dashboard", endpoint="admin.dashboard", view_func=lambda: "Offline admin page")
     app.add_url_rule("/__auth_test__/health", view_func=lambda: jsonify(
         offline_fixture=True, operations=dict(Counter(op for op, _ in cognito.calls)),
-        password_reset_writes=cognito.password_reset_writes,
+        password_reset_writes=cognito.password_reset_writes, login_events=len(login_events),
     ))
     if hasattr(clock, "advance"):
         def advance_clock():
@@ -266,7 +279,8 @@ def create_test_app(cognito=None, clock=None):
             return jsonify(offline_fixture=True)
         app.add_url_rule("/__auth_test__/advance-time", methods=["POST"], view_func=advance_clock)
     app.extensions["auth_test"] = {"cognito": cognito, "namespace": namespace,
-                                  "reset_store": reset_store, "reset_tmp": reset_tmp}
+                                  "reset_store": reset_store, "reset_tmp": reset_tmp,
+                                  "login_events": login_events}
     return app
 
 

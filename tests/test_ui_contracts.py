@@ -75,12 +75,38 @@ class UIContracts(unittest.TestCase):
 
     def test_dashboard_navigation_is_native_and_keeps_existing_ids(self):
         _, dom = self.page("/dashboard")
-        for ident in ("analyticsMenuItem", "reportsMenuItem", "escalationsMenuItem", "feedbackMenuItem",
+        for ident in ("analyticsMenuItem", "reportsMenuItem", "escalationsMenuItem",
                       "conflictsMenuItem", "gapsMenuItem", "uploadsMenuItem", "usersMenuItem"):
             tag, attrs = dom.by_id(ident)
             self.assertEqual(tag, "button", ident)
             self.assertEqual(attrs["type"], "button", ident)
-        for ident in ("analyticsVolumeChart", "analyticsHourlyChart", "analyticsTopicsChart", "analyticsDays"):
+        for ident in ("analyticsHourlyChart", "analyticsTopicsChart", "analyticsDays"):
+            self.assertIsNotNone(dom.by_id(ident), ident)
+
+    def test_dashboard_omits_answer_feedback_without_removing_staff_replies(self):
+        html, dom = self.page("/dashboard")
+        for ident in ("feedbackMenuItem", "sidebarFeedbackBadge", "feedbackSection", "fbSourceList",
+                      "fbRecentList", "refreshFeedbackBtn"):
+            self.assertIsNone(dom.by_id(ident), ident)
+            self.assertNotIn(ident, html)
+        self.assertNotIn("/admin/feedback/api/list", html)
+        self.assertNotIn("/admin/feedback/api/delete", html)
+        for ident in ("reportsSection", "escalationsSection", "escList", "uploadsMenuItem", "refreshActivitiesBtn"):
+            self.assertIsNotNone(dom.by_id(ident), ident)
+
+    def test_overview_omits_retired_chart_feedback_card_and_document_review(self):
+        html, dom = self.page("/dashboard")
+        for ident in ("analyticsVolumeChart", "analyticsSeriesNote", "kpiSatisfaction",
+                      "kpiSatisfactionDelta", "analyticsDocumentsBody", "kpiAnsweredRate",
+                      "kpiAnsweredRateDelta", "analyticsUnansweredBody"):
+            self.assertIsNone(dom.by_id(ident), ident)
+            self.assertNotIn(ident, html)
+        for label in ("Answered vs. unanswered", "Helpful feedback", "Documents to review", "Unanswered topics"):
+            self.assertNotIn(label, html)
+        self.assertEqual(sum("analytics-kpi" in attrs.get("class", "").split() for _, attrs in dom.elements), 2)
+        self.assertEqual(sum("analytics-grid" in attrs.get("class", "").split() for _, attrs in dom.elements), 1)
+        for ident in ("kpiConversations", "kpiPending", "analyticsHourlyChart", "analyticsTopicsChart",
+                      "refreshActivitiesBtn", "gapsSection"):
             self.assertIsNotNone(dom.by_id(ident), ident)
 
     def test_dashboard_has_direct_logout_without_an_account_settings_dropdown(self):
@@ -93,6 +119,72 @@ class UIContracts(unittest.TestCase):
         self.assertTrue(logout["href"].endswith("/logout"))
         self.assertIsNotNone(dom.by_id("confirmLogoutButton"))
         self.assertIsNotNone(dom.by_id("cancelLogout"))
+
+    def test_most_asked_topics_identifies_completed_account_and_guest_usage(self):
+        html, dom = self.page("/dashboard")
+        self.assertIn("Completed account + guest questions", html)
+        self.assertIn("Topic counts are temporarily unavailable", html)
+        self.assertIn("No topic usage recorded for this date range yet", html)
+        self.assertIsNotNone(dom.by_id("analyticsTopicsChart"))
+        analytics = app.test_client().get("/admin/analytics/api/overview").get_json()["analytics"]
+        self.assertTrue(analytics["topic_usage_available"])
+        self.assertEqual(analytics["top_topics"][0], {
+            "key": "enrollment", "topic": "Admissions and enrollment", "total": 64,
+        })
+
+    def test_chat_uses_report_only_controls_with_explicit_guest_capability(self):
+        for path, allowed in (("/", "true"), ("/guest-chat", "false")):
+            html, dom = self.page(path)
+            sections = [attrs for _, attrs in dom.elements if "chat-section" in attrs.get("class", "").split()]
+            self.assertEqual(sections[0]["data-can-report"], allowed)
+            self.assertNotIn("feedback-btn", html)
+            self.assertNotIn("fa-thumbs-up", html)
+            self.assertNotIn("fa-thumbs-down", html)
+        script = Path("sc_assistant/static/js/chat.js").read_text(encoding="utf-8")
+        self.assertIn("Report this answer", script)
+        self.assertIn("fa-flag", script)
+        self.assertNotIn("/chat/feedback", script)
+        self.assertNotIn("feedbackButtons", script)
+        self.assertNotIn("restoreVotes", script)
+
+    def test_chat_suggestions_have_safe_native_fallbacks(self):
+        expected = ["How do I enroll?", "What programs does Samar College offer?",
+                    "What are the tuition fees and payment options?"]
+        for path in ("/", "/guest-chat"):
+            html, dom = self.page(path)
+            self.assertEqual(dom.by_id("faqSuggestions")[1]["aria-label"], "Suggested questions")
+            buttons = [attrs for tag, attrs in dom.elements if "faq-btn" in attrs.get("class", "").split()]
+            self.assertEqual(len(buttons), 3)
+            self.assertTrue(all(attrs["type"] == "button" for attrs in buttons))
+            for question in expected:
+                self.assertIn(question, html)
+
+    def test_guest_new_chat_uses_only_the_shared_handler(self):
+        html, dom = self.page("/guest-chat")
+        self.assertIn("new-chat-btn", dom.by_id("guestNewChatBtn")[1]["class"].split())
+        self.assertNotIn("window.guestActiveConv", html)
+        self.assertNotIn("$.post('/chat/clear'", html)
+
+    def test_overview_counts_saved_conversations_and_can_refresh_activity(self):
+        html, dom = self.page("/dashboard")
+        self.assertIn(">Total conversations</p>", html)
+        self.assertIn("Saved account chats plus completed guest chats", html)
+        self.assertIn("Account + guest chats", html)
+        self.assertNotIn("Temporary guest chats are excluded", html)
+        self.assertIsNotNone(dom.by_id("kpiConversations"))
+        self.assertIsNotNone(dom.by_id("kpiConversationsNote"))
+        self.assertIsNone(dom.by_id("kpiQuestions"))
+        self.assertIsNone(dom.by_id("kpiQuestionsDelta"))
+        tag, attrs = dom.by_id("refreshActivitiesBtn")
+        self.assertEqual((tag, attrs["type"]), ("button", "button"))
+        self.assertEqual(attrs["aria-label"], "Refresh recent activity")
+        client = app.test_client()
+        payload = client.get("/admin/analytics/api/overview").get_json()["analytics"]
+        self.assertNotEqual(payload["totals"]["conversations"], payload["totals"]["questions_with_signal"])
+        activity = client.get("/api/dashboard/activities").get_json()
+        self.assertEqual(activity["window_days"], 30)
+        self.assertIn("Signed in:", activity["activities"][0]["text"])
+        self.assertEqual(activity["activities"][0]["section"], "users")
 
     def test_chat_keeps_the_registered_account_dropdown(self):
         _, dom = self.page("/")

@@ -72,6 +72,8 @@ SUITES = [
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
     ("Storage backend (file/DynamoDB)",  "test_store.py"),
+    ("Successful sign-in history",      "test_login_activity.py"),
+    ("Private topic usage",             "test_topic_usage.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
     ("Calendar awareness (dates)",      "test_calendar.py"),

@@ -628,7 +628,7 @@ primary_model = ChatOpenAI(
             "effort": "minimal"
         }
     },
-    timeout=10,
+    timeout=15,
     max_retries=1,
     max_tokens=env_int("CHAT_MAX_OUTPUT_TOKENS", 4096, maximum=15360),
 )

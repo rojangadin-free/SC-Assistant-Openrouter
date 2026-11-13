@@ -14,4 +14,7 @@ node_modules
 **/*.sqlite3*
 **/*.json.lock
 **/*.json.*.tmp
+login_activity.json
+login_activity.json.tmp
+topic_usage/
 *.log

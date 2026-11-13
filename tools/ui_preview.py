@@ -210,6 +210,15 @@ def clear():
     return jsonify({"success": True})
 
 
+@app.get("/chat/api/suggestions")
+def chat_suggestions():
+    return jsonify({"success": True, "suggestions": [
+        "How do I enroll?",
+        "What are the tuition fees and payment options?",
+        "What scholarships are available?",
+    ]})
+
+
 @app.get("/api/announcements")
 def announcements():
     # Legacy data stays populated so UI tests catch any accidental banner polling.
@@ -228,7 +237,17 @@ def announcements():
 
 @app.get("/chat/escalate/routes")
 def routes():
-    return jsonify({"success": True, "routes": [{"key": "admin", "label": "College Administration"}]})
+    return jsonify({"success": True, "routes": {"admin": "College Administration"}})
+
+
+@app.post("/chat/escalate")
+def escalate():
+    return jsonify({"success": True, "message": "Preview question sent to staff."})
+
+
+@app.post("/chat/report")
+def report_answer():
+    return jsonify({"status": "ok", "success": True})
 
 
 @app.get("/chat/escalations/mine")
@@ -277,7 +296,9 @@ def attention():
 
 @app.get("/api/dashboard/activities")
 def activities():
-    return jsonify({"success": True, "activities": [
+    return jsonify({"success": True, "window_days": 30, "activities": [
+        {"at": "2026-11-13T05:00:00Z", "text": "Signed in: <strong>Maria Santos</strong> (maria.santos@example.invalid)",
+         "time": "2 minutes ago", "icon": "fa-right-to-bracket", "tone": "info", "section": "users"},
         {"kind": "upload", "text": "Samar-College-update.pdf indexed", "time": "2 hours ago", "icon": "fa-file", "tone": "ok"},
         {"kind": "feedback", "text": "An answer was marked unhelpful", "time": "5 hours ago", "icon": "fa-comment", "tone": "bad"},
     ]})
@@ -515,20 +536,15 @@ def analytics_overview():
         for h in range(24)
     ]
     topics = [
-        {"key": "enrollment", "topic": "Enrollment requirements", "total": 64,
-         "answered": 61, "unanswered": 3, "escalated": 1, "up": 44, "down": 3,
-         "last_asked": "2026-09-03"},
-        {"key": "tuition", "topic": "Tuition and payment deadlines", "total": 41,
-         "answered": 38, "unanswered": 3, "escalated": 2, "up": 25, "down": 6,
-         "last_asked": "2026-09-02"},
-        {"key": "scholarship", "topic": "Scholarship deadlines", "total": 22,
-         "answered": 9, "unanswered": 13, "escalated": 5, "up": 6, "down": 8,
-         "last_asked": "2026-09-01"},
+        {"key": "enrollment", "topic": "Admissions and enrollment", "total": 64},
+        {"key": "fees", "topic": "Tuition and payments", "total": 41},
+        {"key": "scholarships", "topic": "Scholarships", "total": 22},
     ]
     return jsonify({"success": True, "analytics": {
         "generated_at": "2026-09-03T09:00:00+00:00",
         "window_days": request.args.get("days", 14, type=int),
         "totals": {
+            "conversations": 128,
             "questions_with_signal": 412, "answered": 366, "unanswered": 46,
             "answered_rate": 0.888, "votes": 132, "up": 108, "down": 24,
             "satisfaction": 0.818, "escalated": 12, "escalations_resolved": 9,
@@ -537,6 +553,7 @@ def analytics_overview():
         "hourly": hourly,
         "peak_hour": "10 AM",
         "top_topics": topics,
+        "topic_usage_available": True,
         "unanswered_topics": [topics[2]],
         "suspect_documents": [
             {"source": "Samar-College-2024.pdf", "up": 12, "down": 7, "total": 19},

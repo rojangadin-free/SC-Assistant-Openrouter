@@ -11,6 +11,10 @@ answer_feedback.json
 answer_feedback.json.tmp
 escalations.json
 escalations.json.tmp
+# Successful sign-in history contains environment-specific account identities.
+login_activity.json
+login_activity.json.tmp
+topic_usage/
 # In-flight upload/indexing progress. Pure scratch state: it describes threads
 # in one running container, so a committed copy would only ever describe a job
 # that finished on someone else's machine.
@@ -282,6 +286,4 @@ _inline_dashboard.js
 # state on the next run.
 *.persistprobe
 tools/_persist_child.py
-
-
 

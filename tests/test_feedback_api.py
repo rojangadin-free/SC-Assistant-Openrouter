@@ -90,6 +90,7 @@ _fake_ddb.save_report = lambda data: (_filed_reports.append(dict(data)), "rid")[
 _fake_ddb.files_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.conversations_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.reports_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
+_fake_ddb.record_guest_conversation = lambda *args, **kwargs: False
 sys.modules["aws.dynamodb"] = _fake_ddb
 
 
@@ -623,6 +624,49 @@ reports_before_retraction = list(_filed_reports)
 stud.post("/chat/feedback", json={"msg_id": "toggle-reported", "verdict": None})
 check("retracting the vote does not retract its report", _filed_reports == reports_before_retraction)
 check("reported answer's vote was still removed", fb.get_vote("toggle-reported") is None)
+
+section("14. Direct reports do not require or create a vote")
+from sc_assistant import chat as chat_module
+
+valid_report = {"msg_id": "direct-report", "reason": "Wrong information", "question": "Direct report question?",
+                "msg_snippet": "A synthetic answer.", "sources": ["Handbook.pdf|p.4"]}
+votes_before_report = fb.feedback_stats()["total_votes"]
+reports_before = len(_filed_reports)
+r = stud.post("/chat/report", json=valid_report)
+check("an unvoted answer can be reported directly", r.status_code == 200 and r.get_json()["status"] == "ok")
+check("a direct report creates exactly one save request", len(_filed_reports) == reports_before + 1)
+check("direct reports are labelled report, not downvote", _filed_reports[-1]["source"] == "report")
+check("report context and citations are preserved",
+      _filed_reports[-1]["question"] == valid_report["question"]
+      and _filed_reports[-1]["sources"] == valid_report["sources"])
+check("reporting does not create a hidden dislike vote",
+      fb.get_vote("direct-report") is None and fb.feedback_stats()["total_votes"] == votes_before_report)
+before_invalid = len(_filed_reports)
+for bad in (None, [], "invalid", {}, {"msg_id": "m"}, {"reason": "Wrong information"},
+            {**valid_report, "reason": ""}, {**valid_report, "reason": "Others", "other_text": "  "},
+            {**valid_report, "other_text": "x" * 301}, {**valid_report, "sources": {}},
+            {**valid_report, "sources": [123]}, {**valid_report, "question": ["invalid"]},
+            {**valid_report, "conv_id": 123}):
+    check("malformed or incomplete reports are rejected", stud.post("/chat/report", json=bad).status_code == 400)
+check("invalid reports do not reach storage", len(_filed_reports) == before_invalid)
+check("anonymous reporting remains blocked",
+      stud.application.test_client().post("/chat/report", json=valid_report).status_code == 401)
+check("guest reporting remains blocked", guest.post("/chat/report", json=valid_report).status_code == 403)
+r = stud.post("/chat/report", json={**valid_report, "msg_id": "direct-other", "reason": "Others",
+                                   "other_text": "  Clear details.  ", "sources": None})
+check("custom report details are accepted and normalized",
+      r.status_code == 200 and _filed_reports[-1]["other_text"] == "Clear details."
+      and _filed_reports[-1]["sources"] == [])
+with patch.object(chat_module, "save_report", side_effect=RuntimeError("private storage diagnostic")), \
+        patch("builtins.print") as output:
+    r = stud.post("/chat/report", json=valid_report)
+check("failed writes are not acknowledged as filed", r.status_code == 500 and not r.get_json()["success"])
+check("storage diagnostics are not exposed in the response or log",
+      "private storage diagnostic" not in r.get_data(as_text=True)
+      and "private storage diagnostic" not in str(output.call_args_list))
+with patch.object(chat_module, "save_report", return_value=None):
+    r = stud.post("/chat/report", json=valid_report)
+check("an empty save result is not treated as success", r.status_code == 500)
 
 # ============================================================
 print("\n" + "=" * 46)

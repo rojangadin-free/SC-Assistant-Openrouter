@@ -75,10 +75,8 @@
            Administration   — accounts; real work, rarely done
            Open Chatbot     — leaves the dashboard, so it is last and separated
 
-         Within "Needs attention" the order deliberately matches
-         `rag.activity.attention()`, which already ranks the same four concerns
-         and comments "First because a person is actually waiting." The sidebar
-         and the triage panel on Overview now agree about what matters most;
+         Within "Needs attention" the available screens follow the urgency order
+         used by the triage panel. The sidebar and Overview agree about priorities;
          before this they disagreed, which is how an admin learns to trust
          neither.
 
@@ -137,15 +135,7 @@
               style="display:none;">0</span>
       </button>
 
-      {# Badge counts downvotes: the number that should make an admin click. #}
-      <button type="button" class="menu-item" id="feedbackMenuItem" title="Answer feedback">
-        <i class="fas fa-thumbs-up"></i>
-        <span>Answer feedback</span>
-        <span id="sidebarFeedbackBadge" class="sc-count sc-count--red"
-              style="display:none;">0</span>
-      </button>
-
-      {# Last in the group: the only one of the four whose count needs a full
+      {# Last in the group: its count needs a full
          re-parse of every source PDF, which is exactly why `attention()` leaves
          it out of the triage panel. A real problem, but not the one to chase
          first. #}

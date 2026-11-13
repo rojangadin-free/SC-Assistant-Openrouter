@@ -4,6 +4,7 @@ from flask import (
 import os
 import tempfile
 import threading
+from html import escape
 from botocore.exceptions import ClientError
 from pinecone import Pinecone
 
@@ -242,20 +243,8 @@ def root():
     return redirect(url_for("admin.dashboard") if is_admin() else url_for("chat.chat_page"))
 
 
-# `/api/dashboard/stats` used to live here: total users, conversations and
-# documents, which the Overview printed in three big tiles next to a hardcoded
-# "+0% from last month".
-#
-# It is deleted rather than left unused because nothing on the rebuilt Overview
-# asks a size question. Those three numbers cannot be acted on — knowing there
-# are 412 conversations tells an admin nothing to do — and buying them cost a
-# describe_user_pool plus two full-table COUNT scans on every dashboard load. The
-# triage queue that replaced them answers "what is waiting for me", which is the
-# only question a landing screen is worth loading for.
-#
-# Corpus-size figures still exist for the one place they are genuinely useful:
-# /admin/analytics/api/documents, where they sit beside the per-document
-# refusal rates that give them meaning.
+# The retired /api/dashboard/stats route stays removed. Overview reads the saved
+# conversation count alongside answer-quality metrics from the analytics API.
 
 
 def _dynamo_activity_rows():
@@ -295,7 +284,7 @@ def _dynamo_activity_rows():
                 "icon": "fa-file-arrow-up",
                 "tone": "info",
                 "text": "New document uploaded: "
-                        f"<strong>{f.get('filename', 'unknown')}</strong>",
+                        f"<strong>{escape(str(f.get('filename', 'unknown')))}</strong>",
                 "section": "uploads",
             })
     except ClientError as e:
@@ -320,7 +309,7 @@ def _dynamo_activity_rows():
                 "icon": "fa-user-plus",
                 "tone": "info",
                 "text": "New account: "
-                        f"<strong>{name or email or u.get('Username', 'unknown')}</strong>",
+                        f"<strong>{escape(str(name or email or u.get('Username', 'unknown')))}</strong>",
                 "section": "users",
             })
     except Exception as e:

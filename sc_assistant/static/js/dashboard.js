@@ -758,7 +758,6 @@ $(document).ready(function() {
   const ATTENTION_MENU = {
     escalations:  '#escalationsMenuItem',
     gaps:         '#gapsMenuItem',
-    feedback:     '#feedbackMenuItem',
     conflicts:    '#conflictsMenuItem',
     reports:      '#reportsMenuItem',
     uploads:      '#uploadsMenuItem',
@@ -820,12 +819,13 @@ $(document).ready(function() {
     if (target) $(target).trigger('click');
   });
 
-  $(document).on('click', '#refreshTriageBtn', function() { loadDashboardData(); });
+  $(document).on('click', '#refreshTriageBtn, #refreshActivitiesBtn', function() { loadDashboardData(); });
 
   let triageLoadedOnce = false;
 
   function loadDashboardData() {
     triageLoadedOnce = true;
+    $('#refreshTriageBtn, #refreshActivitiesBtn').prop('disabled', true);
     loadAttention();
 
 
@@ -850,6 +850,7 @@ $(document).ready(function() {
           const clickable = ATTENTION_MENU[activity.section] ? ' activity-item--link' : '';
           activityList.append(
             '<div class="activity-item' + tone + clickable + '" ' +
+                 (clickable ? 'role="button" tabindex="0" ' : '') +
                  'data-target="' + (ATTENTION_MENU[activity.section] || '') + '">' +
               '<div class="activity-icon"><i class="fas ' + escapeHtml(activity.icon) + '"></i></div>' +
               '<div class="activity-content">' +
@@ -867,6 +868,8 @@ $(document).ready(function() {
       }
     }).fail(function() {
       $('.activity-list').html('<p class="sc-lead--sm">Could not load activity.</p>');
+    }).always(function() {
+      $('#refreshTriageBtn, #refreshActivitiesBtn').prop('disabled', false);
     });
   }
 
@@ -874,6 +877,11 @@ $(document).ready(function() {
   $(document).on('click', '.activity-item--link', function() {
     const target = $(this).data('target');
     if (target) $(target).trigger('click');
+  });
+  $(document).on('keydown', '.activity-item--link', function(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    $(this).trigger('click');
   });
 
   // The template's showAnalytics() re-reads the queue every time the screen is

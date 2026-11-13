@@ -21,11 +21,13 @@ Every store is pointed at a throwaway temp file before the modules are imported,
 so this runs offline with no AWS and cannot touch real data.
 """
 
-import _bootstrap  # noqa: F401
-
 import datetime
 import os
 import tempfile
+from html import escape
+from unittest.mock import patch
+
+import _bootstrap  # noqa: F401
 
 # Local JSON files, not DynamoDB, and each one disposable. Set before importing
 # any rag module: the stores read these names when they build their handles.
@@ -39,12 +41,17 @@ _FILES = {
     "CONFLICT_RESOLUTIONS_FILE": "conflict_resolutions.json",
     "CALENDAR_PERIODS_FILE": "calendar_periods.json",
     "DOC_FRESHNESS_FILE": "doc_freshness.json",
+    "LOGIN_ACTIVITY_FILE": "login_activity.json",
+    "ANNOUNCEMENTS_FILE": "announcements.json",
+    "INDEX_JOBS_FILE": "index_jobs.json",
+    "RATE_LIMIT_STORAGE_PATH": "rate_limits.sqlite3",
+    "PASSWORD_RESET_STATE_PATH": "password_reset.sqlite3",
+    "SC_RUNTIME_DB": "chat_runtime.sqlite3",
 }
 for _env, _name in _FILES.items():
     os.environ[_env] = os.path.join(_TMP, _name)
 
-from rag import activity  # noqa: E402
-from rag import feedback, gaps, escalation, conflicts, calendar  # noqa: E402
+from rag import activity, calendar, conflicts, escalation, feedback, freshness, gaps, login_activity
 
 _passed = 0
 _failed = 0
@@ -217,6 +224,33 @@ feedback.record_vote("m-long", "up", question="word " * 80, conv_id="c1")
 check("a very long question does not produce a very long row",
       all(len(r["text"]) < 220 for r in activity.feed(50)))
 
+check("HTML is escaped after clipping, never cut inside an entity",
+      activity._clip("<" * 100, 5) == "&lt;" * 4 + "\u2026")
+check("literal entity text is encoded only once",
+      activity._clip("A &amp; B") == "A &amp;amp; B")
+
+_unsafe = '<img src=x onerror="1">&\''
+with patch.object(activity, "_load_feedback", return_value={"votes": {"x": {"at": _iso(0), "question": _unsafe}}}), \
+        patch.object(activity, "_load_gaps", return_value={"gaps": {"x": {"examples": [{"at": _iso(0), "question": _unsafe}]}}}), \
+        patch.object(activity, "_load_escalations", return_value={"items": {"x": {
+            "created_at": _iso(0), "answered_at": _iso(0), "question": _unsafe,
+            "route_label": _unsafe, "answered_by": _unsafe,
+        }}}), patch.object(conflicts, "list_resolutions", return_value={"x": {
+            "resolved_at": _iso(0), "role": _unsafe, "subject": _unsafe, "correct": _unsafe,
+        }}), patch.object(calendar, "list_periods", return_value=[{"set_at": _iso(0), "label": _unsafe}]), \
+        patch.object(freshness, "list_docs", return_value=[{
+            "updated_at": _iso(0), "filename": _unsafe, "effective_date": _unsafe,
+        }]):
+    safe_rows = activity.feed(50)
+check("native activity fields never become injected tags",
+      len(safe_rows) == 7 and all("<img" not in row["text"].lower() for row in safe_rows))
+check("each native row preserves escaped text inside trusted markup",
+      all(escape(_unsafe) in row["text"] for row in safe_rows))
+check("escalation office and responder are both escaped",
+      sum(row["text"].count(escape(_unsafe)) for row in safe_rows if row["section"] == "escalations") == 3)
+check("document dates are escaped as well as filenames",
+      next(row["text"] for row in safe_rows if row["section"] == "freshness").count(escape(_unsafe)) == 2)
+
 
 # --------------------------------------------------------------------------- #
 section("6. Rows from DynamoDB are merged, not appended")
@@ -257,6 +291,48 @@ check("a 200-day-old event is outside a 30-day window",
 check("...and inside a 365-day window",
       any("Ancient history" in r["text"]
           for r in activity.feed(100, window_days=365)))
+
+stale_extra = [{"at": _iso(60 * 24 * 31), "text": "Stale injected account"},
+               {"at": _iso(60 * 24 * 2), "text": "Two-day injected upload"}]
+check("injected rows respect the default 30-day window",
+      not any("Stale injected account" in r["text"] for r in activity.feed(100, extra=stale_extra)))
+check("injected rows also respect a shorter requested window",
+      not any("injected" in r["text"] for r in activity.feed(100, extra=stale_extra, window_days=1)))
+check("a wider window includes genuinely dated injected rows",
+      sum("injected" in r["text"] for r in activity.feed(100, extra=stale_extra, window_days=365)) == 2)
+
+_login_rows = [
+    {"id": "recent", "at": _iso(2), "uid": "test-recent", "display_name": _unsafe,
+     "email": 'name+<svg>&"@example.invalid'},
+    {"id": "older", "at": _iso(120), "uid": "test-older", "display_name": "Older sign-in",
+     "email": "older@example.invalid"},
+    {"id": "two-days", "at": _iso(60 * 24 * 2), "uid": "test-two-days", "display_name": "Two-day sign-in",
+     "email": "two-days@example.invalid"},
+    {"id": "expired", "at": _iso(60 * 24 * 31), "uid": "test-expired", "display_name": "Expired sign-in",
+     "email": "expired@example.invalid"},
+]
+login_activity._store().save({"events": {row["id"]: row for row in _login_rows}})
+login_feed = activity.feed(100, extra=[{"at": _iso(3), "text": "Between sign-ins", "icon": "fa-file-arrow-up"}])
+login_rows = [row for row in login_feed if row["icon"] == "fa-right-to-bracket"]
+check("successful logins use the existing users destination",
+      len(login_rows) == 3 and all(row["section"] == "users" for row in login_rows))
+check("login display name and verified email are HTML-escaped once",
+      login_rows[0]["text"] == f"Signed in: <strong>{escape(_unsafe)}</strong> ({escape(_login_rows[0]['email'])})")
+check("login email and display name cannot create HTML elements",
+      "<img" not in login_rows[0]["text"] and "<svg" not in login_rows[0]["text"])
+check("login rows merge chronologically with native and injected events",
+      login_feed.index(login_rows[0]) < next(i for i, r in enumerate(login_feed) if r["text"] == "Between sign-ins")
+      < login_feed.index(login_rows[1]))
+check("all login and non-login rows share the global ordering",
+      [activity._parse(row["at"]) for row in login_feed]
+      == sorted((activity._parse(row["at"]) for row in login_feed), reverse=True))
+check("expired login rows are omitted from the default feed",
+      not any("Expired sign-in" in row["text"] for row in login_feed))
+check("login rows respect a shorter requested window",
+      not any("Two-day sign-in" in row["text"] for row in activity.feed(100, window_days=1)))
+check("login rows cannot bypass the global limit", len(activity.feed(2)) == 2)
+check("feed rows expose display text, not stored account identifiers",
+      all("uid" not in row and "id" not in row and "email" not in row for row in login_rows))
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +421,35 @@ try:
 except Exception as e:
     check(f"triage survives a corrupt store (raised {e})", False)
 
+for malformed in (None, [], {"events": "invalid"}, {"events": []}):
+    with patch.object(activity, "_load_logins", return_value=malformed):
+        survived = activity.feed(100)
+    check("a malformed login store costs only login rows",
+          bool(survived) and not any(row["icon"] == "fa-right-to-bracket" for row in survived))
+
+with patch.object(activity, "_load_logins", return_value={"events": {
+    "bad-row": None, "bad-date": {**_login_rows[0], "at": []},
+    "bad-name": {**_login_rows[0], "display_name": {"token": "not-a-name"}},
+    "no-email": {**_login_rows[0], "email": ""}, "valid": _login_rows[0],
+}}):
+    survived = activity.feed(100)
+check("malformed login rows do not hide a valid sign-in",
+      sum(row["icon"] == "fa-right-to-bracket" for row in survived) == 1)
+
+with patch.object(activity, "_load_logins", side_effect=OSError("PRIVATE_LOGIN_READ_ERROR")), \
+        patch("builtins.print") as output:
+    survived = activity.feed(100)
+check("a failed login-store read leaves other activities available",
+      bool(survived) and not any(row["icon"] == "fa-right-to-bracket" for row in survived))
+check("a failed login-store read does not log exception details",
+      "PRIVATE_LOGIN_READ_ERROR" not in str(output.call_args_list))
+
+with open(os.environ["LOGIN_ACTIVITY_FILE"], "w", encoding="utf-8") as fh:
+    fh.write("{ invalid login history")
+survived = activity.feed(100)
+check("a corrupt login file leaves other activities available",
+      bool(survived) and not any(row["icon"] == "fa-right-to-bracket" for row in survived))
+
 
 # --------------------------------------------------------------------------- #
 section("11. An empty system says so")
@@ -410,6 +515,8 @@ for _n in ("upsert_conversation", "list_conversations", "get_conversation",
 _fake_ddb.files_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": _FILE_ROWS})
 _fake_ddb.conversations_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.reports_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
+_fake_ddb.count_conversations = lambda: 0
+_fake_ddb.record_guest_conversation = lambda *args, **kwargs: False
 sys.modules["aws.dynamodb"] = _fake_ddb
 
 _fake_students = types.ModuleType("aws.students")
@@ -460,18 +567,36 @@ sys.modules["store_index"] = _fake_store_index
 os.environ.setdefault("FLASK_SECRET_KEY", "test-secret")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
+# The real config reads .env; no operator configuration belongs in this fixture.
+_fake_config = types.ModuleType("config")
+_fake_config.FLASK_SECRET_KEY = "offline-activity-test-secret"
+_fake_config.COGNITO_USER_POOL_ID = "offline-pool"
+_fake_config.INDEX_NAME = "offline-index"
+_fake_config.PINECONE_API_KEY = "offline-key"
+sys.modules["config"] = _fake_config
+
+_fake_reranker = types.ModuleType("rag.reranker")
+_fake_reranker.RERANKER_BACKEND = "local"
+_fake_reranker.RERANKER_MODEL_NAME = "offline-model"
+_fake_reranker.disabled = lambda: True
+_fake_reranker.unavailable_reason = lambda: "offline test"
+_fake_reranker.warmup = lambda: False
+sys.modules["rag.reranker"] = _fake_reranker
+
 from sc_assistant import create_app  # noqa: E402
 
 app = create_app()
 app.config.update(TESTING=True)
 
 
-def client_as(email=None, is_admin=False):
+def client_as(email=None, is_admin=False, role="user"):
     c = app.test_client()
     if email:
         with c.session_transaction() as s:
             s["user"] = email
-            s["uid"] = "uid-" + email
+            s["uid"] = None if role == "guest" else "uid-" + email
+            s["role"] = role
+            s["is_guest"] = role == "guest"
             if is_admin:
                 s["is_admin"] = True
                 s["groups"] = ["admin"]
@@ -481,6 +606,8 @@ def client_as(email=None, is_admin=False):
 
 admin_c = client_as("admin@sc.edu.ph", is_admin=True)
 student_c = client_as("student@sc.edu.ph")
+staff_c = client_as("staff@example.invalid", role="staff")
+guest_c = client_as("guest", role="guest")
 anon_c = client_as()
 
 rules = sorted(str(r) for r in app.url_map.iter_rules())
@@ -492,6 +619,8 @@ for want in ("/api/dashboard/activities", "/api/dashboard/attention"):
 gaps.record_gap("Is there a shuttle service?", conv_id="c9")
 escalation.create_escalation("Can I still enrol?", route="registrar",
                              student_email="student@sc.edu.ph")
+login_activity.record_login(uid="offline-signin", display_name="Preview Sign-in",
+                            email="preview.signin@example.invalid")
 
 
 r = admin_c.get("/api/dashboard/activities?limit=10")
@@ -512,8 +641,29 @@ for field in ("text", "icon", "time", "at", "tone"):
 # -old file appearing while the 3-minute-old one is missing.
 _texts = " | ".join(row["text"] for row in rows)
 check("the recently uploaded document is in the feed", "new-handbook.pdf" in _texts)
+check("the admin feed identifies the account that signed in",
+      "Preview Sign-in" in _texts and "preview.signin@example.invalid" in _texts)
 check("DynamoDB rows are time-sorted with the rest, not appended",
       [row["at"] for row in rows] == sorted((row["at"] for row in rows), reverse=True))
+
+from sc_assistant import admin as admin_module
+
+unsafe_name = "User <img src=x onerror=alert(1)> & Staff"
+unsafe_file = "<img src=x onerror=alert(1)>.pdf"
+with patch.object(admin_module, "files_table", types.SimpleNamespace(scan=lambda **kwargs: {"Items": [
+    {"filename": unsafe_file, "uploaded_at": _iso(0)},
+]})), patch.object(admin_module, "cognito_client", types.SimpleNamespace(list_users=lambda **kwargs: {"Users": [
+    {"Username": "offline-account", "UserCreateDate": datetime.datetime.now(datetime.timezone.utc),
+     "Attributes": [{"Name": "name", "Value": unsafe_name}]},
+]})):
+    identity_rows = admin_module._dynamo_activity_rows()
+identity_text = " | ".join(row["text"] for row in identity_rows)
+check("legacy account rows also escape user-controlled display names",
+      "User &lt;img src=x onerror=alert(1)&gt; &amp; Staff" in identity_text)
+check("upload filenames cannot introduce HTML into the combined activity feed",
+      "&lt;img src=x onerror=alert(1)&gt;.pdf" in identity_text)
+check("intentional emphasis remains without unsafe image elements",
+      "<strong>" in identity_text and "<img" not in identity_text)
 
 # ?limit= is clamped rather than trusted: it reaches a slice on data an admin
 # does not control the size of.
@@ -538,10 +688,14 @@ check("the queue counts the escalation just filed",
 
 # Both are read-only and admin-only. This is a report of who complained and what
 # went unanswered; a student must not be able to read it.
-for path in ("/api/dashboard/activities", "/api/dashboard/attention"):
-    check(f"student is refused {path}", student_c.get(path).status_code == 403)
-    check(f"anonymous is refused {path}", anon_c.get(path).status_code == 403)
-    check(f"{path} rejects POST", admin_c.post(path).status_code == 405)
+with patch.object(activity, "_load_logins") as private_logins:
+    for path in ("/api/dashboard/activities", "/api/dashboard/attention"):
+        check(f"student is refused {path}", student_c.get(path).status_code == 403)
+        check(f"staff is refused {path}", staff_c.get(path).status_code == 403)
+        check(f"guest is refused {path}", guest_c.get(path).status_code == 403)
+        check(f"anonymous is refused {path}", anon_c.get(path).status_code == 403)
+        check(f"{path} rejects POST", admin_c.post(path).status_code == 405)
+    check("unauthorized requests never read private login history", not private_logins.called)
 
 # The old endpoint is gone, and with it the fabricated "+0%" beside every count.
 check("the invented-trend stats endpoint is no longer routed",
@@ -591,7 +745,7 @@ for dead_id in ("healthSatisfaction", "healthVotes", "healthUnanswered"):
     check(f"the duplicate '{dead_id}' element is gone", dead_id not in html)
 
 # And the surviving copy is the KPI row, present exactly once.
-for kpi in ("kpiSatisfaction", "kpiAnsweredRate", "kpiPending", "kpiQuestions"):
+for kpi in ("kpiPending", "kpiConversations"):
     check(f"'{kpi}' is rendered exactly once", html.count(f'id="{kpi}"') == 1)
 
 # The two panels that moved must actually be on the page — a move that dropped
@@ -662,8 +816,8 @@ check("...and that helper checks the library actually loaded",
       "typeof Chart === 'undefined'" in html)
 check("...and catches a construction failure",
       "catch (e)" in html and "This chart could not be drawn." in html)
-check("all three charts go through it",
-      html.count("= drawChart(") == 3)
+check("both remaining charts go through it",
+      html.count("= drawChart(") == 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -757,7 +911,7 @@ section("14. The sidebar reads in a usable order")
 
 positions = {}
 for item_id in ("analyticsMenuItem", "escalationsMenuItem", "reportsMenuItem",
-                "gapsMenuItem", "feedbackMenuItem", "conflictsMenuItem",
+                "gapsMenuItem", "conflictsMenuItem",
                 "uploadsMenuItem", "usersMenuItem"):
     marker = f'id="{item_id}"'
     check(f"'{item_id}' is in the menu exactly once", html.count(marker) == 1)
@@ -779,7 +933,7 @@ check("Analytics leads the menu",
 # tell an admin different things about what matters most.
 check("a waiting student outranks everything else in the queue",
       in_order("escalationsMenuItem", "reportsMenuItem", "gapsMenuItem",
-               "feedbackMenuItem", "conflictsMenuItem"))
+               "conflictsMenuItem"))
 check("...and the queue as a whole outranks the knowledge base",
       in_order("conflictsMenuItem", "uploadsMenuItem"))
 check("Ask a Human is no longer buried mid-list",
@@ -788,8 +942,8 @@ check("Ask a Human is no longer buried mid-list",
 # Knowledge base, then the rarely-used account screen.
 check("documents precede account administration",
       in_order("uploadsMenuItem", "usersMenuItem"))
-for removed in ("calendarMenuItem", "announcementsMenuItem"):
-    check(f"the manual '{removed}' screen is no longer in the menu",
+for removed in ("calendarMenuItem", "announcementsMenuItem", "feedbackMenuItem"):
+    check(f"the retired '{removed}' screen is no longer in the menu",
           f'id="{removed}"' not in html)
     check(f"activity rows cannot link to the removed '{removed}' screen",
           f"'#{removed}'" not in dash_js)
@@ -828,7 +982,7 @@ print("\n--- Badges survive the collapse ---")
 # disappeared in exactly the state where a one-glance signal matters most.
 # They are siblings of the label now.
 for badge in ("sidebarEscalationBadge", "sidebarReportBadge", "sidebarGapBadge",
-              "sidebarFeedbackBadge", "sidebarConflictBadge"):
+              "sidebarConflictBadge"):
     check(f"'{badge}' is present", html.count(f'id="{badge}"') == 1)
     # The label span closes before the badge opens: proof they are siblings.
     before = html[:html.index(f'id="{badge}"')]

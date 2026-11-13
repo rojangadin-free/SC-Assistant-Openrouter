@@ -77,6 +77,7 @@ for _n in (
 _fake_ddb.files_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.conversations_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
 _fake_ddb.reports_table = types.SimpleNamespace(scan=lambda *a, **k: {"Items": []})
+_fake_ddb.record_guest_conversation = lambda *args, **kwargs: False
 sys.modules["aws.dynamodb"] = _fake_ddb
 
 _fake_students = types.ModuleType("aws.students")

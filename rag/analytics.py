@@ -19,10 +19,10 @@ its own screen:
     rag/escalation.py  every question that needed a human, and whether it got one
     rag/conflicts.py   every contradiction an admin has adjudicated
 
-This module is the join. It adds NO new storage and NO new logging: a metric that
-needs its own write path is a metric that can disagree with the screen it came
-from, and then nobody trusts either. Everything here is derived, so the numbers
-are reproducible by re-reading the same four files.
+Outcome metrics still join those existing records. The Overview's Most asked
+topics chart instead reads completed-question usage counters: successful account
+and guest questions must count even when nobody votes. Those counters stay
+separate so feedback, escalation and staff replies cannot count a question again.
 
 The metrics, and why these ones
 -------------------------------
@@ -48,10 +48,9 @@ The metrics, and why these ones
   "we fixed it last week" from "it was always fine", and those are the two things
   an admin most needs to tell apart.
 
-* **Top topics** — grouped by `normalize_question()`, the SAME normaliser the gap
-  log and the feedback store use. If analytics grouped differently, the top topic
-  here would not match the top row there, and the first person to notice would
-  stop believing the dashboard.
+* **Most asked topics** groups completed questions into bounded school-topic
+  categories without retaining raw questions in the usage counter. The legacy
+  `top_topics()` drilldown still uses the feedback/gap normaliser for quality work.
 
 Everything degrades to zero rather than raising: this is a reporting surface, and
 a broken chart must never be able to take down the assistant.
@@ -68,6 +67,7 @@ from rag.calendar import MANILA, today_in_manila
 from rag.gaps import _load as _load_gaps
 from rag.feedback import _load as _load_feedback
 from rag.escalation import _load as _load_escalations
+from rag.topic_usage import most_asked_topics
 
 # How much history the charts cover by default. Two weeks is enough to see a
 # trend and short enough that an empty first week does not flatten it.
@@ -485,9 +485,8 @@ def overview(days: int = DEFAULT_DAYS, *, today: Optional[datetime.date] = None)
     """
     Everything the dashboard needs, in one call.
 
-    One endpoint rather than six because these numbers are read together and must
-    agree with each other: six requests can interleave with a student's vote and
-    render a page where the headline and the chart disagree by one.
+    The fields have explicit sources: outcome signals, completed-question usage,
+    and the staff queue. Their independent reads are not a transactional snapshot.
     """
     events = _events()
     answered = sum(1 for e in events if e["kind"] == "answered")
@@ -499,6 +498,13 @@ def overview(days: int = DEFAULT_DAYS, *, today: Optional[datetime.date] = None)
     busiest = max(hist, key=lambda h: h["count"]) if hist else None
 
     series = volume_series(days, today=today)
+    topic_usage_available = True
+    try:
+        usage_topics = most_asked_topics(10, days=days, today=today)
+    except Exception:  # noqa: BLE001 - a failed usage store must not hide the other analytics
+        usage_topics = []
+        topic_usage_available = False
+        print("  [analytics] topic usage unavailable (non-fatal).")
 
     return {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -518,7 +524,8 @@ def overview(days: int = DEFAULT_DAYS, *, today: Optional[datetime.date] = None)
         "series": series,
         "hourly": hist,
         "peak_hour": busiest["label"] if busiest and busiest["count"] else None,
-        "top_topics": top_topics(10),
+        "top_topics": usage_topics,
+        "topic_usage_available": topic_usage_available,
         "unanswered_topics": top_topics(10, kind="unanswered"),
         "suspect_documents": suspect_documents(10),
         "response_times": response_times(),

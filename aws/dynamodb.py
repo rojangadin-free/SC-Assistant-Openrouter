@@ -1,6 +1,10 @@
 import datetime
+import hashlib
 import uuid
+
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
 from aws.dynamodb_access import ThreadLocalTable
 
 files_table = ThreadLocalTable("Files")
@@ -47,6 +51,41 @@ def list_conversations(uid):
     return resp.get("Items", [])
 
 
+def record_guest_conversation(session_id):
+    """Create one opaque count marker per guest chat, without saving its messages."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("A guest conversation identifier is required.")
+    marker = hashlib.sha256(("guest-conversation:" + session_id).encode("utf-8")).hexdigest()
+    try:
+        conversations_table.put_item(
+            Item={
+                "uid": "guest",
+                "conv_id": "guest-" + marker,
+                "conversation_type": "guest",
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+            ConditionExpression="attribute_not_exists(conv_id) AND attribute_not_exists(uid)",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def count_conversations():
+    """Count account chats and guest markers across all pages, without returning messages."""
+    total = 0
+    scan_args = {"Select": "COUNT", "ConsistentRead": True}
+    while True:
+        page = conversations_table.scan(**scan_args)
+        total += page["Count"]
+        last_key = page.get("LastEvaluatedKey")
+        if not last_key:
+            return total
+        scan_args["ExclusiveStartKey"] = last_key
+
+
 def get_conversation(uid, conv_id):
     """Retrieves a specific conversation from DynamoDB."""
     resp = conversations_table.get_item(Key={"conv_id": conv_id, "uid": uid}, ConsistentRead=True)
@@ -69,11 +108,9 @@ def save_report(data: dict) -> str:
     """
     Save a student report to DynamoDB. Returns the new report_id.
 
-    `msg_id` doubles as an idempotency key. A downvote files the report
-    automatically, and the student may then pick a reason from the sheet that
-    follows — two requests about one answer. Scanning for an existing row keeps
-    that as one report the admin has to read once, instead of a duplicate pair
-    where the second copy holds the detail and the first is noise.
+    Reports are filed when a student chooses a reason, independently of votes.
+    A repeated submission updates the reason of an existing report for that
+    answer when it is found, rather than intentionally creating another row.
     """
     msg_id = data.get("msg_id", "")
     existing = find_report_by_msg(msg_id) if msg_id else None
@@ -100,7 +137,7 @@ def save_report(data: dict) -> str:
         # document is a work order; one that does not is a complaint the admin
         # has to reproduce by hand.
         "sources":        data.get("sources") or [],
-        "source":         data.get("source", "downvote"),  # downvote | manual
+        "source":         data.get("source", "report"),
         "status":         "pending",   # pending | done | ignored
         "created_at":     datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "resolved_at":    "",

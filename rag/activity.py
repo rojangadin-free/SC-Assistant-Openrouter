@@ -25,7 +25,7 @@ timestamps.
 
 What this module does instead
 -----------------------------
-It builds the feed from the six stores that already record *when* something
+It builds the feed from the stores that record *when* something
 happened, in Manila time:
 
     rag/feedback.py     a student judged an answer          `at`
@@ -34,6 +34,7 @@ happened, in Manila time:
     rag/conflicts.py    an admin adjudicated a contradiction `resolved_at`
     rag/calendar.py     an admin set a date range           `set_at`
     rag/freshness.py    an admin dated a document           `updated_at`
+    rag/login_activity.py a verified account signed in      `at` (UTC)
 
 These are small JSON documents read whole, so "newest" is a real sort over the
 whole set rather than a sort over a lucky subset. `rag/analytics.py` already
@@ -55,18 +56,21 @@ assistant.
 from __future__ import annotations
 
 import datetime
-from typing import Dict, List, Optional
-
-from rag.calendar import MANILA
+from html import escape
+from typing import List, Optional
 
 # Read the stores through the same private loaders analytics.py uses. Going
 # through the public list_*() helpers instead would re-sort and re-shape data
 # this module immediately re-sorts anyway, and some of them hide the very
 # timestamps needed here.
-from rag.feedback import _load as _load_feedback, feedback_stats
-from rag.gaps import _load as _load_gaps, gap_stats
-from rag.escalation import _load as _load_escalations, escalation_stats
-
+from rag.calendar import MANILA
+from rag.escalation import _load as _load_escalations
+from rag.escalation import escalation_stats
+from rag.feedback import _load as _load_feedback
+from rag.feedback import feedback_stats
+from rag.gaps import _load as _load_gaps
+from rag.gaps import gap_stats
+from rag.login_activity import _load as _load_logins
 
 # How many rows the feed shows by default. Ten is about one screen without
 # scrolling; a feed long enough to scroll stops being glanceable, which was the
@@ -138,11 +142,11 @@ def humanize(ts: str, *, now: Optional[datetime.datetime] = None) -> str:
 
 def _clip(text: str, limit: int = 90) -> str:
     """
-    One line, ellipsised. Questions arrive with newlines from a textarea, and a
-    raw newline inside a feed row breaks the layout it sits in.
+    One line, ellipsised, then HTML-escaped for the feed's trusted markup.
     """
     flat = " ".join((text or "").split())
-    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+    clipped = flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+    return escape(clipped)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +181,25 @@ def events(*, window_days: int = DEFAULT_WINDOW_DAYS) -> List[dict]:
     """
     out: List[dict] = []
     cutoff = datetime.datetime.now(MANILA) - datetime.timedelta(days=window_days)
+
+    # --- successful named sign-ins, never account creation or guest entry ---
+    try:
+        for login in (_load_logins().get("events") or {}).values():
+            if not isinstance(login, dict) or not all(
+                isinstance(login.get(key), str) and login[key].strip()
+                for key in ("id", "uid", "display_name", "email")
+            ):
+                continue
+            dt = _parse(login.get("at", ""))
+            if not dt or dt < cutoff:
+                continue
+            out.append(_event(
+                dt, icon="fa-right-to-bracket", tone="info", section="users",
+                text=f"Signed in: <strong>{_clip(login['display_name'], 60)}</strong> "
+                     f"({_clip(login['email'], 90)})",
+            ))
+    except Exception:  # noqa: BLE001 - one unavailable reporting source must not hide the others
+        print("  [activity] sign-ins unreadable (non-fatal).")
 
     # --- feedback: a student judged an answer ---------------------------
     try:
@@ -229,7 +252,7 @@ def events(*, window_days: int = DEFAULT_WINDOW_DAYS) -> List[dict]:
                     raised,
                     icon="fa-hand",
                     tone="warn",
-                    text=f"Question sent to {item.get('route_label') or 'an office'}"
+                    text=f"Question sent to {_clip(item.get('route_label') or 'an office')}"
                          f": <strong>{_clip(item.get('question', ''), 60)}</strong>",
                     section="escalations",
                 ))
@@ -243,7 +266,7 @@ def events(*, window_days: int = DEFAULT_WINDOW_DAYS) -> List[dict]:
                     answered,
                     icon="fa-reply",
                     tone="ok",
-                    text=f"<strong>{who}</strong> replied to a student question",
+                    text=f"<strong>{_clip(who)}</strong> replied to a student question",
                     section="escalations",
                 ))
     except Exception as e:
@@ -263,7 +286,7 @@ def events(*, window_days: int = DEFAULT_WINDOW_DAYS) -> List[dict]:
                 dt,
                 icon="fa-scale-balanced",
                 tone="ok",
-                text=f"{label} confirmed as "
+                text=f"{_clip(label)} confirmed as "
                      f"<strong>{_clip(r.get('correct', ''), 40)}</strong>",
                 section="conflicts",
             ))
@@ -299,7 +322,7 @@ def events(*, window_days: int = DEFAULT_WINDOW_DAYS) -> List[dict]:
                 icon="fa-clock-rotate-left",
                 tone="info",
                 text=f"<strong>{_clip(d.get('filename', ''), 45)}</strong> dated "
-                     f"{d.get('effective_date') or 'unknown'}",
+                     f"{_clip(d.get('effective_date') or 'unknown')}",
                 section="freshness",
             ))
     except Exception as e:
@@ -321,10 +344,11 @@ def feed(limit: int = DEFAULT_LIMIT, *, extra: Optional[List[dict]] = None,
     last week.
     """
     rows = events(window_days=window_days)
+    cutoff = datetime.datetime.now(MANILA) - datetime.timedelta(days=window_days)
 
     for row in (extra or []):
         dt = _parse(row.get("at", ""))
-        if not dt:
+        if not dt or dt < cutoff:
             continue
         merged = dict(row)
         merged["_sort"] = dt

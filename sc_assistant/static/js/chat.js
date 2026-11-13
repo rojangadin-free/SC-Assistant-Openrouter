@@ -66,6 +66,8 @@ $(document).ready(function() {
 
   const messageForm = $('#messageForm');
   const emptyChatState = $('#emptyChatState');
+  const faqSuggestions = $('#faqSuggestions');
+  let suggestionRequestId = 0;
   
   const conversationList = $("#conversationList");
   const conversationLoader = $('#conversationLoader');
@@ -138,10 +140,26 @@ $(document).ready(function() {
     previewContainer.hide();
   });
 
-  $('.faq-btn').on('click', function() {
-    const question = $(this).text();
-    $('#messageInput').val(question);
-    $('#messageForm').submit();
+  function refreshSuggestions() {
+    const requestId = ++suggestionRequestId;
+    $.getJSON('/chat/api/suggestions').done(function(response) {
+      if (requestId !== suggestionRequestId || !emptyChatState.is(':visible') ||
+          String(messageInput.val() || '').trim() || faqSuggestions.find(':focus').length) return;
+      if (!response || !response.success || !Array.isArray(response.suggestions)) return;
+      const questions = [...new Set(response.suggestions.filter(question =>
+        typeof question === 'string' && question.trim() && question.length <= 200
+      ).map(question => question.trim()))].slice(0, 3);
+      if (questions.length !== 3) return;
+      faqSuggestions.empty();
+      questions.forEach(question => {
+        $('<button>', { type: 'button', class: 'faq-btn' }).text(question).appendTo(faqSuggestions);
+      });
+    });
+  }
+
+  faqSuggestions.on('click', '.faq-btn', function() {
+    messageInput.val($(this).text()).trigger('input');
+    messageForm.trigger('submit');
   });
 
 
@@ -253,37 +271,19 @@ $(document).ready(function() {
       });
   });
 
-  // ── Answer feedback (👍/👎) ─────────────────────────────────────
-  //
-  // There used to be a flag button here too, opening a form with a required
-  // reason. Two controls for one intention: the thumb cost a click, the flag cost
-  // a decision and a submit, and they wrote to different tables. Predictably the
-  // votes arrived and the reports did not, so the admin's queue was empty while
-  // the satisfaction number quietly fell.
-  //
-  // Now there is one control. The 👎 records the vote; picking a reason
-  // afterwards is what files the report. Two different things are being
-  // collected — a statistic and a work order — and only the second is worth an
-  // admin's attention, so only the second is created when a student explains it.
+  // Reporting opens options locally. Only choosing a reason submits a report.
+  const canReport = $('.chat-section').attr('data-can-report') === 'true';
 
-  //
-  // The vote is sent WITH the citations of the answer it judges. A verdict alone
-  // says something is wrong; a verdict plus "these are the pages it came from"
-  // tells the admin WHICH document to fix. See rag/feedback.py.
-  function feedbackButtons(msgId) {
+  function reportButton(msgId, pending = false) {
     return `
-      <div class="feedback-group" data-msg-id="${msgId}">
-        <button type="button" class="feedback-btn feedback-up" data-verdict="up" title="This answer helped" aria-label="This answer helped" aria-pressed="false">
-          <i class="far fa-thumbs-up" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="feedback-btn feedback-down" data-verdict="down" title="This answer was wrong or unhelpful" aria-label="This answer was wrong or unhelpful" aria-pressed="false">
-          <i class="far fa-thumbs-down" aria-hidden="true"></i>
-        </button>
-      </div>`;
+      <button type="button" class="report-btn" data-msg-id="${escapeHtml(msgId)}"
+              title="Report this answer" aria-label="Report this answer" aria-expanded="false" ${pending ? 'disabled' : ''}>
+        <i class="far fa-flag" aria-hidden="true"></i>
+      </button>`;
   }
 
   // The question this answer replied to = the nearest preceding user message.
-  // Reading it from the DOM keeps voting on *reloaded* conversations working;
+  // Reading it from the DOM keeps reporting on reloaded conversations working;
   // tracking it in a variable would only ever know about the current session.
   function questionFor($message) {
     const $prevUser = $message.prevAll('.message.user').first();
@@ -297,8 +297,7 @@ $(document).ready(function() {
   // Inline badges only appear when the model chose to cite mid-sentence, so they
   // cannot be the only source of provenance. The footer used to be the fallback;
   // now that it is gone, the citations are stashed on the message element instead
-  // (see rememberCitations) and read back here — a vote still never travels
-  // without the file and page it judged.
+  // (see rememberCitations) and read back here so a report retains its sources.
   function sourcesFor($message) {
     const out = [];
     $message.find('.message-bubble a[data-source]').each(function() {
@@ -323,10 +322,10 @@ $(document).ready(function() {
   // a line of noise nobody was going to act on — least of all on a phone, where it
   // ran off the edge of the screen.
   //
-  // What is NOT gone is the provenance itself, which the vote handler depends on.
+  // What is NOT gone is the provenance itself, which the report handler depends on.
   // The citations are kept on the message element as plain data, in the same
   // "file|p.N" shape the chips used to expose via data-label, so the payload sent
-  // with a thumbs-up or thumbs-down is unchanged. Nothing is rendered.
+  // with a report is unchanged. Nothing is rendered.
   function rememberCitations($message, citations) {
     if (!citations || !citations.length) return;
     $message.data('citations', citations.map(function(c) {
@@ -335,83 +334,17 @@ $(document).ready(function() {
   }
 
 
-  function paintFeedback($group, verdict) {
-    $group.find('.feedback-btn').each(function() {
-      const selected = $(this).data('verdict') === verdict;
-      $(this).toggleClass('voted', selected).attr('aria-pressed', String(selected));
-    });
-  }
-
-  $(document).on('click', '.feedback-btn', function() {
+  $(document).on('click', '.report-btn', function() {
     const $btn = $(this);
-    const $group = $btn.closest('.feedback-group');
-    if ($group.data('feedbackPending')) return;
-    const msgId = $group.data('msg-id');
-    const previousVerdict = $group.find('.feedback-btn.voted').data('verdict') || null;
-    const verdict = $btn.hasClass('voted') ? null : $btn.data('verdict');
-    const $message = $('#' + msgId);
-    const $previousOptions = $message.find('.reason-sheet, .escalate-offer').filter(':visible');
-    const hadFocus = this === document.activeElement;
-
-    // Keep one request per message in flight while its result is pending.
-    $group.data('feedbackPending', true).data('feedbackTouched', true);
-    $group.find('.feedback-btn').prop('disabled', true);
-    $previousOptions.hide();
-    paintFeedback($group, verdict);
-
-    $.ajax({
-      url: '/chat/feedback',
-      method: 'POST',
-      timeout: 15000,
-      contentType: 'application/json',
-      data: JSON.stringify({
-        msg_id:   msgId,
-        verdict:  verdict,
-        question: questionFor($message),
-        answer:   $message.find('.message-bubble').text().trim().substring(0, 1000),
-        sources:  sourcesFor($message),
-        conv_id:  activeConversationId || '',
-      }),
-      success: function(res) {
-        $message.find('.reason-sheet, .escalate-offer').remove();
-        if (verdict === 'down') {
-          // Nothing has been reported yet — the vote is counted, and answering
-          // this sheet is what files the report. Ignoring or closing it leaves the
-          // downvote as a statistic, which is all a bare thumb honestly is.
-          showReasonSheet($message, msgId, (res && res.can_report) === true);
-
-          // A downvote is the moment a student is demonstrably unsatisfied, which
-          // makes it the right moment — and the only reliable one — to offer the
-          // human fallback. Prompting everyone would be nagging.
-          showEscalationOffer($message);
-        } else if (verdict === 'up') {
-          showNotification('Thanks for the feedback!', 'success');
-        }
-      },
-      error: function(xhr) {
-        paintFeedback($group, previousVerdict);
-        $previousOptions.show();
-        showNotification((xhr.responseJSON && xhr.responseJSON.message) || 'Could not save your feedback.', 'error');
-      },
-      complete: function() {
-        $group.data('feedbackPending', false);
-        $group.find('.feedback-btn').prop('disabled', false);
-        if (hadFocus && document.activeElement === document.body && $btn.is(':visible')) $btn.trigger('focus');
-      }
-    });
+    if ($btn.prop('disabled')) return;
+    const $message = $btn.closest('.message');
+    const $sheet = $message.children('.reason-sheet');
+    if ($sheet.length) closeReportSheet($sheet, true);
+    else showReasonSheet($message, $btn.data('msg-id'));
   });
 
 
-  // ── "What went wrong?" ─────────────────────────────────────────
-  //
-  // Shown after the 👎, and answering it is what creates the report. A bare thumb
-  // is counted but not filed: reporting every one of them meant the admin's queue
-  // filled with rows that said nothing beyond "someone disliked this", and the
-  // complaints that named a wrong figure were lost in the noise.
-  //
-  // Inline chips rather than a modal with a <select> and a Submit — the old flag
-  // form proved that a wall between a student and their complaint is a wall the
-  // complaint does not cross. One tap is the whole cost of filing one here.
+  // Reason chips submit directly; opening or closing these options files nothing.
 
   const REASONS = [
     'Wrong information',
@@ -421,45 +354,62 @@ $(document).ready(function() {
     'Confusing wording',
   ];
 
-  function showReasonSheet($message, msgId, canReport) {
+  function showReasonSheet($message, msgId) {
     if ($message.find('.reason-sheet').length) return;
-
-    // A guest cannot file a report — there is no address for the admin to reply
-    // to — so asking them what went wrong would collect an answer with nowhere to
-    // go. Their vote still counts toward the topic's satisfaction score.
-    if (!canReport) return;
-
-
     const chips = REASONS.map(function(r) {
-      return '<button class="reason-chip" data-reason="' + escapeHtml(r) + '">' +
-             escapeHtml(r) + '</button>';
+      return '<button type="button" class="reason-chip" data-reason="' + escapeHtml(r) + '">' +
+              escapeHtml(r) + '</button>';
     }).join('');
-
-    $message.append(
-      '<div class="reason-sheet" data-msg-id="' + escapeHtml(msgId) + '">' +
+    const $sheet = $(
+      '<div class="reason-sheet" role="region" aria-label="Report options">' +
         '<div class="reason-sheet-head">' +
-          '<span><i class="fas fa-circle-question"></i> What went wrong? <em>(optional)</em></span>' +
-          '<button class="reason-dismiss" title="Dismiss">&times;</button>' +
+          '<span>Report this answer</span>' +
+          '<button type="button" class="reason-dismiss" title="Close report options" aria-label="Close report options">&times;</button>' +
         '</div>' +
-        '<div class="reason-chips">' + chips +
-          '<button class="reason-chip reason-other" data-reason="Others">Something else…</button>' +
-        '</div>' +
-        '<div class="reason-other-box" style="display:none;">' +
-          '<input type="text" class="reason-other-text" maxlength="300" ' +
-                 'placeholder="Tell the admin what was wrong…">' +
-          '<button class="reason-other-send">Send</button>' +
-        '</div>' +
+        (canReport
+          ? '<p class="reason-help">Choose a reason to send a report to the administrator.</p>' +
+            '<div class="reason-chips">' + chips +
+              '<button type="button" class="reason-chip reason-other" data-reason="Others">Something else...</button>' +
+            '</div>' +
+            '<div class="reason-other-box" style="display:none;">' +
+              '<input type="text" class="reason-other-text" maxlength="300" aria-label="Report details" ' +
+                      'placeholder="Tell the admin what was wrong...">' +
+              '<button type="button" class="reason-other-send">Send</button>' +
+            '</div>'
+          : '<p class="reason-help">Sign in to submit reports.</p>' +
+            '<a class="report-sign-in">Sign in</a>') +
       '</div>'
     );
+    $sheet.attr('id', 'report-reasons-' + msgId).data('msg-id', msgId).appendTo($message);
+    $sheet.find('.report-sign-in').attr('href', $('#guestSignInButton').attr('href') || '/auth');
+    $message.find('.report-btn').attr('aria-expanded', 'true').attr('aria-controls', $sheet.attr('id'));
+    showEscalationOffer($message);
+    $message.children('.escalate-offer').appendTo($sheet);
+    $sheet[0].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function closeReportSheet($sheet, restoreFocus = false) {
+    if ($sheet.data('reportPending')) return;
+    const $button = $sheet.closest('.message').find('.report-btn');
+    $sheet.remove();
+    $button.attr('aria-expanded', 'false').removeAttr('aria-controls');
+    if (restoreFocus) $button.trigger('focus');
   }
 
   function sendReason($sheet, reason, otherText) {
+    if (!canReport || $sheet.data('reportPending')) return;
     const msgId = $sheet.data('msg-id');
-    const $message = $('#' + msgId);
+    const $message = $sheet.closest('.message');
+    const $button = $message.find('.report-btn');
+    const focused = document.activeElement;
+    $sheet.data('reportPending', true).attr('aria-busy', 'true');
+    $sheet.find('button, input').prop('disabled', true);
+    $button.prop('disabled', true);
 
     $.ajax({
       url: '/chat/report',
       method: 'POST',
+      timeout: 15000,
       contentType: 'application/json',
       data: JSON.stringify({
         msg_id:      msgId,
@@ -470,20 +420,31 @@ $(document).ready(function() {
         question:    questionFor($message),
         sources:     sourcesFor($message),
       }),
-      // This request IS the report now, so the outcome has to be told truthfully.
-      // Confirming on failure would leave the student believing the admin was
-      // notified when nothing was filed — and they would never think to say it
-      // again.
-      success: function() {
-        $sheet.html('<div class="reason-thanks">' +
-                      '<i class="fas fa-check-circle"></i> Thanks — the admin has been notified.' +
-                    '</div>');
-        setTimeout(function() { $sheet.fadeOut(200, function() { $(this).remove(); }); }, 2600);
+      success: function(res) {
+        if (!res || res.status !== 'ok') {
+          showNotification((res && (res.message || res.error)) || 'Could not submit the report.', 'error');
+          return;
+        }
+        $sheet.html('<div class="reason-thanks" role="status">' +
+                       '<i class="fas fa-check-circle" aria-hidden="true"></i> Report sent to the administrator.' +
+                     '</div>');
+        setTimeout(function() {
+          if ($sheet[0].isConnected) closeReportSheet($sheet);
+        }, 2600);
       },
       error: function(xhr) {
         // The sheet stays open so the tap can simply be repeated.
-        showNotification((xhr.responseJSON && xhr.responseJSON.message)
+        showNotification((xhr.responseJSON && (xhr.responseJSON.message || xhr.responseJSON.error))
           || 'Could not send that. Please try again.', 'error');
+      },
+      complete: function() {
+        $sheet.data('reportPending', false).removeAttr('aria-busy');
+        $sheet.find('button, input').prop('disabled', false);
+        $button.prop('disabled', false);
+        if (document.activeElement === document.body) {
+          if (focused && focused.isConnected && $sheet[0].contains(focused)) $(focused).trigger('focus');
+          else if ($button.is(':visible')) $button.trigger('focus');
+        }
       }
     });
 
@@ -492,6 +453,7 @@ $(document).ready(function() {
   $(document).on('click', '.reason-chip', function() {
     const $chip = $(this);
     const $sheet = $chip.closest('.reason-sheet');
+    if ($sheet.data('reportPending')) return;
 
     if ($chip.hasClass('reason-other')) {
       $sheet.find('.reason-chips').slideUp(120);
@@ -512,12 +474,14 @@ $(document).ready(function() {
     if (e.key === 'Enter') { e.preventDefault(); $(this).siblings('.reason-other-send').click(); }
   });
 
-  // Dismissable, and dismissing files nothing. The vote still stands, which is
-  // the honest record of what the student actually said: this answer was bad,
-  // without elaborating.
-
   $(document).on('click', '.reason-dismiss', function() {
-    $(this).closest('.reason-sheet').fadeOut(150, function() { $(this).remove(); });
+    closeReportSheet($(this).closest('.reason-sheet'), true);
+  });
+  $(document).on('keydown', '.reason-sheet, .report-btn', function(event) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    const $sheet = $(this).hasClass('reason-sheet') ? $(this) : $(this).closest('.message').children('.reason-sheet');
+    if ($sheet.length) closeReportSheet($sheet, true);
   });
 
 
@@ -539,8 +503,8 @@ $(document).ready(function() {
     const offer = $(`
       <div class="escalate-offer">
         <span><i class="fas fa-user-tie"></i> Want a person to answer this?</span>
-        <button class="escalate-open-btn">Ask a human</button>
-        <button class="escalate-dismiss" title="No thanks">&times;</button>
+        <button type="button" class="escalate-open-btn">Ask a human</button>
+        <button type="button" class="escalate-dismiss" title="No thanks" aria-label="Dismiss staff help offer">&times;</button>
       </div>
     `);
 
@@ -548,9 +512,7 @@ $(document).ready(function() {
     $message.append(offer);
   }
 
-  // Declining does not retract anything: the downvote is already recorded. All
-  // this removes is the suggestion, so it is a pure UI dismissal with nothing to
-  // tell the server about.
+  // Dismissing the human-help offer does not submit or retract a report.
 
   $(document).on('click', '.escalate-dismiss', function() {
     $(this).closest('.escalate-offer').fadeOut(150, function() { $(this).remove(); });
@@ -796,13 +758,9 @@ $(document).ready(function() {
 
     const msgId = savedMsgId || ('msg-' + Date.now() + '-' + Math.floor(Math.random() * 9999));
 
-    // Feedback only. The flag button that used to sit here is gone: the 👎 leads
-    // straight into the same question the flag form asked, so a second control
-    // would have been a second way to say one thing.
-
     const reportRow = !isUser
       ? `<div class="message-report-row">
-           ${feedbackButtons(msgId)}
+           ${reportButton(msgId)}
          </div>`
       : '';
 
@@ -820,7 +778,7 @@ $(document).ready(function() {
 
     messagesContainer.append(html);
 
-    // A replayed answer keeps its provenance too, so voting on an old answer in a
+    // A replayed answer keeps its provenance too, so reporting an old answer in a
     // reopened conversation still reports which file it came from.
     if (!isUser && citations && citations.length) {
       rememberCitations($('#' + msgId), citations);
@@ -837,45 +795,16 @@ $(document).ready(function() {
   }
 
 
-  // Paint the thumbs a student already chose. Done in one request for the whole
-  // thread (see /chat/feedback/batch) and after the messages exist, since it only
-  // decorates elements the history just created.
-  function restoreVotes(msgIds) {
-    if (!msgIds || !msgIds.length) return;
-
-    $.ajax({
-      url: '/chat/feedback/batch',
-      method: 'POST',
-      contentType: 'application/json',
-      data: JSON.stringify({ msg_ids: msgIds }),
-    }).done(function(res) {
-      if (!res || !res.success || !res.votes) return;
-      Object.keys(res.votes).forEach(function(mid) {
-        const verdict = res.votes[mid];
-        if (verdict !== 'up' && verdict !== 'down') return;
-        const $group = $('#' + mid).find('.feedback-group');
-        if (!$group.data('feedbackTouched')) paintFeedback($group, verdict);
-      });
-    });
-    // No error branch on purpose: an un-restored thumb is a cosmetic loss, and
-    // clicking it again simply overwrites the same vote.
-  }
-
-
   function renderChatHistory(history) {
     messagesContainer.find('.message').remove(); 
     
     if (!Array.isArray(history) || history.length === 0) {
       emptyChatState.show();
+      refreshSuggestions();
       return;
     }
     
     emptyChatState.hide();
-
-    // Collected while painting, then resolved in one request. A reopened thread
-    // has to look exactly like the one the student left: same sources under each
-    // answer, same thumb still pressed.
-    const voteIds = [];
 
     history.forEach(msg => {
       if (msg.role === 'system') return;
@@ -885,18 +814,14 @@ $(document).ready(function() {
       content = content.replace(' [Image Uploaded]', '');
       
       const isUser = msg.role === 'user';
-      const id = addMessage(
+      addMessage(
         content, isUser, false, hasImageTag,
         // Older conversations were saved before ids/citations were persisted, so
-        // both are optional: those answers still render, they just cannot carry a
-        // vote back.
+        // both are optional; reports still include the displayed question/answer.
         isUser ? null : (msg.msg_id || null),
         isUser ? null : (msg.citations || null)
       );
-      if (!isUser && msg.msg_id) voteIds.push(id);
     });
-
-    restoreVotes(voteIds);
 
     if (messagesContainer.length > 0) {
       messagesContainer.stop().animate(
@@ -956,7 +881,7 @@ $(document).ready(function() {
     // request cannot inherit the page count from the previous answer.
     //
     // `is-thinking` marks it as not-yet-an-answer, and is what hides the empty
-    // streaming div and the feedback thumbs until there is something to judge.
+    // streaming div and the report action until there is something to read.
     const htmlPlaceholder = `
       <div class="message assistant is-thinking" id="${assistantMessageId}">
         <div class="message-row">
@@ -967,7 +892,7 @@ $(document).ready(function() {
           </div>
         </div>
         <div class="message-report-row">
-           ${feedbackButtons(assistantMessageId)}
+           ${reportButton(assistantMessageId, true)}
          </div>
       </div>
     `;
@@ -1081,15 +1006,16 @@ $(document).ready(function() {
 
                         // Re-key the bubble to the id the answer was SAVED under.
                         // The placeholder id was invented locally so streaming had
-                        // somewhere to write; if it stays, a vote cast now is filed
+                        // somewhere to write; if it stays, a report is filed
                         // under an id that exists nowhere in the stored history and
                         // vanishes on the next reload.
+                        const $live = $('#' + assistantMessageId);
                         if (data.msg_id) {
-                            const $live = $('#' + assistantMessageId);
                             $live.attr('id', data.msg_id);
-                            $live.find('.feedback-group').attr('data-msg-id', data.msg_id)
-                                                         .data('msg-id', data.msg_id);
+                            $live.find('.report-btn').attr('data-msg-id', data.msg_id)
+                                                    .data('msg-id', data.msg_id);
                         }
+                        $live.find('.report-btn').prop('disabled', false);
 
 
                         const responseConvId = data.new_conversation_created ? data.conv_id : requestConvId;
@@ -1303,6 +1229,7 @@ $(document).ready(function() {
       
       clearTypingIndicator();
       conversationLoader.hide();
+      refreshSuggestions();
     });
   }
 

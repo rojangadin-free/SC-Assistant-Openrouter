@@ -69,7 +69,7 @@
     .message.assistant .message-row { justify-content: flex-start; }
     .message-row .message-bubble { max-width: 90%; }
 
-    /* ── Feedback row ───────────────────────────────── */
+    /* Report action, aligned with its answer. */
     .message-report-row {
       display: flex;
       justify-content: flex-start;
@@ -77,32 +77,6 @@
       margin-top: 3px;
       margin-bottom: 4px;
     }
-
-    /* ── Answer feedback (👍/👎) ─────────────────────── */
-    /* The only control under an answer, now that the flag is gone. Kept quiet
-       until hovered: it sits under every answer, so anything louder would
-       compete with the answer itself. */
-    .feedback-group {
-      display: inline-flex;
-      gap: 10px;
-      margin-right: 12px;
-    }
-    .feedback-btn {
-      background: none;
-      border: none;
-      padding: 0;
-      color: #c8d0da;
-      font-size: var(--text-xs);
-      cursor: pointer;
-      transition: color .2s, transform .15s;
-      line-height: 1;
-    }
-    .feedback-btn:hover { transform: scale(1.2); }
-    .feedback-up:hover, .feedback-up.voted   { color: var(--sc-green, #0d4503); }
-    .feedback-down:hover, .feedback-down.voted { color: #c0392b; }
-    /* The chosen thumb switches to the solid glyph so the state survives a theme
-       change and is not carried by colour alone. */
-    .feedback-btn.voted i { font-weight: 900; }
 
     /* ── "Ask a human" offer ─────────────────────────── */
     .escalate-offer {
@@ -380,9 +354,12 @@
       color: var(--text-secondary);
       margin-bottom: 8px;
     }
-    /* "(optional)" is stated, not implied. The student has already been heard;
-       this label is what stops the sheet from feeling like a second demand. */
-    .reason-sheet-head em { font-style: normal; opacity: .7; }
+    .reason-help { margin: 0 0 10px; line-height: 1.5; }
+    .report-sign-in { display: inline-block; padding: 6px 0; color: var(--con-nav-ink); text-decoration: underline; }
+    .reason-sheet .escalate-offer { margin: 12px 0 0; max-width: none; flex-wrap: wrap; }
+    .reason-sheet .escalate-offer > span { flex-basis: 100%; }
+    .reason-sheet .escalate-open-btn { margin-left: 0; min-height: 44px; }
+    .reason-sheet .escalate-dismiss { margin-left: auto; }
     .reason-dismiss {
       background: none;
       border: none;
@@ -397,6 +374,7 @@
     /* One tap each, and the tap IS the submit — no confirm step, because there is
        nothing left to confirm. */
     .reason-chip {
+      min-height: 44px;
       padding: 4px 11px;
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -413,6 +391,8 @@
     .reason-other-box { display: flex; gap: 6px; }
     .reason-other-text {
       flex: 1;
+      min-width: 0;
+      min-height: 44px;
       padding: 6px 10px;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -424,6 +404,7 @@
     }
     .reason-other-text:focus { border-color: var(--sc-green, #0d4503); }
     .reason-other-send {
+      min-height: 44px;
       padding: 6px 14px;
       border: none;
       border-radius: 8px;
@@ -563,7 +544,7 @@
     {% include "partials/sidebar.html" %}
   </div>
 
-  <div class="chat-section">
+  <div class="chat-section" data-can-report="{{ 'false' if user.is_guest else 'true' }}">
     {% include "partials/header.html" %}
 
     {% if user.is_guest %}
@@ -590,10 +571,10 @@
       <div class="empty-chat-state" id="emptyChatState" style="display: none;">
         <h2>Ask about Samar College.</h2>
         <p>Find information about admissions, programs, fees, and school policies.</p>
-        <div class="faq-suggestions ui:grid ui:gap-2">
+        <div id="faqSuggestions" class="faq-suggestions ui:grid ui:gap-2" aria-label="Suggested questions">
           <button type="button" class="faq-btn">How do I enroll?</button>
-          <button type="button" class="faq-btn">What is the college's vision and mission?</button>
-          <button type="button" class="faq-btn">Does Samar College offer graduate studies?</button>
+          <button type="button" class="faq-btn">What programs does Samar College offer?</button>
+          <button type="button" class="faq-btn">What are the tuition fees and payment options?</button>
         </div>
       </div>
     </div>
@@ -720,18 +701,4 @@
   {# After chat.js, because voice.js re-fires the 'input' event that chat.js
      binds for auto-grow; loading it first would dispatch into nothing. #}
   <script src="{{ url_for('static', filename='js/voice.js') }}"></script>
-
-
-  <script>
-    {% if user.is_guest %}
-    // Guest: wire "New chat" button in sidebar
-    $(document).on('click', '#guestNewChatBtn', function() {
-      $.post('/chat/clear', function() {
-        $('#messagesContainer').find('.message').remove();
-        $('#emptyChatState').fadeIn(200);
-        window.guestActiveConv = null;
-      });
-    });
-    {% endif %}
-  </script>
 {% endblock %}

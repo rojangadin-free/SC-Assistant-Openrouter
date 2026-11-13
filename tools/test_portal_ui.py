@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -25,12 +26,16 @@ def main():
 
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    errors, audit, retired_requests = [], [], []
+    errors, audit, retired_requests, clear_requests = [], [], [], []
 
     def route_request(route):
         url = urlsplit(route.request.url)
+        if url.netloc == origin.netloc and url.path == "/chat/clear":
+            clear_requests.append(route.request.url)
         if url.netloc == origin.netloc and url.path.startswith((
             "/api/announcements", "/admin/calendar/", "/admin/announcements/",
+            "/admin/feedback/api/list", "/admin/feedback/api/delete",
+            "/chat/feedback",
         )):
             retired_requests.append(route.request.url)
         if url.hostname == "ui-avatars.com":
@@ -57,11 +62,12 @@ def main():
             expect(theme_toggle).to_have_css(f"border-{side}-width", "0px")
         toggle_box = theme_toggle.bounding_box()
         assert toggle_box and toggle_box["width"] == toggle_box["height"] and toggle_box["width"] >= 44
-        for feedback in page.locator(".feedback-btn").all():
-            expect(feedback).to_have_css("background-color", "rgba(0, 0, 0, 0)")
-            expect(feedback).to_have_css("box-shadow", "none")
+        expect(page.locator(".chat-section .feedback-btn, .chat-section .fa-thumbs-up, .chat-section .fa-thumbs-down")).to_have_count(0)
+        for report in page.locator(".chat-section .report-btn").all():
+            expect(report).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+            expect(report).to_have_css("box-shadow", "none")
             for side in ("top", "right", "bottom", "left"):
-                expect(feedback).to_have_css(f"border-{side}-width", "0px")
+                expect(report).to_have_css(f"border-{side}-width", "0px")
         floating = page.locator(".chat-floating-controls")
         if floating.count():
             expect(page.locator(".chat-section .header, .chat-section .header-left")).to_have_count(0)
@@ -118,116 +124,250 @@ def main():
                 assert alignment["headingOffset"] < 2 and alignment["suggestionsOffset"] < 2, result
                 assert alignment["verticalOffset"] < 3 and alignment["textAlign"] == "center", result
 
-    def exercise_feedback_toggle(page, width):
+    def exercise_suggestions(page, width, kind):
+        cards = page.locator("#faqSuggestions .faq-btn")
+        expected = ["How do I enroll?", "What are the tuition fees and payment options?",
+                    "What scholarships are available?"]
+        expect(cards).to_have_text(expected)
+        page.evaluate("""() => {
+            window.suggestionWaiters = [];
+            window.originalSuggestionGetJSON = jQuery.getJSON;
+            jQuery.getJSON = function(url, ...args) {
+                if (url !== '/chat/api/suggestions') {
+                    return window.originalSuggestionGetJSON.call(this, url, ...args);
+                }
+                const pending = jQuery.Deferred();
+                window.suggestionWaiters.push(pending);
+                return pending.promise();
+            };
+        }""")
+
+        def new_pending():
+            index = page.evaluate("() => window.suggestionWaiters.length")
+            if width <= 768 and "active" not in page.locator("#sidebar").get_attribute("class").split():
+                page.locator("#hamburgerMenu").click()
+            page.locator(".new-chat-btn").click()
+            page.wait_for_function("n => window.suggestionWaiters.length === n", arg=index + 1)
+            if width <= 768 and "active" in page.locator("#sidebar").get_attribute("class").split():
+                page.keyboard.press("Escape")
+            expect(page.locator("#emptyChatState")).to_be_visible()
+            return index
+
+        def resolve(index, questions):
+            page.evaluate("([i, questions]) => { window.suggestionWaiters[i].resolve({success: true, suggestions: questions}); }",
+                          [index, questions])
+
+        try:
+            rank_a = ["What scholarships are available?", "Who are the college deans and school officials?",
+                      "What are the important dates in the academic calendar?"]
+            rank_b = ["What programs does Samar College offer?", "How do I reset my account password?",
+                      "How do I request my school records?"]
+            pending = new_pending()
+            resolve(pending, rank_a)
+            expect(cards).to_have_text(rank_a)
+
+            pending = new_pending()
+            page.locator("#messageInput").fill("Keep this unsent draft")
+            resolve(pending, rank_b)
+            expect(page.locator("#messageInput")).to_have_value("Keep this unsent draft")
+            expect(cards).to_have_text(rank_a)
+            page.locator("#messageInput").fill("")
+
+            pending = new_pending()
+            cards.first.focus()
+            resolve(pending, rank_b)
+            expect(cards.first).to_be_focused()
+            expect(cards).to_have_text(rank_a)
+
+            older = new_pending()
+            newer = new_pending()
+            resolve(newer, rank_b)
+            expect(cards).to_have_text(rank_b)
+            resolve(older, rank_a)
+            expect(cards).to_have_text(rank_b)
+
+            pending = new_pending()
+            page.evaluate("i => { window.suggestionWaiters[i].reject(); }", pending)
+            expect(cards).to_have_text(rank_b)
+            pending = new_pending()
+            resolve(pending, ["Duplicate", "Duplicate", "Only two"])
+            expect(cards).to_have_text(rank_b)
+            capture(page, f"popular-suggestions-{kind}-{width}")
+
+            pending = new_pending()
+            with page.expect_request(base + "/chat/get") as sent:
+                cards.first.press("Enter")
+            assert rank_b[0] in sent.value.post_data
+            resolve(pending, rank_a)
+            expect(page.locator("#emptyChatState")).to_be_hidden()
+            expect(cards).to_have_text(rank_b)
+            expect(page.locator(".message.user")).to_have_count(1)
+            expect(page.locator(".message.user")).to_contain_text(rank_b[0])
+            expect(page.locator("#sendButton")).to_be_enabled(timeout=15000)
+        finally:
+            page.evaluate("() => { jQuery.getJSON = window.originalSuggestionGetJSON; }")
+        page.locator("#messageInput").fill("")
+        if width <= 768:
+            page.locator("#hamburgerMenu").click()
+        page.locator(".new-chat-btn").click()
+        page.wait_for_load_state("networkidle")
+        if width <= 768 and "active" in page.locator("#sidebar").get_attribute("class").split():
+            page.keyboard.press("Escape")
+        expect(cards).to_have_text(expected)
+
+    def exercise_reporting(page, width):
         message = page.locator(".message.assistant").first
         msg_id = message.get_attribute("id")
-        down = message.locator(".feedback-down")
-        up = message.locator(".feedback-up")
-        feedback_url = base + "/chat/feedback"
-        batch_url = feedback_url + "/batch"
-        votes = {msg_id: "up"}
+        button = message.locator(".report-btn")
+        report_url = base + "/chat/report"
         requests = []
-        reports = []
-        state = {"fail": False, "hold": False}
+        state = {"hold": False, "reject": False}
 
         def respond(route):
             data = route.request.post_data_json
             requests.append(data)
-            if state["fail"]:
-                state["fail"] = False
-                route.fulfill(status=500, json={"success": False, "message": "Preview feedback save failed."})
-                return
-            if data["verdict"] is None:
-                votes.pop(data["msg_id"], None)
-            else:
-                votes[data["msg_id"]] = data["verdict"]
             if state["hold"]:
                 state["route"] = route
                 return
-            route.fulfill(json={"success": True, "can_report": data["verdict"] == "down"})
+            if state["reject"]:
+                route.fulfill(json={"success": False, "message": "Preview report rejected."})
+            else:
+                route.fulfill(json={"status": "ok", "success": True})
 
-        def restore(route):
-            ids = route.request.post_data_json["msg_ids"]
-            route.fulfill(json={"success": True, "votes": {key: votes[key] for key in ids if key in votes}})
-
-        def note_report(request):
-            if request.url == base + "/chat/report":
-                reports.append(request)
-
-        page.route(feedback_url, respond)
-        page.route(batch_url, restore)
-        page.on("request", note_report)
-        expect(up).to_have_attribute("aria-pressed", "true")
-        up.click()
-        expect(up).to_be_enabled()
-        expect(up).to_have_attribute("aria-pressed", "false")
+        page.route(report_url, respond)
+        expect(button).to_have_attribute("aria-label", "Report this answer")
+        expect(button).to_have_attribute("aria-expanded", "false")
 
         for theme in ("light", "dark"):
             if theme == "dark":
                 page.locator("#themeToggle").click()
-            down.click()
-            expect(down).to_be_enabled()
-            expect(down).to_have_attribute("aria-pressed", "true")
-            expect(message.locator(".reason-sheet")).to_be_visible()
-            expect(message.locator(".escalate-offer")).to_be_visible()
-            capture(page, f"feedback-options-{width}-{theme}")
-            down.click()
-            expect(down).to_be_enabled()
-            expect(down).to_have_attribute("aria-pressed", "false")
-            expect(message.locator(".feedback-btn.voted")).to_have_count(0)
+            button.click()
+            sheet = message.locator(".reason-sheet")
+            expect(button).to_have_attribute("aria-expanded", "true")
+            expect(button).to_have_attribute("aria-controls", sheet.get_attribute("id"))
+            expect(sheet.locator(".reason-chip")).to_have_count(6)
+            expect(sheet.locator(".escalate-offer")).to_be_visible()
+            capture(page, f"report-options-{width}-{theme}")
+            button.click()
+            expect(button).to_have_attribute("aria-expanded", "false")
             expect(message.locator(".reason-sheet, .escalate-offer")).to_have_count(0)
-            assert requests[-1]["verdict"] is None and msg_id not in votes
-            down.click()
-            expect(down).to_be_enabled()
-            expect(message.locator(".reason-sheet")).to_have_count(1)
-            up.click()
-            expect(up).to_be_enabled()
-            expect(up).to_have_attribute("aria-pressed", "true")
-            expect(down).to_have_attribute("aria-pressed", "false")
-            expect(message.locator(".reason-sheet, .escalate-offer")).to_have_count(0)
-            up.click()
-            expect(up).to_be_enabled()
-            expect(up).to_have_attribute("aria-pressed", "false")
+            button.press("Enter")
+            sheet.locator(".reason-dismiss").click()
+            expect(button).to_be_focused()
+            button.press("Enter")
+            sheet.locator(".reason-other").click()
+            sheet.locator(".reason-other-text").fill("Discard this draft")
+            page.keyboard.press("Escape")
+            expect(sheet).to_have_count(0)
+            expect(button).to_be_focused()
+            assert not requests, "Opening and dismissing report options must not submit anything"
 
+        button.click()
+        sheet = message.locator(".reason-sheet")
+        sheet.locator(".reason-other").click()
+        details = sheet.locator(".reason-other-text")
+        details.fill("This answer cites an outdated deadline.")
         state["hold"] = True
-        before = len(requests)
-        down.click()
-        expect(down).to_be_disabled()
-        down.evaluate("el => window.jQuery(el).trigger('click')")
-        assert len(requests) == before + 1
+        sheet.locator(".reason-other-send").click()
+        expect(button).to_be_disabled()
+        expect(details).to_be_disabled()
+        sheet.locator(".reason-other-send").evaluate("el => window.jQuery(el).trigger('click')")
+        button.evaluate("el => window.jQuery(el).trigger('click')")
+        assert len(requests) == 1
         state["hold"] = False
-        state.pop("route").fulfill(json={"success": True, "can_report": True})
-        expect(down).to_be_enabled()
-        expect(message.locator(".reason-sheet")).to_be_visible()
-        message.locator(".reason-other").click()
-        message.locator(".reason-other-text").fill("An unsent explanation")
-        state["fail"] = True
-        down.click()
-        expect(down).to_be_enabled()
-        expect(down).to_have_attribute("aria-pressed", "true")
-        expect(message.locator(".reason-sheet")).to_be_visible()
-        expect(message.locator(".reason-other-text")).to_have_value("An unsent explanation")
-        assert votes[msg_id] == "down"
-        down.click()
-        expect(down).to_be_enabled()
-        expect(message.locator(".reason-sheet, .escalate-offer")).to_have_count(0)
-        assert msg_id not in votes and not reports
-
+        state.pop("route").fulfill(status=500, json={"message": "Preview report save failed."})
+        expect(button).to_be_enabled()
+        expect(details).to_have_value("This answer cites an outdated deadline.")
+        expect(page.locator("#notification .notification-message")).to_have_text("Preview report save failed.")
+        capture(page, f"report-retry-{width}")
+        state["reject"] = True
+        sheet.locator(".reason-other-send").click()
+        expect(button).to_be_enabled()
+        expect(sheet.locator(".reason-thanks")).to_have_count(0)
+        expect(page.locator("#notification .notification-message")).to_have_text("Preview report rejected.")
+        state["reject"] = False
+        page.evaluate("""() => {
+            window.reportTimers = [];
+            window.originalReportTimer = window.setTimeout;
+            window.setTimeout = function(callback, delay, ...args) {
+                if (delay === 2600) { window.reportTimers.push(() => callback(...args)); return 0; }
+                return window.originalReportTimer.call(window, callback, delay, ...args);
+            };
+        }""")
+        try:
+            sheet.locator(".reason-other-send").click()
+            expect(sheet.locator(".reason-thanks")).to_contain_text("Report sent to the administrator.")
+            expect(button).to_be_enabled()
+            assert requests[-1]["msg_id"] == msg_id and requests[-1]["reason"] == "Others"
+            assert requests[-1]["other_text"] == "This answer cites an outdated deadline."
+            assert requests[-1]["question"] and requests[-1]["sources"] and "verdict" not in requests[-1]
+            button.click()
+            button.click()
+            sheet.locator(".reason-other").click()
+            sheet.locator(".reason-other-text").fill("A new unsent explanation")
+            page.evaluate("() => window.reportTimers.splice(0).forEach(finish => finish())")
+            expect(sheet.locator(".reason-other-text")).to_have_value("A new unsent explanation")
+            sheet.locator(".reason-dismiss").click()
+            button.click()
+            sheet.locator('.reason-chip[data-reason="Wrong information"]').click()
+            expect(sheet.locator(".reason-thanks")).to_be_visible()
+            assert requests[-1]["reason"] == "Wrong information"
+            page.evaluate("() => window.reportTimers.splice(0).forEach(finish => finish())")
+            expect(sheet).to_have_count(0)
+            expect(button).to_have_attribute("aria-expanded", "false")
+        finally:
+            page.evaluate("() => { window.setTimeout = window.originalReportTimer; }")
+        page.unroute(report_url, respond)
         page.locator("#themeToggle").click()
         page.reload(wait_until="networkidle")
         if width <= 768:
             page.locator("#hamburgerMenu").click()
-        with page.expect_response(batch_url) as restored:
-            page.locator("#conversationList .conversation-item").first.click()
-        assert msg_id not in restored.value.json()["votes"]
+        page.locator("#conversationList .conversation-item").first.click()
         expect(page.locator(".message.assistant")).to_have_count(2)
-        expect(page.locator(".message.assistant").first.locator(".feedback-btn.voted")).to_have_count(0)
+        expect(page.locator(".message.assistant .report-btn")).to_have_count(2)
+        expect(page.locator(".message.assistant").first.locator(".report-btn")).to_have_attribute("aria-expanded", "false")
         if width <= 768:
             page.keyboard.press("Escape")
-        capture(page, f"feedback-cleared-after-reload-{width}")
-        page.unroute(feedback_url)
-        page.unroute(batch_url)
+        capture(page, f"report-after-reload-{width}")
+
+    def exercise_guest_reporting(page, width):
+        submitted = []
+        def note_report(request):
+            if request.url == base + "/chat/report":
+                submitted.append(request)
+        page.on("request", note_report)
+        page.locator("#messageInput").fill("How do I enroll?")
+        page.locator("#sendButton").click()
+        message = page.locator(".message.assistant").last
+        button = message.locator(".report-btn")
+        expect(button).to_be_enabled(timeout=15000)
+        expect(button).to_have_attribute("data-msg-id", "m9")
+        for theme in ("light", "dark"):
+            if theme == "dark":
+                page.locator("#themeToggle").click()
+            button.click()
+            sheet = message.locator(".reason-sheet")
+            expect(sheet.locator(".reason-chip")).to_have_count(0)
+            expect(sheet.locator(".report-sign-in")).to_have_text("Sign in")
+            expect(sheet.locator(".report-sign-in")).to_have_attribute(
+                "href", page.locator("#guestSignInButton").get_attribute("href")
+            )
+            expect(sheet).to_contain_text("Sign in to submit reports")
+            capture(page, f"report-guest-{width}-{theme}")
+            if theme == "dark":
+                sheet.locator(".escalate-open-btn").click()
+                expect(page.locator("#escalateModal")).to_be_visible()
+                page.locator("#escalateContact").fill("guest@example.invalid")
+                page.locator("#escalateRoute").select_option("admin")
+                with page.expect_request(base + "/chat/escalate") as request:
+                    page.locator("#escalateSubmitBtn").click()
+                assert request.value.post_data_json["contact"] == "guest@example.invalid"
+                expect(page.locator("#escalateModal")).to_be_hidden()
+            button.click()
+            expect(sheet).to_have_count(0)
+        assert not submitted, "Guests must not file reports through the protected report API"
         page.remove_listener("request", note_report)
+        page.locator("#themeToggle").click()
 
     def exercise_poll_rate_limit(page):
         upload_url = base + "/upload"
@@ -278,24 +418,26 @@ def main():
 
         expect(page.locator(
             "#calendarMenuItem, #announcementsMenuItem, #calendarSection, #announcementsSection, "
-            "#sidebarCalendarBadge, #sidebarAnnouncementsBadge"
+            "#sidebarCalendarBadge, #sidebarAnnouncementsBadge, "
+            "#feedbackMenuItem, #feedbackSection, #sidebarFeedbackBadge"
         )).to_have_count(0)
-        expect(page.locator('.sidebar .menu-item[id$="MenuItem"]')).to_have_count(8)
+        expect(page.locator('.sidebar .menu-item[id$="MenuItem"]')).to_have_count(7)
+        expect(page.locator('[data-target="#feedbackMenuItem"]')).to_have_count(0)
 
         # Persisted navigation from the removed screens must not restore a blank page.
-        for saved in ("calendarMenuItem", "announcementsMenuItem"):
+        for saved in ("calendarMenuItem", "announcementsMenuItem", "feedbackMenuItem"):
             page.evaluate("saved => localStorage.setItem('dashboardLastSection', saved)", saved)
             page.reload(wait_until="networkidle")
             expect(page.locator("#analyticsSection")).to_be_visible()
             expect(page.locator(".dashboard-section.active")).to_have_count(1)
             expect(page.locator(".header-left span")).to_have_text("Overview")
-            expect(page.locator("#kpiQuestions")).to_have_text("412")
+            expect(page.locator("#kpiConversations")).to_have_text("128")
         if width <= 768:
             page.locator("#hamburgerMenu").click()
         capture(page, f"dashboard-navigation-{width}-{theme}")
         if width <= 768:
             page.keyboard.press("Escape")
-        for section in ("analytics", "escalations", "gaps", "conflicts", "feedback"):
+        for section in ("analytics", "escalations", "gaps", "conflicts"):
             open_section(section, section)
             expect(page.locator(".dashboard-section.active")).to_have_count(1)
             assert_controls_fit()
@@ -354,6 +496,131 @@ def main():
         expect(page.locator("#fileList .file-item")).to_have_count(3)
         assert_controls_fit()
         capture(page, f"documents-mobile-filenames-{width}-{theme}")
+
+    def exercise_overview(page, width, theme):
+        expect(page.locator("#kpiQuestions, #kpiQuestionsDelta")).to_have_count(0)
+        expect(page.locator(
+            "#analyticsVolumeChart, #analyticsSeriesNote, #kpiSatisfaction, "
+            "#kpiSatisfactionDelta, #analyticsDocumentsBody, #kpiAnsweredRate, "
+            "#kpiAnsweredRateDelta, #analyticsUnansweredBody"
+        )).to_have_count(0)
+        expect(page.locator("#analyticsSection .analytics-kpi")).to_have_count(2)
+        expect(page.locator("#analyticsSection table")).to_have_count(0)
+        expect(page.locator("#analyticsSection canvas")).to_have_count(2)
+        grid = page.locator("#analyticsSection .analytics-kpis").evaluate("""el => ({
+            columns: getComputedStyle(el).gridTemplateColumns.split(/\\s+/).length,
+            width: el.clientWidth,
+            lastWidth: el.lastElementChild.getBoundingClientRect().width
+        })""")
+        assert grid["columns"] == 2, grid
+        assert abs(grid["width"] - 2 * grid["lastWidth"]) < 2, grid
+        expect(page.locator(".analytics-kpi-label").first).to_have_text("Total conversations")
+        expect(page.locator("#kpiConversations")).to_have_text("128")
+        expect(page.locator("#kpiConversationsNote")).to_have_text("Account + guest chats")
+        page.locator("#analyticsDays").select_option("90")
+        expect(page.locator("#analyticsGeneratedAt")).to_contain_text("Last 90 days")
+        expect(page.locator("#kpiConversations")).to_have_text("128")
+        page.locator("#analyticsDays").select_option("7")
+        expect(page.locator("#analyticsRefreshBtn")).to_be_enabled()
+
+        count_url = base + "/admin/analytics/api/overview*"
+        for count in (0, None):
+            def count_response(route, _request, value=count):
+                payload = route.fetch().json()
+                payload["analytics"]["totals"]["conversations"] = value
+                route.fulfill(json=payload)
+            page.route(count_url, count_response)
+            page.locator("#analyticsRefreshBtn").click()
+            expect(page.locator("#kpiConversations")).to_have_text("0" if count == 0 else "\u2014")
+            expect(page.locator("#kpiConversationsNote")).to_have_text(
+                "Account + guest chats" if count == 0 else "Count unavailable"
+            )
+            expect(page.locator("#kpiPending")).to_have_text("3")
+            expect(page.locator("#analyticsRefreshBtn")).to_be_enabled()
+            page.unroute(count_url, count_response)
+        capture(page, f"overview-count-unavailable-{width}-{theme}")
+        page.locator("#analyticsRefreshBtn").click()
+        expect(page.locator("#kpiConversations")).to_have_text("128")
+        expect(page.locator("#refreshActivitiesBtn")).to_be_enabled()
+
+        topic_case_rows = [{"key": "programs", "topic": "Programs and courses", "total": 1}]
+        for state, available, topic_rows in (
+            ("single-question", True, topic_case_rows),
+            ("empty", True, []),
+            ("unavailable", False, topic_case_rows),
+        ):
+            def topic_response(route, _request, ready=available, rows=topic_rows):
+                payload = route.fetch().json()
+                payload["analytics"]["top_topics"] = rows
+                payload["analytics"]["topic_usage_available"] = ready
+                route.fulfill(json=payload)
+            page.route(count_url, topic_response)
+            page.locator("#analyticsRefreshBtn").click()
+            expect(page.locator("#analyticsRefreshBtn")).to_be_enabled()
+            if state == "single-question":
+                page.wait_for_function("""() => window.Chart?.getChart('analyticsTopicsChart')
+                    ?.data.labels[0] === 'Programs and courses'""")
+                chart = page.evaluate("""() => {
+                    const chart = Chart.getChart('analyticsTopicsChart');
+                    return {labels: chart.data.labels, values: chart.data.datasets[0].data,
+                            label: chart.data.datasets[0].label};
+                }""")
+                assert chart == {"labels": ["Programs and courses"], "values": [1], "label": "Completed questions"}
+            else:
+                message = ("No topic usage recorded for this date range yet." if available else
+                           "Topic counts are temporarily unavailable. Try refreshing.")
+                expect(page.locator("#analyticsTopicsChart").locator("..")).to_contain_text(message)
+                assert page.evaluate("() => !Chart.getChart('analyticsTopicsChart')")
+            assert page.evaluate("() => Boolean(Chart.getChart('analyticsHourlyChart'))")
+            expect(page.locator("#kpiConversations")).to_have_text("128")
+            expect(page.locator("#kpiPending")).to_have_text("3")
+            capture(page, f"overview-topics-{state}-{width}-{theme}")
+            page.unroute(count_url, topic_response)
+        page.locator("#analyticsRefreshBtn").click()
+        expect(page.locator("#analyticsRefreshBtn")).to_be_enabled()
+        page.wait_for_function("""() => window.Chart?.getChart('analyticsTopicsChart')
+            ?.data.labels[0] === 'Admissions and enrollment'""")
+
+        activity_url = base + "/api/dashboard/activities*"
+        name = 'Student <img src=x onerror=alert(1)> & Dean'
+        email = "previewstudentwithaverylongenrollmentandscholarshipinquiry@students.example.invalid"
+        def fresh_signin(route):
+            route.fulfill(json={"success": True, "window_days": 30, "activities": [{
+                "text": f"Signed in: <strong>{escape(name)}</strong> ({escape(email)})",
+                "time": "Just now", "at": "2026-11-13T05:01:00Z",
+                "icon": "fa-right-to-bracket", "tone": "info", "section": "users",
+            }]})
+        page.route(activity_url, fresh_signin)
+        page.locator("#refreshActivitiesBtn").click()
+        row = page.locator(".activity-item").first
+        expect(row.locator("strong")).to_have_text(name)
+        expect(row).to_contain_text(email)
+        expect(row.locator(".activity-time")).to_have_text("Just now")
+        expect(row.locator("img, script, svg")).to_have_count(0)
+        expect(row).to_have_attribute("role", "button")
+        expect(page.locator("#refreshActivitiesBtn")).to_be_enabled()
+        row.focus()
+        capture(page, f"overview-signin-activity-{width}-{theme}")
+        page.keyboard.press("Enter")
+        expect(page.locator("#usersSection")).to_be_visible()
+        page.unroute(activity_url, fresh_signin)
+        if width <= 768:
+            page.locator("#hamburgerMenu").click()
+        page.locator("#analyticsMenuItem").click()
+        expect(page.locator("#analyticsSection")).to_be_visible()
+        expect(page.locator(".activity-list")).to_contain_text("Maria Santos")
+
+        def failed_activity(route):
+            route.fulfill(status=503, json={"success": False})
+        page.route(activity_url, failed_activity)
+        page.locator("#refreshActivitiesBtn").click()
+        expect(page.locator(".activity-list")).to_contain_text("Could not load activity.")
+        expect(page.locator("#refreshActivitiesBtn")).to_be_enabled()
+        page.unroute(activity_url, failed_activity)
+        page.locator("#refreshActivitiesBtn").click()
+        expect(page.locator(".activity-list")).to_contain_text("Maria Santos")
+        expect(page.locator("#refreshActivitiesBtn")).to_be_enabled()
+        page.locator(".page-content, .dashboard-content").evaluate_all("els => els.forEach(el => el.scrollTop = 0)")
 
     def exercise_user_editor(page, width, theme):
         if width <= 768:
@@ -523,6 +790,7 @@ def main():
                 page.locator("#themeToggle").click()
                 expect(page.locator("body")).to_have_attribute("data-theme", "dark")
                 capture(page, f"chat-empty-{width}-dark")
+                exercise_suggestions(page, width, "account")
                 if width <= 768:
                     page.locator("#hamburgerMenu").click()
                     expect(page.locator("#sidebar")).to_have_class("sidebar active")
@@ -541,19 +809,21 @@ def main():
                 expect(page.locator(".message.assistant").last).to_contain_text("Enrollment for transferees", timeout=15000)
                 expect(page.locator("#sendButton")).to_be_enabled()
                 capture(page, f"chat-response-{width}")
-                exercise_feedback_toggle(page, width)
+                exercise_reporting(page, width)
                 if width > 768:
                     page.locator("#sidebarCollapseBtn").click()
                     expect(page.locator("#sidebar")).to_have_class("sidebar collapsed")
                     capture(page, f"chat-collapsed-{width}")
                     page.locator("#sidebarCollapseBtn").click()
                 page.goto(base + "/dashboard", wait_until="networkidle")
-                expect(page.locator("#kpiQuestions")).to_have_text("412")
+                expect(page.locator("#kpiConversations")).to_have_text("128")
                 expect(page.locator("#attentionList .attention-row")).to_have_count(2)
                 page.locator("#analyticsDays").select_option("7")
                 expect(page.locator("#analyticsGeneratedAt")).to_contain_text("Last 7 days")
+                exercise_overview(page, width, "light")
                 capture(page, f"dashboard-{width}-light")
                 page.locator("#themeToggle").click()
+                exercise_overview(page, width, "dark")
                 capture(page, f"dashboard-{width}-dark")
                 if width <= 768:
                     page.locator("#hamburgerMenu").click()
@@ -602,6 +872,17 @@ def main():
                 page = guest.new_page()
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(base + "/guest-chat", wait_until="networkidle")
+                exercise_suggestions(page, width, "guest")
+                exercise_guest_reporting(page, width)
+                if width <= 768:
+                    page.locator("#hamburgerMenu").click()
+                previous_clears = len(clear_requests)
+                page.locator("#guestNewChatBtn").click()
+                page.wait_for_load_state("networkidle")
+                assert len(clear_requests) == previous_clears + 1, "Guest New chat must send exactly one clear request"
+                expect(page.locator("#emptyChatState")).to_be_visible()
+                if width <= 768 and "active" in page.locator("#sidebar").get_attribute("class").split():
+                    page.keyboard.press("Escape")
                 expect(page.locator(".header, .header-left")).to_have_count(0)
                 expect(page.locator(".chat-floating-controls")).to_have_count(1)
                 expect(page.locator("#emptyChatState")).to_be_visible()
@@ -648,6 +929,7 @@ def main():
             if not args.diagnostic:
                 assert not errors, errors
                 assert not retired_requests, retired_requests
+                print(f"Validated {len(audit)} browser views: no JavaScript errors or retired feed requests.")
         finally:
             browser.close()
 
