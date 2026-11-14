@@ -1,4 +1,4 @@
-"""Signup policy and verification regressions; no AWS calls or real emails."""
+"""Signup and student-ID login regressions; no AWS calls or real emails."""
 
 import base64
 import hashlib
@@ -8,7 +8,7 @@ import re
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import _bootstrap  # noqa: F401
 from fixtures.auth_preview import FakeCognito, create_test_app
@@ -217,17 +217,23 @@ class SignupTests(unittest.TestCase):
         self.assertIs(confirmed_call["ForceAliasCreation"], False)
         expected_hash = base64.b64encode(hmac.new(b"offline-secret", b"student.oneoffline-client", hashlib.sha256).digest()).decode()
         self.assertEqual(confirmed_call["SecretHash"], expected_hash)
-        self.assertFalse(self.client.post("/login", data={**credentials, "email": "2024001"}).get_json()["success"])
         self.assertEqual(self.login_events, [])
+        self.assertTrue(self.client.post("/login", data={**credentials, "email": "2024001"}).get_json()["success"])
+        with self.client.session_transaction() as state:
+            id_session = dict(state)
         logged_in = self.client.post("/login", data=credentials)
         self.assertTrue(logged_in.get_json()["success"])
-        self.assertEqual(len(self.login_events), 1)
+        self.assertEqual(len(self.login_events), 2)
         event = self.login_events[0]
         self.assertEqual(set(event), {"id", "at", "uid", "display_name", "email"})
         self.assertEqual(event["uid"], "test-sub-student.one")
         self.assertEqual(event["display_name"], "student.one")
         self.assertEqual(event["email"], "test.student@samarcollege.edu.ph")
+        self.assertEqual({k: v for k, v in event.items() if k != "id"},
+                         {k: v for k, v in self.login_events[1].items() if k != "id"})
+        self.assertNotEqual(event["id"], self.login_events[1]["id"])
         with self.client.session_transaction() as state:
+            self.assertEqual(dict(state), id_session)
             self.assertEqual(state["user"], "test.student@samarcollege.edu.ph")
             self.assertEqual(state["username"], "student.one")
             self.assertEqual(state["cognito_username"], "student.one")
@@ -505,6 +511,379 @@ class SignupTests(unittest.TestCase):
             self.assertEqual(state["uid"], "test-sub-owner")
             self.assertEqual(state["user"], "owner@example.invalid")
             self.assertFalse(state["is_guest"])
+        self.assertEqual(self.login_events, [])
+
+
+class StudentIdLoginTests(unittest.TestCase):
+    def setUp(self):
+        self.student_id = "0002024001"
+        self.user = {"password": "ExamplePass123!", "confirmed": True, "attributes": {
+            "email": "student.one@example.invalid", "email_verified": "true", "name": "Stored Name",
+            "custom:student_id": self.student_id, "custom:role": "user",
+        }}
+        self.cognito = FakeCognito()
+        self.cognito.users["student.one"] = self.user
+        self.app = create_test_app(self.cognito, SimpleNamespace(time=lambda: 1000.0))
+        self.addCleanup(self.app.extensions["auth_test"]["reset_tmp"].cleanup)
+        self.client = self.app.test_client()
+        self.ns = self.app.extensions["auth_test"]["namespace"]
+        self.login_events = self.app.extensions["auth_test"]["login_events"]
+        with self.client.session_transaction() as state:
+            state["untouched"] = "existing browser state"
+        self.bad_credentials = {"success": False, "message": self.ns["COGNITO_ERROR_MESSAGES"]["NotAuthorizedException"]}
+
+    def login(self, identifier=None, password="ExamplePass123!"):
+        return self.client.post("/login", data={"email": self.student_id if identifier is None else identifier,
+                                                "password": password})
+
+    def assert_no_signin(self, response):
+        self.assertFalse(response.get_json()["success"])
+        self.assertEqual(self.login_events, [])
+        with self.client.session_transaction() as state:
+            self.assertEqual(dict(state), {"untouched": "existing browser state"})
+
+    def test_student_id_uses_canonical_hash_and_verified_token_identity_without_writes(self):
+        users_before = json.dumps(self.cognito.users, sort_keys=True)
+        claims = {**self.cognito.claims("student.one"), "sub": "verified-token-sub",
+                  "email": "verified.owner@example.invalid", "name": "Verified Name",
+                  "custom:role": "staff", "custom:data_consent": "false"}
+        with patch.object(self.cognito, "get_paginator", wraps=self.cognito.get_paginator) as paginator, \
+                patch.object(self.ns["jwt"], "get_unverified_claims", return_value=claims):
+            response = self.login(" \t" + self.student_id + "\r\n")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"success": True, "redirect": "/chat"})
+        paginator.assert_called_once_with("list_users")
+        expected_hash = base64.b64encode(hmac.new(b"offline-secret", b"student.oneoffline-client", hashlib.sha256).digest()).decode()
+        self.assertEqual(self.cognito.calls, [
+            ("admin_get_user", {"UserPoolId": "offline-pool", "Username": self.student_id}),
+            ("list_users", {"UserPoolId": "offline-pool", "Limit": 60}),
+            ("admin_get_user", {"UserPoolId": "offline-pool", "Username": "student.one"}),
+            ("initiate_auth", {"ClientId": "offline-client", "AuthFlow": "USER_PASSWORD_AUTH", "AuthParameters": {
+                "USERNAME": "student.one", "PASSWORD": "ExamplePass123!", "SECRET_HASH": expected_hash,
+            }}),
+        ])
+        self.assertEqual(json.dumps(self.cognito.users, sort_keys=True), users_before)
+        with self.client.session_transaction() as state:
+            self.assertEqual(state["user"], claims["email"])
+            self.assertEqual(state["uid"], claims["sub"])
+            self.assertEqual(state["username"], claims["name"])
+            self.assertEqual(state["cognito_username"], "student.one")
+            self.assertEqual(state["role"], "staff")
+            self.assertFalse(state["data_consent"])
+            self.assertFalse(state["is_guest"])
+        self.assertEqual(len(self.login_events), 1)
+        event = self.login_events[0]
+        self.assertEqual(set(event), {"id", "at", "uid", "display_name", "email"})
+        self.assertEqual((event["uid"], event["display_name"], event["email"]),
+                         (claims["sub"], claims["name"], claims["email"]))
+        self.assertNotIn(self.student_id, json.dumps(event))
+        self.assertNotIn("ExamplePass123!", json.dumps(event))
+
+    def test_resolved_canonical_username_case_is_preserved_in_auth_and_hash(self):
+        get_user = self.cognito.admin_get_user
+
+        def canonical_user(**kwargs):
+            response = get_user(**kwargs)
+            response["Username"] = "Student.One"
+            return response
+
+        page = {"Users": [{"Username": "Student.One", "Attributes": [
+            {"Name": "custom:student_id", "Value": self.student_id},
+        ]}]}
+        with patch.object(self.cognito, "list_users", return_value=page), \
+                patch.object(self.cognito, "admin_get_user", side_effect=canonical_user) as lookup:
+            result = self.ns["login_user"](self.student_id, "ExamplePass123!")
+        self.assertTrue(result["success"])
+        self.assertEqual(lookup.call_args_list, [
+            call(UserPoolId="offline-pool", Username=self.student_id),
+            call(UserPoolId="offline-pool", Username="Student.One"),
+        ])
+        params = self.cognito.calls[-1][1]["AuthParameters"]
+        self.assertEqual(params["USERNAME"], "Student.One")
+        expected_hash = base64.b64encode(hmac.new(b"offline-secret", b"Student.Oneoffline-client", hashlib.sha256).digest()).decode()
+        self.assertEqual(params["SECRET_HASH"], expected_hash)
+        self.assertEqual(self.login_events, [])
+
+    def test_zero_and_64_digit_ids_are_strings_and_helper_trims_whitespace(self):
+        for ident in ("0", "0" * 64):
+            with self.subTest(identifier=ident):
+                self.user["attributes"]["custom:student_id"] = ident
+                self.cognito.calls.clear()
+                result = self.ns["login_user"](" \t" + ident + "\r\n", "ExamplePass123!")
+                self.assertTrue(result["success"])
+                self.assertEqual(self.cognito.calls[0],
+                                 ("admin_get_user", {"UserPoolId": "offline-pool", "Username": ident}))
+                self.assertEqual(self.cognito.calls[-1][1]["AuthParameters"]["USERNAME"], "student.one")
+        self.assertEqual(self.login_events, [])
+
+    def test_unknown_id_and_bad_password_have_same_generic_response_and_keep_session(self):
+        wrong_password = self.login(password="SECRET_WRONG_PASSWORD")
+        self.assert_no_signin(wrong_password)
+        self.assertEqual(wrong_password.get_json(), self.bad_credentials)
+        auth_calls = [kwargs for op, kwargs in self.cognito.calls if op == "initiate_auth"]
+        self.assertEqual(len(auth_calls), 1)
+        self.assertEqual(auth_calls[0]["AuthParameters"]["USERNAME"], "student.one")
+        self.cognito.calls.clear()
+        unknown = self.login("0002024999")
+        self.assert_no_signin(unknown)
+        self.assertEqual(unknown.get_json(), wrong_password.get_json())
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "list_users"])
+        self.assertIsNone(self.ns["resolve_student_id_username"]("0002024999"))
+
+    def test_leading_zeros_are_not_coerced_when_comparing_student_ids(self):
+        for stored, typed in ((self.student_id, "2024001"), ("2024001", self.student_id)):
+            with self.subTest(stored=stored, typed=typed):
+                self.user["attributes"]["custom:student_id"] = stored
+                self.cognito.calls.clear()
+                response = self.login(typed)
+                self.assert_no_signin(response)
+                self.assertEqual(response.get_json(), self.bad_credentials)
+                self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "list_users"])
+                self.assertEqual(self.cognito.calls[0][1]["Username"], typed)
+
+    def test_invalid_numeric_inputs_are_not_coerced_or_scanned(self):
+        resolver = Mock(side_effect=AssertionError("Invalid input must not use the ID resolver"))
+        with patch.dict(self.ns, {"resolve_student_id_username": resolver}), \
+                patch.object(self.cognito, "list_users", wraps=self.cognito.list_users) as listing, \
+                patch.object(self.cognito, "admin_get_user", wraps=self.cognito.admin_get_user) as lookup:
+            for ident in ("12 34", "+123", "-123", "12.34", "1e3", "123\n456",
+                          "\u0661\u0662\u0663", "\uff11\uff12\uff13", "0" * 65, 2024001, None):
+                with self.subTest(identifier=ident):
+                    self.assertFalse(self.ns["login_user"](ident, "ExamplePass123!")["success"])
+        resolver.assert_not_called()
+        listing.assert_not_called()
+        lookup.assert_not_called()
+        self.assertEqual(self.login_events, [])
+
+    def test_legacy_numeric_username_wins_collision_without_student_id_scan(self):
+        self.cognito.users[self.student_id] = {"password": "LegacyPass456!", "confirmed": True,
+            "attributes": {"email": "legacy@example.invalid", "email_verified": "true", "name": "Legacy"}}
+        with patch.object(self.cognito, "get_paginator", wraps=self.cognito.get_paginator) as paginator:
+            response = self.login(password="LegacyPass456!")
+        self.assertTrue(response.get_json()["success"])
+        paginator.assert_not_called()
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "initiate_auth"])
+        params = self.cognito.calls[-1][1]["AuthParameters"]
+        self.assertEqual(params["USERNAME"], self.student_id)
+        expected_hash = base64.b64encode(hmac.new(b"offline-secret", (self.student_id + "offline-client").encode(), hashlib.sha256).digest()).decode()
+        self.assertEqual(params["SECRET_HASH"], expected_hash)
+        with self.client.session_transaction() as state:
+            self.assertEqual(state["uid"], "test-sub-" + self.student_id)
+            self.assertEqual(state["cognito_username"], self.student_id)
+            self.assertEqual(state["user"], "legacy@example.invalid")
+        self.assertEqual(len(self.login_events), 1)
+        self.assertEqual(self.login_events[0]["email"], "legacy@example.invalid")
+
+    def test_legacy_numeric_wrong_password_never_falls_back_to_other_account(self):
+        self.cognito.users[self.student_id] = {"password": "LegacyPass456!", "confirmed": True,
+            "attributes": {"email": "legacy@example.invalid", "email_verified": "true"}}
+        response = self.login()  # This password belongs to the distinct student-ID account.
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json(), self.bad_credentials)
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "initiate_auth"])
+        self.assertEqual(self.cognito.calls[-1][1]["AuthParameters"]["USERNAME"], self.student_id)
+
+    def test_numeric_lookup_errors_other_than_user_not_found_fail_closed(self):
+        for code in ("NotAuthorizedException", "TooManyRequestsException", "ResourceNotFoundException"):
+            with self.subTest(code=code):
+                self.cognito.calls.clear()
+                self.cognito.fail_next["admin_get_user"] = code
+                response = self.login()
+                self.assert_no_signin(response)
+                self.assertEqual(response.get_json()["message"], self.ns["handle_cognito_error"](self.ns["ClientError"](code)))
+                self.assertEqual(self.cognito.calls,
+                                 [("admin_get_user", {"UserPoolId": "offline-pool", "Username": self.student_id})])
+
+    def test_duplicate_ids_across_real_pages_are_rejected_even_if_one_is_unconfirmed(self):
+        for index in range(59):
+            self.cognito.users[f"legacy{index}"] = {"confirmed": True, "password": "unused",
+                                                   "attributes": {"email": f"legacy{index}@example.invalid"}}
+        self.cognito.users["duplicate"] = {"confirmed": False, "password": "unused", "attributes": {
+            "email": "duplicate@example.invalid", "custom:student_id": self.student_id,
+        }}
+        response = self.login()
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json(), self.bad_credentials)
+        self.assertEqual(self.cognito.calls, [
+            ("admin_get_user", {"UserPoolId": "offline-pool", "Username": self.student_id}),
+            ("list_users", {"UserPoolId": "offline-pool", "Limit": 60}),
+            ("list_users", {"UserPoolId": "offline-pool", "Limit": 60, "PaginationToken": "60"}),
+        ])
+        self.assertIsNone(self.ns["resolve_student_id_username"](self.student_id))
+
+    def test_duplicate_after_empty_pages_is_found_without_a_page_count_cutoff(self):
+        attrs = [{"Name": "custom:student_id", "Value": self.student_id}]
+        pages = [{"Users": [{"Username": "student.one", "Attributes": attrs}], "PaginationToken": "page-1"}]
+        pages.extend({"Users": [], "PaginationToken": f"page-{index + 1}"} for index in range(1, 11))
+        pages.append({"Users": [{"Username": "duplicate", "Attributes": attrs}]})
+        with patch.object(self.cognito, "list_users", side_effect=pages) as listing:
+            response = self.login()
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json(), self.bad_credentials)
+        self.assertEqual(listing.call_args_list, [call(UserPoolId="offline-pool", Limit=60)] + [
+            call(UserPoolId="offline-pool", Limit=60, PaginationToken=f"page-{index}") for index in range(1, 12)
+        ])
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user"])
+
+    def test_same_username_repeated_and_legacy_missing_attributes_are_not_ambiguity(self):
+        row = {"Username": "student.one", "Attributes": [{"Name": "custom:student_id", "Value": self.student_id}]}
+        pages = [
+            {"Users": [{"Username": "legacy"}, row], "PaginationToken": "next"},
+            {"Users": [row, {"Username": "empty", "Attributes": []}, {"Attributes": row["Attributes"]}]},
+        ]
+        with patch.object(self.cognito, "list_users", side_effect=pages) as listing:
+            response = self.login()
+        self.assertTrue(response.get_json()["success"])
+        self.assertEqual(listing.call_args_list, [call(UserPoolId="offline-pool", Limit=60),
+                                                call(UserPoolId="offline-pool", Limit=60, PaginationToken="next")])
+        self.assertEqual([kwargs["Username"] for op, kwargs in self.cognito.calls if op == "admin_get_user"],
+                         [self.student_id, "student.one"])
+        self.assertEqual(self.cognito.calls[-1][1]["AuthParameters"]["USERNAME"], "student.one")
+        self.assertEqual(len(self.login_events), 1)
+
+    def test_accounts_without_custom_student_id_do_not_match(self):
+        self.user["attributes"].pop("custom:student_id")
+        response = self.login()
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json(), self.bad_credentials)
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "list_users"])
+
+    def test_authoritative_recheck_rejects_changed_cleared_missing_or_deleted_ids(self):
+        stale_page = self.cognito.list_users(UserPoolId="offline-pool", Limit=60)
+        for change in ("changed", "cleared", "missing", "deleted"):
+            with self.subTest(change=change), patch.object(self.cognito, "list_users", return_value=stale_page):
+                self.cognito.users["student.one"] = self.user
+                self.user["attributes"]["custom:student_id"] = self.student_id
+                if change == "deleted":
+                    self.cognito.users.pop("student.one")
+                elif change == "missing":
+                    self.user["attributes"].pop("custom:student_id")
+                else:
+                    self.user["attributes"]["custom:student_id"] = "0002024002" if change == "changed" else ""
+                self.cognito.calls.clear()
+                response = self.login()
+                self.assert_no_signin(response)
+                self.assertEqual(response.get_json(), self.bad_credentials)
+                self.assertEqual(self.cognito.calls, [
+                    ("admin_get_user", {"UserPoolId": "offline-pool", "Username": self.student_id}),
+                    ("admin_get_user", {"UserPoolId": "offline-pool", "Username": "student.one"}),
+                ])
+                if change != "deleted":
+                    self.assertIsNone(self.ns["resolve_student_id_username"](self.student_id))
+
+    def test_admin_id_change_takes_effect_without_caching_old_alias(self):
+        self.assertTrue(self.ns["login_user"](self.student_id, "ExamplePass123!")["success"])
+        self.user["attributes"]["custom:student_id"] = "0002024002"
+        self.cognito.calls.clear()
+        old_id = self.login()
+        self.assert_no_signin(old_id)
+        self.assertEqual(old_id.get_json(), self.bad_credentials)
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user", "list_users"])
+        self.assertTrue(self.login("0002024002").get_json()["success"])
+        self.assertEqual(len(self.login_events), 1)
+        self.assertEqual(self.login_events[0]["uid"], "test-sub-student.one")
+        self.assertEqual(self.login_events[0]["email"], "student.one@example.invalid")
+
+    def test_known_pagination_error_after_a_match_is_handled_without_authenticating(self):
+        page = {"Users": [{"Username": "student.one", "Attributes": [
+            {"Name": "custom:student_id", "Value": self.student_id},
+        ]}], "PaginationToken": "next"}
+        error = self.ns["ClientError"]("TooManyRequestsException")
+        with patch.object(self.cognito, "list_users", side_effect=[page, error]) as listing:
+            response = self.login()
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json()["message"], self.ns["handle_cognito_error"](error))
+        self.assertEqual(listing.call_count, 2)
+        self.assertEqual([op for op, _ in self.cognito.calls], ["admin_get_user"])
+
+    def test_recheck_error_cannot_fall_back_to_a_list_snapshot(self):
+        get_user = self.cognito.admin_get_user
+
+        def failed_recheck(**kwargs):
+            if kwargs["Username"] == "student.one":
+                raise self.ns["ClientError"]("TooManyRequestsException")
+            return get_user(**kwargs)
+
+        with patch.object(self.cognito, "admin_get_user", side_effect=failed_recheck) as lookup:
+            response = self.login()
+        self.assert_no_signin(response)
+        self.assertEqual(response.get_json()["message"], self.ns["COGNITO_ERROR_MESSAGES"]["TooManyRequestsException"])
+        self.assertEqual(lookup.call_count, 2)
+        self.assertNotIn("initiate_auth", [op for op, _ in self.cognito.calls])
+
+    def test_unexpected_lookup_transport_and_pagination_failures_are_sanitized(self):
+        sensitive = "SECRET_PASSWORD SECRET_TOKEN student.one@example.invalid " + self.student_id
+        page = {"Users": [{"Username": "student.one", "Attributes": [
+            {"Name": "custom:student_id", "Value": self.student_id},
+        ]}], "PaginationToken": "next"}
+        failures = (("admin_get_user", OSError(sensitive)), ("get_paginator", RuntimeError(sensitive)),
+                    ("list_users", ConnectionError(sensitive)), ("list_users", [page, RuntimeError(sensitive)]))
+        results = []
+        for operation, failure in failures:
+            with self.subTest(operation=operation, failure=type(failure).__name__), \
+                    patch.object(self.cognito, operation, side_effect=failure), patch("builtins.print") as output:
+                self.cognito.calls.clear()
+                response = self.login()
+                self.assert_no_signin(response)
+                results.append(response.get_json())
+                self.assertEqual(set(response.get_json()), {"success", "message"})
+                public_and_logs = response.get_data(as_text=True) + str(output.call_args_list)
+                for secret in ("SECRET_PASSWORD", "SECRET_TOKEN", "student.one@example.invalid", self.student_id):
+                    self.assertNotIn(secret, public_and_logs)
+                self.assertNotIn("initiate_auth", [op for op, _ in self.cognito.calls])
+        self.assertTrue(all(result == results[0] for result in results))
+
+    def test_id_helper_failure_never_exposes_exception_or_changes_session(self):
+        error = RuntimeError("SECRET_HELPER_DETAIL SECRET_PASSWORD SECRET_TOKEN " + self.student_id)
+        resolver = Mock(side_effect=error)
+        with patch.dict(self.ns, {"resolve_student_id_username": resolver}), patch("builtins.print") as output:
+            response = self.login()
+        resolver.assert_called_once_with(self.student_id)
+        self.assert_no_signin(response)
+        self.assertEqual(set(response.get_json()), {"success", "message"})
+        self.assertNotIn("SECRET", response.get_data(as_text=True) + str(output.call_args_list))
+        self.assertNotIn(self.student_id, response.get_data(as_text=True) + str(output.call_args_list))
+        self.assertEqual(self.cognito.calls, [])
+
+    def test_unconfirmed_or_unverified_id_login_never_grants_session_or_event(self):
+        for confirmed, verified in ((False, "false"), (True, "false"), (True, None)):
+            with self.subTest(confirmed=confirmed, verified=verified):
+                self.user["confirmed"] = confirmed
+                if verified is None:
+                    self.user["attributes"].pop("email_verified", None)
+                else:
+                    self.user["attributes"]["email_verified"] = verified
+                self.cognito.calls.clear()
+                response = self.login()
+                self.assert_no_signin(response)
+                self.assertEqual(response.status_code, 403 if confirmed else 200)
+                self.assertEqual(self.cognito.calls[-1][0], "initiate_auth")
+                self.assertEqual(self.cognito.calls[-1][1]["AuthParameters"]["USERNAME"], "student.one")
+
+    def test_email_and_username_login_keep_existing_lookup_behavior(self):
+        resolver = Mock(wraps=self.ns["resolve_student_id_username"])
+        with patch.dict(self.ns, {"resolve_student_id_username": resolver}), \
+                patch.object(self.cognito, "get_paginator", wraps=self.cognito.get_paginator) as paginator:
+            for identifier in (" STUDENT.ONE@EXAMPLE.INVALID ", " student.one "):
+                with self.subTest(identifier=identifier):
+                    self.assertTrue(self.login(identifier).get_json()["success"])
+        resolver.assert_not_called()
+        paginator.assert_not_called()
+        self.assertEqual([kwargs for op, kwargs in self.cognito.calls if op == "list_users"], [
+            {"UserPoolId": "offline-pool", "Filter": 'email = "student.one@example.invalid"', "Limit": 60},
+        ])
+        self.assertNotIn("admin_get_user", [op for op, _ in self.cognito.calls])
+        self.assertEqual(len(self.login_events), 2)
+        self.assertTrue(all(event["uid"] == "test-sub-student.one" for event in self.login_events))
+        expected_hash = base64.b64encode(hmac.new(b"offline-secret", b"student.oneoffline-client", hashlib.sha256).digest()).decode()
+        for op, kwargs in self.cognito.calls:
+            if op == "initiate_auth":
+                self.assertEqual(kwargs["AuthParameters"]["USERNAME"], "student.one")
+                self.assertEqual(kwargs["AuthParameters"]["SECRET_HASH"], expected_hash)
+
+    def test_email_resolver_keeps_numeric_username_internal_behavior(self):
+        self.assertEqual(self.ns["resolve_cognito_username"](self.student_id), self.student_id)
+        self.assertEqual(self.cognito.calls, [])
         self.assertEqual(self.login_events, [])
 
 

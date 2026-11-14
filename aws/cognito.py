@@ -50,8 +50,8 @@ COGNITO_ERROR_MESSAGES = {
     # the only identifier they know, their email.
     "InvalidParameterException": "That doesn't look like a valid email address or username. Please check what you entered and try again.",
 
-    "NotAuthorizedException": "Incorrect username or password. Please check your credentials and try again.",
-    "UserNotFoundException": "Incorrect username or password. Please check your credentials and try again.",
+    "NotAuthorizedException": "Incorrect sign-in details. Check your password or try your email or username.",
+    "UserNotFoundException": "Incorrect sign-in details. Check your password or try your email or username.",
     "UserNotConfirmedException": "Your account is not confirmed yet. Please check your email for a confirmation link.",
     "TooManyRequestsException": "You've made too many requests. Please wait a moment and try again.",
     "InternalErrorException": "An internal server error occurred. Please try again later.",
@@ -270,10 +270,45 @@ def resend_signup_code(username, *, expected_email):
         return {"success": False, "message": handle_cognito_error(error)}
 
 
-def login_user(identifier, password):
-    """Logs in a user by email OR username and returns authentication tokens.
+def resolve_student_id_username(student_id):
+    """Resolve an exact profile ID without shadowing existing numeric usernames."""
+    try:
+        account = cognito_client.admin_get_user(UserPoolId=COGNITO_USER_POOL_ID, Username=student_id)
+        return account.get("Username")
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "UserNotFoundException":
+            raise
 
-    Students sign in with their email; Cognito wants the username. Resolving
+    match = None
+    # Cognito cannot filter custom attributes; requesting only student_id also
+    # fails when a legacy account has no value. Read every page before choosing.
+    paginator = cognito_client.get_paginator("list_users")
+    for page in paginator.paginate(UserPoolId=COGNITO_USER_POOL_ID, Limit=60):
+        for user in page.get("Users", []):
+            username = user.get("Username")
+            if username and any(
+                attr.get("Name") == "custom:student_id" and attr.get("Value") == student_id
+                for attr in user.get("Attributes", [])
+            ):
+                if match is not None and match != username:
+                    return None
+                match = username
+
+    if match is None:
+        return None
+    # ListUsers is eventually consistent. A recently edited or cleared ID must
+    # not authenticate through a stale directory entry.
+    account = cognito_client.admin_get_user(UserPoolId=COGNITO_USER_POOL_ID, Username=match)
+    if any(attr.get("Name") == "custom:student_id" and attr.get("Value") == student_id
+           for attr in account.get("UserAttributes", [])):
+        return account.get("Username")
+    return None
+
+
+def login_user(identifier, password):
+    """Log in by email, username, or student ID using the canonical account name.
+
+    Students can use an email or ID; Cognito wants the username. Resolving
     here (rather than in the route) means every caller benefits — the login
     page, and settings.change_password which re-authenticates with the email
     stored in the session.
@@ -283,7 +318,11 @@ def login_user(identifier, password):
     resolved name.
     """
     try:
-        username = resolve_cognito_username(identifier)
+        identifier = (identifier or "").strip()
+        username = (resolve_student_id_username(identifier) if re.fullmatch(r"[0-9]{1,64}", identifier)
+                    else resolve_cognito_username(identifier))
+        if not username:
+            return {"success": False, "message": COGNITO_ERROR_MESSAGES["NotAuthorizedException"]}
         secret_hash = get_secret_hash(username)
         resp = cognito_client.initiate_auth(
             ClientId=COGNITO_CLIENT_ID,
@@ -297,6 +336,9 @@ def login_user(identifier, password):
         return {"success": True, "auth_result": resp["AuthenticationResult"]}
     except ClientError as e:
         return {"success": False, "message": handle_cognito_error(e)}
+    except Exception:  # noqa: BLE001 - failed directory reads must never choose a partial match
+        print("[cognito] Sign-in lookup or authentication is unavailable.")
+        return {"success": False, "message": "Sign-in is temporarily unavailable. Please try again or use your email or username."}
 
 def forgot_password(email):
     """Initiates the forgot password flow with SecretHash.

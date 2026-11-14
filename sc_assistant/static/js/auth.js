@@ -180,7 +180,7 @@ $(document).ready(function() {
         $('#loginEntry').prop('hidden', view !== 'signup');
         $('#resetPasswordNavigation').prop('hidden', view !== 'reset');
         const headings = {
-            login: ['Sign in', 'Use your username or email to continue.'],
+            login: ['Sign in', 'Use your student ID, email, or username to continue.'],
             signup: ['Create account', 'Choose a username and enter your account details.'],
             verify: ['Verify your email', 'Confirm your email before signing in.'],
             reset: ['Reset password', 'Send an OTP to your email and set a new password.']

@@ -100,7 +100,7 @@ class FakeCognito:
         user = self.users.get(key)
         if not user:
             raise ClientError("UserNotFoundException")
-        return {"UserStatus": "CONFIRMED" if user["confirmed"] else "UNCONFIRMED",
+        return {"Username": key, "UserStatus": "CONFIRMED" if user["confirmed"] else "UNCONFIRMED",
                 "UserAttributes": [{"Name": k, "Value": v} for k, v in user["attributes"].items()]
                 + [{"Name": "sub", "Value": f"test-sub-{key}"}]}
 
@@ -114,12 +114,41 @@ class FakeCognito:
 
     def list_users(self, **kwargs):
         self.record("list_users", kwargs)
-        email = kwargs["Filter"].removeprefix('email = "').removesuffix('"')
-        return {"Users": [
+        email = None
+        if "Filter" in kwargs:
+            if not re.fullmatch(r'email = ".*"', kwargs["Filter"]):
+                raise AssertionError("FakeCognito supports only exact email filters")
+            email = kwargs["Filter"].removeprefix('email = "').removesuffix('"')
+        users = [
             {"Username": key, "UserStatus": "CONFIRMED" if user["confirmed"] else "UNCONFIRMED",
              "Attributes": [{"Name": k, "Value": v} for k, v in user["attributes"].items()]}
-            for key, user in self.users.items() if user["attributes"]["email"] == email
-        ]}
+            for key, user in self.users.items() if email is None or user["attributes"].get("email") == email
+        ]
+        start = int(kwargs.get("PaginationToken", "0"))
+        end = start + kwargs.get("Limit", 60)
+        response = {"Users": users[start:end]}
+        if end < len(users):
+            response["PaginationToken"] = str(end)
+        return response
+
+    def get_paginator(self, operation):
+        if operation != "list_users":
+            raise AssertionError("FakeCognito supports only the list_users paginator")
+
+        def paginate(**kwargs):
+            while True:
+                # Dispatch each page through the public method so mocks can supply
+                # empty pages, stale snapshots, and mid-pagination failures.
+                response = self.list_users(**kwargs)
+                yield response
+                token = response.get("PaginationToken")
+                if not token:
+                    break
+                if token == kwargs.get("PaginationToken"):
+                    raise RuntimeError("Repeated pagination token")
+                kwargs["PaginationToken"] = token
+
+        return SimpleNamespace(paginate=paginate)
 
     def initiate_auth(self, **kwargs):
         self.record("initiate_auth", kwargs)

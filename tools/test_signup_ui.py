@@ -170,6 +170,9 @@ def main():
                 expect(page.locator("#loginDataConsent, #openEulaLinkLogin, #loginForm .eula-gate")).to_have_count(0)
                 expect(page.locator("#eulaModal")).not_to_be_visible()
                 expect(page.locator("#loginButton")).to_be_enabled()
+                expect(page.get_by_label("Student ID, email or username", exact=True)).to_be_editable()
+                expect(page.locator("#email")).to_have_attribute("type", "text")
+                expect(page.locator("#formSubtitle")).to_contain_text("student ID, email, or username")
                 audit(page, f"login-{width}-dark", width)
                 page.locator("#themeToggle").click()
                 audit(page, f"login-{width}-light", width)
@@ -278,15 +281,29 @@ def main():
                 expect(page.locator("#email")).to_have_value(email)
                 expect(page.locator("#signupPassword")).to_have_value("")
                 expect(page.locator("#signupCode")).to_have_value("")
-                id_login = context.request.post(base + "/login", form={"email": identifier, "password": password})
-                assert id_login.json()["success"] is False
-                page.locator("#email").fill(username)
-                page.locator("#password").fill(password)
-                expect(page.locator("#loginButton")).to_be_enabled()
+                page.locator("#email").fill(identifier)
+                page.locator("#password").fill("WrongPassword123!")
                 page.locator("#loginButton").click()
-                page.wait_for_url(base + "/chat")
-                assert context.request.get(base + "/chat").json()["user"] == email
-                assert context.request.get(base + "/chat").json()["username"] == username
+                expect(page.get_by_role("status").filter(has_text="Incorrect sign-in details")).to_be_visible()
+                assert context.request.get(base + "/chat").json()["user"] is None
+                for login_identifier in (identifier, username, email):
+                    if login_identifier != identifier:
+                        page.goto(base + "/logout", wait_until="networkidle")
+                    page.locator("#email").fill(login_identifier)
+                    page.locator("#password").fill(password)
+                    if login_identifier == identifier:
+                        page.locator('label[for="rememberMe"]').click()
+                        expect(page.locator("#rememberMe")).to_be_checked()
+                        page.screenshot(path=str(output / f"student-id-login-{domain}.png"), full_page=True)
+                    expect(page.locator("#loginButton")).to_be_enabled()
+                    with page.expect_request(base + "/login") as sent:
+                        page.locator("#loginButton").click()
+                    assert parse_qs(sent.value.post_data)["email"] == [login_identifier]
+                    page.wait_for_url(base + "/chat")
+                    assert context.request.get(base + "/chat").json()["user"] == email
+                    assert context.request.get(base + "/chat").json()["username"] == username
+                    if login_identifier == identifier:
+                        assert page.evaluate("localStorage.getItem('rememberedEmail')") == identifier
                 context.close()
 
             reset_generation = 0

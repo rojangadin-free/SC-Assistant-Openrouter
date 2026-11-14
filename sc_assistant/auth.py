@@ -205,13 +205,12 @@ def restart_signup():
 
 @bp.route("/login", methods=["POST"])
 def login():
-    # Named "email" for the form field, but it accepts either an email address
-    # or a username — aws.cognito.login_user translates the former into the
-    # latter, which is what this user pool signs in with.
+    # Keep the existing form key; login_user resolves email or student ID to the
+    # canonical username before authenticating with the supplied password.
     identifier = (request.form.get("email") or "").strip()
     password = request.form.get("password")
     if not all([identifier, password]):
-        return jsonify({"success": False, "message": "Please enter your email or username and your password."})
+        return jsonify({"success": False, "message": "Please enter your student ID, email, or username and your password."})
 
     result = login_user(identifier, password)
     if result["success"]:
@@ -224,10 +223,8 @@ def login():
 
         # session["user"] is treated as the email everywhere downstream — it is
         # what matches a student to their DynamoDB record and what Settings
-        # renders as "Email Address". Sign-in now accepts either an email or a
-        # username, so take the address from the token instead of from whatever
-        # was typed; otherwise signing in with a username would silently store a
-        # username in the email slot and break the student record lookup.
+        # renders as "Email Address". Take the verified token's email, never the
+        # typed student ID or username, so account record lookups stay unchanged.
         email = claims.get("email")
         if not email:
             return jsonify({"success": False, "message": "Sign-in could not read your account email. Please contact the school administrator."}), 503

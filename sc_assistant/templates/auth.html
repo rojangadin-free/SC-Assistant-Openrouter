@@ -4,7 +4,7 @@
 {% if auth_view == 'forgot' %}{% set auth_view = 'reset' %}{% endif %}
 {% if auth_view not in ['login', 'signup', 'verify', 'reset'] %}{% set auth_view = 'login' %}{% endif %}
 {% set auth_headings = {
-    'login': ['Sign in', 'Use your username or email to continue.'],
+    'login': ['Sign in', 'Use your student ID, email, or username to continue.'],
     'signup': ['Create account', 'Choose a username and enter your account details.'],
     'verify': ['Verify your email', 'Confirm your email before signing in.'],
     'reset': ['Reset password', 'Send an OTP to your email and set a new password.']
@@ -52,13 +52,13 @@
 
         <!-- ── Login Form ───────────────────────────────── -->
         <form id="loginForm" action="/login" method="post" aria-labelledby="formTitle"{% if auth_view != 'login' %} hidden{% endif %}>
-            {# Existing numeric usernames remain valid login identifiers. #}
+            {# IDs stay as text to preserve leading zeros and existing usernames. #}
             <div class="form-group">
-                <label for="email">Email or username</label>
+                <label for="email">Student ID, email or username</label>
                 <div class="input-wrapper">
                     <input type="text" id="email" name="email" class="form-input"
-                           placeholder="Email or username"
-                           autocomplete="username" inputmode="email"
+                           placeholder="Student ID, email or username"
+                           autocomplete="username"
                            autocapitalize="none" spellcheck="false" required>
                 </div>
             </div>
@@ -99,9 +99,9 @@
                 </div>
             </div>
             <div class="form-group" id="signupStudentIdGroup">
-                <label for="signupStudentId">ID number</label>
+                <label for="signupStudentId">Student ID</label>
                 <div class="input-wrapper">
-                    <input type="text" id="signupStudentId" name="student_id" class="form-input" placeholder="Enter your ID number"
+                    <input type="text" id="signupStudentId" name="student_id" class="form-input" placeholder="Enter your Student ID number"
                            autocomplete="off" inputmode="numeric" spellcheck="false" maxlength="64"
                            pattern="[0-9]{1,64}" required>
                 </div>

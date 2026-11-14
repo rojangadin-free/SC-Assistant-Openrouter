@@ -67,6 +67,16 @@ class PasswordResetTests(unittest.TestCase):
             self.assertIsNone(state.get("uid"))
             self.assertNotIn("password_reset_id", state)
 
+    def test_recovery_still_requires_email_not_username_or_student_id(self):
+        self.cognito.users["2024-001"]["attributes"]["custom:student_id"] = "0002024001"
+        for identifier in ("2024-001", "0002024001"):
+            with self.subTest(identifier=identifier):
+                response = self.request_code(identifier)
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(response.get_json()["success"])
+                self.assertEqual(self.cognito.calls, [])
+                self.assertIsNone(self.flow_id())
+
     def test_wrong_code_keeps_password_unchanged_and_allows_retry(self):
         self.request_code()
         response = self.reset(code="000000")
