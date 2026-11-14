@@ -308,9 +308,9 @@ def activities():
 def users():
     return jsonify({"success": True, "users": [
         {"id": "preview-juan", "username": "Juan Dela Cruz", "email": "juan@samarcollege.edu.ph",
-         "role": "admin", "status": "CONFIRMED", "joined": "2026-08-01T08:00:00Z"},
+         "student_id": "00012345", "role": "admin", "status": "CONFIRMED", "joined": "2026-08-01T08:00:00Z"},
         {"id": "preview-maria", "username": "Maria Santos", "email": "maria@samarcollege.edu.ph",
-         "role": "user", "status": "UNCONFIRMED", "joined": "2026-09-01T08:00:00Z"},
+         "student_id": "", "role": "user", "status": "UNCONFIRMED", "joined": "2026-09-01T08:00:00Z"},
     ]})
 
 

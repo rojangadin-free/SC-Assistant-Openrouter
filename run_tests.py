@@ -68,12 +68,14 @@ RUN_FROM = os.path.dirname(os.path.abspath(__file__))
 SUITES = [
     ("School signup and email verification", "test_auth_signup.py"),
     ("Standard Cognito password recovery",  "test_password_reset.py"),
+    ("Admin account editing",               "test_admin_users.py"),
     ("Rendered UI contracts",               "test_ui_contracts.py"),
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
     ("Storage backend (file/DynamoDB)",  "test_store.py"),
     ("Successful sign-in history",      "test_login_activity.py"),
     ("Private topic usage",             "test_topic_usage.py"),
+    ("Current document source policy",  "test_source_policy.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
     ("Calendar awareness (dates)",      "test_calendar.py"),

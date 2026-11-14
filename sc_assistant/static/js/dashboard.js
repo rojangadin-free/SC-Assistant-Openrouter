@@ -540,7 +540,7 @@ $(document).ready(function() {
   function renderUserList() {
     const terms = userSearch.val().trim().toLowerCase().split(/\s+/).filter(Boolean);
     const filtered = userAccounts.filter(user => {
-      const text = [user.username, user.email, user.id].filter(Boolean).join(' ').toLowerCase();
+      const text = [user.username, user.email, user.id, user.student_id].filter(Boolean).join(' ').toLowerCase();
       return terms.every(term => text.includes(term));
     });
     userListBody.empty();
@@ -549,7 +549,7 @@ $(document).ready(function() {
       ? `${filtered.length} of ${userAccounts.length} users`
       : `${userAccounts.length} user${userAccounts.length === 1 ? '' : 's'}`);
     if (!filtered.length) {
-      userListBody.append($('<tr>').append($('<td>', { colspan: 6, class: 'sc-empty sc-empty--sm' })
+      userListBody.append($('<tr>').append($('<td>', { colspan: 7, class: 'sc-empty sc-empty--sm' })
         .text(terms.length ? 'No users match this search.' : 'No users found.')));
       return;
     }
@@ -561,22 +561,20 @@ $(document).ready(function() {
       const status = String(user.status || 'UNKNOWN');
       const role = String(user.role || 'user');
       const name = String(user.username || user.id || '');
+      const studentId = String(user.student_id || '');
       const statusClass = status === 'CONFIRMED' ? 'status-confirmed' : 'status-unconfirmed';
       const row = $('<tr>');
       // Account names and attributes are text, never interpolated markup.
-      row.append($('<td>').text(name), $('<td>').text(user.email || ''),
+      row.append($('<td>').text(name), $('<td>').text(studentId || 'Not set'), $('<td>').text(user.email || ''),
         $('<td>').append($('<span>').addClass(statusClass).text(status.charAt(0) + status.slice(1).toLowerCase())),
         $('<td>').text(role.charAt(0).toUpperCase() + role.slice(1).toLowerCase()),
         $('<td>').text(joinedDate));
       const edit = $('<button>', { type: 'button', class: 'file-action edit-user', title: 'Edit' })
-        .attr({ 'data-id': user.id, 'data-username': name, 'data-email': user.email || '', 'data-role': role })
-        .data({ id: user.id, username: name, email: user.email || '', role: role })
+        .attr({ 'data-id': user.id, 'data-username': name, 'data-email': user.email || '', 'data-role': role,
+          'data-student-id': studentId, 'aria-label': 'Edit user' })
+        .data({ id: user.id, username: name, email: user.email || '', role: role, studentId: studentId })
         .append($('<i>', { class: 'fas fa-pen' }));
-      const remove = $('<button>', { type: 'button', class: 'file-action delete-user', title: 'Delete' })
-        .attr({ 'data-id': user.id, 'data-username': name })
-        .data({ id: user.id, username: name })
-        .append($('<i>', { class: 'fas fa-trash' }));
-      row.append($('<td>').append(edit, remove));
+      row.append($('<td>').append(edit));
       rows.appendChild(row[0]);
     });
     userListBody.append(rows);
@@ -596,7 +594,7 @@ $(document).ready(function() {
       userListLoader.hide();
       if (!response.success || !Array.isArray(response.users)) {
         userSearchStatus.text('Search is unavailable until users can be loaded.');
-        userListBody.html('<tr><td colspan="6" class="sc-empty">Failed to load users.</td></tr>');
+        userListBody.html('<tr><td colspan="7" class="sc-empty">Failed to load users.</td></tr>');
         return;
       }
       userAccounts = response.users;
@@ -605,7 +603,7 @@ $(document).ready(function() {
     }).fail(function() {
       userListLoader.hide();
       userSearchStatus.text('Search is unavailable until users can be loaded.');
-      userListBody.html('<tr><td colspan="6" style="padding: 1rem; text-align: center; color: var(--error-color);">Failed to load users.</td></tr>');
+      userListBody.html('<tr><td colspan="7" style="padding: 1rem; text-align: center; color: var(--error-color);">Failed to load users.</td></tr>');
     });
   }
   
@@ -617,6 +615,7 @@ $(document).ready(function() {
     $('#editUserCognitoUsername').val(button.data('id'));
     $('#editUserUsername').val(button.data('username'));
     $('#editUserEmail').val(button.data('email'));
+    $('#editUserStudentId').val(button.data('studentId'));
     $('#editUserRole').val(button.data('role'));
     editUserModal.addClass('active');
     $('#editUserUsername').trigger('focus');
@@ -702,33 +701,6 @@ $(document).ready(function() {
     });
   });
 
-  // --- Delete User Action ---
-  userListBody.on('click', '.delete-user', function() {
-    const userId = $(this).data('id');
-    const username = $(this).data('username');
-
-    if (confirm(`Are you sure you want to delete ${username}?\nThis will also delete all their conversations. This action cannot be undone.`)) {
-      $.ajax({
-        url: '/api/dashboard/users/delete',
-        type: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify({ cognito_username: userId }),
-        success: function(response) {
-          if (response.success) {
-            window.showNotification(response.message, 'success');
-            loadUserList(); // Refresh the list
-          } else {
-            window.showNotification(response.message, 'error');
-          }
-        },
-        error: function(xhr) {
-          const errorMsg = xhr.responseJSON ? xhr.responseJSON.message : 'An error occurred';
-          window.showNotification(errorMsg, 'error');
-        }
-      });
-    }
-  });
-  
   // ===== Charts =====
   // Deliberately none here.
   //

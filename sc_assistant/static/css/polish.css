@@ -247,7 +247,6 @@ textarea::placeholder {
 .report-btn:hover, .conv-actions button:hover,
 #analyticsSection .analytics-bad, #analyticsSection .analytics-error,
 .file-progress-error .file-progress-message,
-#userListTable .file-action.delete-user,
 .file-action.delete:hover { color: var(--ui-danger-ink); }
 
 .stat-change.positive, .sc-stat-num--ok, .sc-stat-num--green,

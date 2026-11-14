@@ -2,6 +2,7 @@ from flask import (
     Blueprint, render_template, jsonify, request, session, redirect, url_for
 )
 import os
+import re
 import tempfile
 import threading
 from html import escape
@@ -10,10 +11,9 @@ from pinecone import Pinecone
 
 
 from config import INDEX_NAME, PINECONE_API_KEY, COGNITO_USER_POOL_ID
-from aws.cognito import cognito_client
+from aws.cognito import cognito_client, normalize_signup_email
 from aws.dynamodb import (
-    save_file_metadata, delete_file_from_db, files_table,
-    list_conversations, delete_conversation_from_db
+    save_file_metadata, delete_file_from_db, files_table
 )
 
 from aws.s3 import upload_file_to_s3, delete_file_from_s3, get_s3_presigned_url
@@ -383,13 +383,16 @@ def get_dashboard_users():
                 user_data = {"id": u.get('Username'), "status": u.get('UserStatus'), "joined": u.get('UserCreateDate').isoformat()}
                 username = ""
                 email = ""
+                student_id = ""
                 role = "user"
                 for attr in u.get('Attributes', []):
                     if attr['Name'] == 'name': username = attr['Value']
                     elif attr['Name'] == 'email': email = attr['Value']
+                    elif attr['Name'] == 'custom:student_id': student_id = attr['Value']
                     elif attr['Name'] == 'custom:role': role = attr['Value']
                 user_data["username"] = username or email.split('@')[0]
                 user_data["email"] = email
+                user_data["student_id"] = student_id
                 user_data["role"] = role
                 user_list.append(user_data)
         user_list.sort(key=lambda x: x['joined'], reverse=True)
@@ -402,45 +405,66 @@ def get_dashboard_users():
 
 @bp.route("/api/dashboard/users/update", methods=["POST"])
 def update_user():
-    if not session.get("user") or not is_admin(): return jsonify({"success": False, "message": "Unauthorized"}), 403
+    if not session.get("user") or not is_admin():
+        return jsonify({"success": False, "message": "Unauthorized"}), 403
+    cognito_username = (request.form.get("cognito_username") or "").strip()
+    new_username = (request.form.get("username") or "").strip()
+    new_role = request.form.get("role")
+    new_student_id = (request.form.get("student_id") or "").strip()
+    if not cognito_username or not new_username:
+        return jsonify({"success": False, "message": "An account and username are required."}), 400
+    if new_role not in ("user", "admin"):
+        return jsonify({"success": False, "message": "Choose a valid user role."}), 400
+    if "student_id" not in request.form or (new_student_id and not re.fullmatch(r"[0-9]{1,64}", new_student_id)):
+        return jsonify({"success": False, "message": "Use 1-64 digits (0-9) for the student ID, or leave it blank."}), 400
     try:
-        cognito_username = request.form.get('cognito_username')
-        new_username = request.form.get('username')
-        new_role = request.form.get('role')
-        if not all([cognito_username, new_username, new_role]): return jsonify({"success": False, "message": "Missing data"}), 400
+        new_email = normalize_signup_email(request.form.get("email"))
+    except ValueError as error:
+        return jsonify({"success": False, "message": str(error)}), 400
 
-        attributes_to_update = [{'Name': 'name', 'Value': new_username}, {'Name': 'custom:role', 'Value': new_role}]
-        cognito_client.admin_update_user_attributes(UserPoolId=COGNITO_USER_POOL_ID, Username=cognito_username, UserAttributes=attributes_to_update)
-        
-        is_self_update = False
-        current_admin_cognito_username = get_cognito_username()
-        if cognito_username == current_admin_cognito_username:
-            session['username'] = new_username
-            session['role'] = new_role
-            is_self_update = True
-
-        return jsonify({"success": True, "message": "User updated successfully", "is_self_update": is_self_update, "new_username": new_username})
-    except ClientError as e:
-        return jsonify({"success": False, "message": f"AWS Error: {e.response['Error']['Message']}"}), 500
-    except Exception as e:
-        return jsonify({"success": False, "message": f"An error occurred: {str(e)}"}), 500
-
-
-@bp.route("/api/dashboard/users/delete", methods=["POST"])
-def delete_user():
-    if not session.get("user") or not is_admin(): return jsonify({"success": False, "message": "Unauthorized"}), 403
     try:
-        cognito_username = request.json.get('cognito_username')
-        if not cognito_username: return jsonify({"success": False, "message": "User ID is required"}), 400
-        current_admin_username = get_cognito_username()
-        if current_admin_username == cognito_username: return jsonify({"success": False, "message": "Cannot delete your own account from the admin dashboard."}), 400
+        account = cognito_client.admin_get_user(UserPoolId=COGNITO_USER_POOL_ID, Username=cognito_username)
+        current = {attr["Name"]: attr["Value"] for attr in account.get("UserAttributes", [])}
+        attributes_to_update = [
+            {"Name": "name", "Value": new_username},
+            {"Name": "custom:role", "Value": new_role},
+        ]
+        if new_email != current.get("email", "").strip().lower():
+            # Admin-confirmed corrections become active without a user OTP.
+            attributes_to_update.extend([
+                {"Name": "email", "Value": new_email},
+                {"Name": "email_verified", "Value": "true"},
+            ])
+        if new_student_id != current.get("custom:student_id", ""):
+            # Blank removes an existing ID; legacy accounts need no new attribute.
+            attributes_to_update.append({"Name": "custom:student_id", "Value": new_student_id})
+        cognito_client.admin_update_user_attributes(
+            UserPoolId=COGNITO_USER_POOL_ID, Username=cognito_username, UserAttributes=attributes_to_update,
+        )
 
-        user_conversations = list_conversations(cognito_username)
-        for conv in user_conversations: delete_conversation_from_db(cognito_username, conv['conv_id'])
-        
-        cognito_client.admin_delete_user(UserPoolId=COGNITO_USER_POOL_ID, Username=cognito_username)
-        return jsonify({"success": True, "message": "User and all associated data deleted successfully."})
-    except ClientError as e:
-        return jsonify({"success": False, "message": f"AWS Error: {e.response['Error']['Message']}"}), 500
-    except Exception as e:
-        return jsonify({"success": False, "message": f"An error occurred: {str(e)}"}), 500
+        is_self_update = cognito_username == get_cognito_username()
+        if is_self_update:
+            session.update(username=new_username, role=new_role, user=new_email)
+        return jsonify({"success": True, "message": "User updated successfully",
+                        "is_self_update": is_self_update, "new_username": new_username})
+    except ClientError as error:
+        details = error.response.get("Error", {})
+        code = details.get("Code", "Unknown")
+        if code == "AliasExistsException":
+            return jsonify({"success": False, "message": "That email is already used by another account."}), 409
+        if code == "UserNotFoundException":
+            return jsonify({"success": False, "message": "This account no longer exists. Refresh the user list."}), 404
+        if code == "TooManyRequestsException":
+            return jsonify({"success": False, "message": "Too many updates. Wait a moment and try again."}), 429
+        detail = details.get("Message", "").lower()
+        if code in ("InvalidParameterException", "NotAuthorizedException") and any(
+            hint in detail for hint in ("custom:student_id", "schema", "immutable")
+        ):
+            return jsonify({"success": False, "message":
+                "Student ID editing requires a mutable custom:student_id attribute in the Cognito user pool."}), 503
+        if code == "InvalidParameterException":
+            return jsonify({"success": False, "message": "Check the account details and try again."}), 400
+        print(f"[admin] User update failed ({code}).")
+    except Exception:
+        print("[admin] User update failed.")
+    return jsonify({"success": False, "message": "The account could not be updated. Please try again."}), 503

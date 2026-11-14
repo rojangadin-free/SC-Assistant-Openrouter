@@ -36,6 +36,7 @@ def main():
             "/api/announcements", "/admin/calendar/", "/admin/announcements/",
             "/admin/feedback/api/list", "/admin/feedback/api/delete",
             "/chat/feedback",
+            "/api/dashboard/users/delete",
         )):
             retired_requests.append(route.request.url)
         if url.hostname == "ui-avatars.com":
@@ -631,6 +632,7 @@ def main():
             page.keyboard.press("Escape")
         edit_button = page.locator("#userListBody .edit-user").first
         expect(page.locator("#userListBody .edit-user")).to_have_count(2)
+        expect(page.locator("#usersSection .delete-user, #usersSection .fa-trash")).to_have_count(0)
         search = page.get_by_role("searchbox", name="Search users", exact=True)
         expect(search).to_be_enabled()
         expect(page.locator("#userSearchStatus")).to_have_text("2 users")
@@ -642,7 +644,8 @@ def main():
 
         page.on("request", record_user_load)
         for query, expected_id in (("  JUAN  ", "preview-juan"), ("MARIA@SAMARCOLLEGE", "preview-maria"),
-                                   ("PREVIEW-JUAN", "preview-juan"), ("maria   preview-maria", "preview-maria")):
+                                   ("PREVIEW-JUAN", "preview-juan"), ("00012345", "preview-juan"),
+                                   ("maria   preview-maria", "preview-maria")):
             search.fill(query)
             expect(page.locator("#userListBody .edit-user")).to_have_count(1)
             expect(edit_button).to_have_attribute("data-id", expected_id)
@@ -650,6 +653,7 @@ def main():
         capture(page, f"user-search-{width}-{theme}")
         edit_button.click()
         expect(page.locator("#editUserCognitoUsername")).to_have_value("preview-maria")
+        expect(page.locator("#editUserStudentId")).to_have_value("")
         page.locator("#cancelEditUser").click()
         search.fill("<no matching user>")
         expect(page.locator("#userListBody .edit-user")).to_have_count(0)
@@ -697,7 +701,10 @@ def main():
         expect(page.locator("#editUserUsername")).to_be_focused()
         expect(page.locator("#editUserUsername")).to_have_value("Juan Dela Cruz")
         expect(page.locator("#editUserCognitoUsername")).to_have_value("preview-juan")
-        expect(page.locator("#editUserEmail")).to_be_disabled()
+        expect(page.locator("#editUserEmail")).to_be_editable()
+        expect(page.locator("#editUserEmail")).to_have_value("juan@samarcollege.edu.ph")
+        expect(page.locator("#editUserStudentId")).to_be_editable()
+        expect(page.locator("#editUserStudentId")).to_have_value("00012345")
         expect(page.locator("#editUserRole")).to_have_value("admin")
         capture(page, f"user-editor-{width}-{theme}")
         bounds = modal.bounding_box()
@@ -716,12 +723,18 @@ def main():
         page.keyboard.press("Shift+Tab")
         expect(page.locator("#saveUserChanges")).to_be_focused()
         page.locator("#editUserUsername").fill("Unsaved preview name")
+        page.locator("#editUserEmail").fill("unsaved@example.com")
+        page.locator("#editUserStudentId").fill("00000999")
         page.keyboard.press("Escape")
         expect(modal).to_be_hidden()
         expect(edit_button).to_be_focused()
         expect(page.locator("#editUserUsername")).to_have_value("")
+        expect(page.locator("#editUserEmail")).to_have_value("")
+        expect(page.locator("#editUserStudentId")).to_have_value("")
         edit_button.click()
         expect(page.locator("#editUserUsername")).to_have_value("Juan Dela Cruz")
+        expect(page.locator("#editUserEmail")).to_have_value("juan@samarcollege.edu.ph")
+        expect(page.locator("#editUserStudentId")).to_have_value("00012345")
         page.locator("#cancelEditUser").click()
         expect(modal).to_be_hidden()
         edit_button.click()
@@ -737,11 +750,30 @@ def main():
             status=400, json={"success": False, "message": "Preview update rejected."}))
         edit_button.click()
         page.locator("#editUserUsername").fill("Edited preview user")
+        invalid_requests = []
+
+        def record_invalid_update(request):
+            if request.url == update_url:
+                invalid_requests.append(request)
+
+        page.on("request", record_invalid_update)
+        page.locator("#editUserEmail").fill("not-an-email")
+        page.locator("#saveUserChanges").click()
+        assert not page.locator("#editUserEmail").evaluate("el => el.validity.valid")
+        page.locator("#editUserEmail").fill("edited.user@example.com")
+        page.locator("#editUserStudentId").fill("0012x")
+        page.locator("#saveUserChanges").click()
+        assert page.locator("#editUserStudentId").evaluate("el => el.validity.patternMismatch")
+        assert not invalid_requests
+        page.remove_listener("request", record_invalid_update)
+        page.locator("#editUserStudentId").fill("00054321")
         with page.expect_response(update_url):
             page.locator("#saveUserChanges").click()
         expect(modal).to_be_visible()
         expect(page.locator("#saveUserChanges")).to_be_enabled()
         expect(page.locator("#editUserUsername")).to_have_value("Edited preview user")
+        expect(page.locator("#editUserEmail")).to_have_value("edited.user@example.com")
+        expect(page.locator("#editUserStudentId")).to_have_value("00054321")
         expect(page.locator("#notification .notification-message")).to_have_text("Preview update rejected.")
         capture(page, f"user-editor-error-{width}-{theme}")
         assert page.locator("#notification").evaluate("""el => {
@@ -749,18 +781,27 @@ def main():
             return el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
         }""")
         page.unroute(update_url)
+        users_url = base + "/api/dashboard/users"
+        updated_users = page.request.get(users_url).json()["users"]
+        updated_users[0].update(username="Edited preview user", email="edited.user@example.com", student_id="00054321")
+        page.route(users_url, lambda route: route.fulfill(json={"success": True, "users": updated_users}))
         with page.expect_request(update_url) as saved:
             page.locator("#saveUserChanges").click()
         expect(modal).to_be_hidden()
         payload = parse_qs(saved.value.post_data)
-        assert payload == {"cognito_username": ["preview-juan"], "username": ["Edited preview user"], "role": ["admin"]}
+        assert payload == {"cognito_username": ["preview-juan"], "username": ["Edited preview user"],
+                           "email": ["edited.user@example.com"], "student_id": ["00054321"], "role": ["admin"]}
         expect(search).to_be_enabled()
         expect(search).to_have_value("preview-juan")
         expect(page.locator("#userListBody .edit-user")).to_have_count(1)
+        expect(page.locator("#userListBody td").nth(1)).to_have_text("00054321")
+        expect(page.locator("#userListBody td").nth(2)).to_have_text("edited.user@example.com")
         search.fill("")
         expect(page.locator("#userListBody .edit-user")).to_have_count(2)
 
         edit_button.click()
+        expect(page.locator("#editUserEmail")).to_have_value("edited.user@example.com")
+        expect(page.locator("#editUserStudentId")).to_have_value("00054321")
         page.locator("#editUserUsername").fill("Discard this draft on navigation")
         target, section = (("#uploadsMenuItem", "#uploadSection") if theme == "dark"
                            else ("#analyticsMenuItem", "#analyticsSection"))
@@ -770,6 +811,7 @@ def main():
         expect(modal).to_be_hidden()
         expect(page.locator("#editUserUsername")).to_have_value("")
         expect(page.locator("#editUserCognitoUsername")).to_have_value("")
+        page.unroute(users_url)
         capture(page, f"after-user-navigation-{width}-{theme}")
 
     with sync_playwright() as playwright:

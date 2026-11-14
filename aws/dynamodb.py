@@ -23,6 +23,21 @@ def save_file_metadata(filename, uid):
     })
 
 
+def get_file_upload_dates():
+    """Read document chronology only, without uploader identities or file content."""
+    uploads = {}
+    arguments = {"ProjectionExpression": "filename, uploaded_at", "ConsistentRead": True}
+    while True:
+        result = files_table.scan(**arguments)
+        for item in result.get("Items", []):
+            if isinstance(item.get("filename"), str) and isinstance(item.get("uploaded_at"), str):
+                uploads[item["filename"]] = item["uploaded_at"]
+        last_key = result.get("LastEvaluatedKey")
+        if not last_key:
+            return uploads
+        arguments["ExclusiveStartKey"] = last_key
+
+
 # ── Conversations ────────────────────────────────────────────
 
 def upsert_conversation(uid, conv_id, history, created_at):

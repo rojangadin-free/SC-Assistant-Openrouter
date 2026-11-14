@@ -586,6 +586,8 @@ def score(pairs, **kwargs):
     ) else 0.0 for query, passage in pairs]
 
 
+from rag.source_policy import SOURCE_SELECTION_GUIDANCE, select_documents
+
 namespace = {
     "os": os, "re": re, "concurrent": concurrent, "datetime": datetime,
     "List": list, "Dict": dict, "Optional": Optional, "ChatState": dict,
@@ -603,6 +605,8 @@ namespace = {
     "query_optimizer_model": SimpleNamespace(invoke=optimize),
     "source_priority": lambda *args, **kwargs: {}, "doc_key": lambda source: source,
     "get_doc_dates": lambda: {},
+    "get_file_upload_dates": lambda: {},
+    "select_documents": select_documents, "SOURCE_SELECTION_GUIDANCE": SOURCE_SELECTION_GUIDANCE,
     "authority_block": lambda *args: "", "freshness_block": lambda *args, **kwargs: "",
     "resolve_role": lambda *args, **kwargs: "student",
     "role_block": lambda role: "",
@@ -905,9 +909,9 @@ with patch.object(reranker, "_load_model", return_value=None), patch.object(
                       and f"Source: {doc.metadata['source']} | Page: {doc.metadata['page']}" in assembled
                       for doc in (calendar_doc, notice_doc))
                   and result["citations"] == ["calendar", "notice"])
-            check(f"{label}: effective dates rank the notice above the calendar",
-                  "[DOCUMENT 1] [SUPERSEDED \u2014 effective 2026-06-01;" in assembled
-                  and "[DOCUMENT 2] [MOST RECENT SOURCE \u2014 effective 2026-11-12]" in assembled
+            check(f"{label}: dates are labelled without declaring unrelated sources superseded",
+                  "[DOCUMENT 1] [EARLIER EFFECTIVE DATE \u2014 effective 2026-06-01]" in assembled
+                  and "[DOCUMENT 2] [MOST RECENT DATED SOURCE \u2014 effective 2026-11-12]" in assembled
                   and "<document_dates>\n" in assembled
                   and "campus-notice.pdf \u2014 effective 2026-11-12 (NEWEST)" in assembled
                   and "A NEWER DOCUMENT SUPERSEDES AN OLDER ONE" in assembled)
@@ -956,6 +960,109 @@ with patch.object(reranker, "_load_model", return_value=None), patch.object(
         for name, provider in manual_providers.items():
             check(f"{name} is never consulted during prompt assembly", not provider.called)
 
+
+section("13. Current uploaded documents form a hard evidence boundary")
+old_pages = [SimpleNamespace(
+    page_content=f"Enrollment OLD_HANDBOOK_RULE_{i}: bring the obsolete checklist.",
+    metadata={"source": "Samar-College-2024.pdf", "page": i + 1, "chunk_id": f"old-{i}"},
+) for i in range(24)]
+new_admission = SimpleNamespace(
+    page_content="Enrollment CURRENT_ONLINE_FORM: submit the online application. Other steps are not specified.",
+    metadata={"source": "Samar_Colleges_Inc_Admission_Policy.docx", "page": 1,
+              "section": "Admission Policy", "chunk_id": "current-admission"},
+)
+new_registrar = SimpleNamespace(
+    page_content="Enrollment CURRENT_REGISTRAR_REVIEW: the registrar checks the submitted online form.",
+    metadata={"source": "REGISTRAR_Services__Information.docx", "page": 1,
+              "section": "Enrollment services", "chunk_id": "current-registrar"},
+)
+source_dates = {"samar-college-2024.pdf": {"effective_date": "2024-06-01"}}
+upload_dates = {
+    new_admission.metadata["source"]: "2026-11-13T02:39:28+00:00",
+    new_registrar.metadata["source"]: "2026-11-13T02:39:24+00:00",
+}
+catalog_reader = Mock(return_value=upload_dates)
+summary_spy = Mock(return_value="OLD_SUMMARY_REINTRODUCED")
+ranked_sizes = []
+
+
+def unchanged_ranking(query, docs, **kwargs):
+    ranked_sizes.append(kwargs["top_k"])
+    return list(docs)[:kwargs["top_k"]]
+
+
+history_with_old_facts = [{"role": "system", "content": "OLD_STORED_SUMMARY"}]
+for i in range(6):
+    history_with_old_facts.extend([
+        {"role": "user", "content": f"Earlier user question {i}"},
+        {"role": "assistant", "content": f"OLD_ASSISTANT_FACT_{i} [SOURCE:Samar-College-2024.pdf|p.1]"},
+    ])
+original_history = [dict(message) for message in history_with_old_facts]
+with patch.dict(namespace, {
+    "system_prompt": answer_prompts.system_prompt,
+    "retriever": SimpleNamespace(invoke=lambda query: [*old_pages, new_admission, new_registrar]),
+    "rerank": unchanged_ranking, "rerank_multi": unchanged_ranking,
+    "FINAL_TOP_K": 2, "get_doc_dates": lambda: source_dates,
+    "get_file_upload_dates": catalog_reader,
+    "source_priority": freshness.source_priority, "doc_key": freshness.doc_key,
+    "freshness_block": freshness.freshness_block,
+    "resolve_role": roles.resolve_role, "role_block": roles.role_block,
+    "summarize_history": summary_spy,
+    "datetime": SimpleNamespace(now=lambda: datetime(2026, 11, 14)),
+}):
+    for role in ("guest", "student", "faculty"):
+        result = node({"input": "What is the enrollment procedure?", "role": role,
+                       "chat_history": history_with_old_facts})
+        assembled = result["messages_to_llm"][0].content if result["messages_to_llm"] else ""
+        check(f"{role}: update outside the old top-K cutoff reaches the answer prompt",
+              "CURRENT_ONLINE_FORM" in assembled and "CURRENT_REGISTRAR_REVIEW" in assembled)
+        check(f"{role}: no handbook body or filename reaches the answer prompt",
+              "OLD_HANDBOOK_RULE" not in assembled and "Samar-College-2024.pdf" not in assembled)
+        check(f"{role}: only selected current sources become citations",
+              result["citations"] == ["current-admission", "current-registrar"])
+        check(f"{role}: old assistant facts and summaries cannot refill omitted details",
+              "OLD_ASSISTANT_FACT" not in assembled and "OLD_STORED_SUMMARY" not in assembled
+              and "OLD_SUMMARY_REINTRODUCED" not in assembled and not summary_spy.called)
+        check(f"{role}: user intent and stored conversation remain intact",
+              "Earlier user question 5" in assembled and result["chat_history"] == original_history
+              and history_with_old_facts == original_history)
+        check(f"{role}: current-source and no-old-program instructions are explicit",
+              SOURCE_SELECTION_GUIDANCE in assembled and "CURRENT CATALOG BOUNDARY" in assembled
+              and "ORPHANED PROGRAMS OVERRIDE" not in assembled and "BA Sociology" not in assembled)
+    check("the graph keeps the bounded candidate pool until source selection",
+          ranked_sizes and all(size == namespace["RERANK_CANDIDATES"] for size in ranked_sizes))
+    check("upload metadata is read once per answer, not once per document", catalog_reader.call_count == 3)
+
+    with patch.dict(namespace, {"retriever": SimpleNamespace(invoke=lambda query: [old_pages[0], new_admission])}):
+        historical = node({"input": "Compare the 2024 and 2026 enrollment procedures.", "role": "guest", "chat_history": []})
+        text = historical["messages_to_llm"][0].content if historical["messages_to_llm"] else ""
+        check("explicit version comparisons retain both requested source versions",
+              "OLD_HANDBOOK_RULE_0" in text and "CURRENT_ONLINE_FORM" in text
+              and historical["citations"] == ["old-0", "current-admission"])
+        check("historical comparisons do not receive a current-only source lock", SOURCE_SELECTION_GUIDANCE not in text)
+
+    unrelated = SimpleNamespace(
+        page_content="Latin honors requirements use the documented grade average.",
+        metadata={"source": "Honors-Notice.docx", "page": 1, "chunk_id": "honors-notice"},
+    )
+    with patch.dict(namespace, {
+        "retriever": SimpleNamespace(invoke=lambda query: [old_pages[0], unrelated]),
+        "get_file_upload_dates": lambda: {"Honors-Notice.docx": "2026-11-13T03:00:00Z"},
+    }):
+        fallback = node({"input": "What is the enrollment procedure?", "role": "guest", "chat_history": []})
+        text = fallback["messages_to_llm"][0].content if fallback["messages_to_llm"] else ""
+        check("an unrelated new upload leaves handbook fallback available", "OLD_HANDBOOK_RULE_0" in text)
+        check("an unrelated upload does not falsely claim current-source coverage", SOURCE_SELECTION_GUIDANCE not in text)
+
+    with patch.dict(namespace, {
+        "get_doc_dates": lambda: {**source_dates, new_admission.metadata["source"].lower(): {"effective_date": "2026-06-01"}},
+        "get_file_upload_dates": Mock(side_effect=RuntimeError("catalog unavailable")),
+    }):
+        fallback_dates = node({"input": "What is the enrollment procedure?", "role": "guest", "chat_history": []})
+        text = fallback_dates["messages_to_llm"][0].content if fallback_dates["messages_to_llm"] else ""
+        check("valid effective dates still enforce precedence if upload metadata is unavailable",
+              "CURRENT_ONLINE_FORM" in text and "OLD_HANDBOOK_RULE" not in text
+              and fallback_dates["citations"] == ["current-admission"])
 
 print(f"\n{'='*60}")
 print(f"  {_passed} passed, {_failed} failed")

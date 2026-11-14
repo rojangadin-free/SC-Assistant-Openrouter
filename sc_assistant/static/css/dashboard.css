@@ -196,8 +196,6 @@ body:has(#editUserModal.active, #reportDetailModal.active) #notification { z-ind
 #userListTable .file-action { width: 28px; height: 28px; font-size: 0.85rem; border-color: transparent; }
 #userListTable .file-action.edit-user { color: var(--sc-green); }
 #userListTable .file-action.edit-user:hover { background: var(--upload-bg); border-color: var(--upload-border); }
-#userListTable .file-action.delete-user { color: var(--error-color); }
-#userListTable .file-action.delete-user:hover { background: rgba(194, 38, 44, 0.12); border-color: rgba(194, 38, 44, 0.35); }
 
 /* Responsive adjustments */
 @media (max-width: 768px) {

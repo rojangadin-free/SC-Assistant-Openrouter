@@ -116,7 +116,7 @@
         <h3>Registered users</h3>
         <div class="sc-field user-search">
           <label class="sc-label" for="userSearch">Search users</label>
-          <input type="search" id="userSearch" class="sc-input" placeholder="Name, email, or username"
+          <input type="search" id="userSearch" class="sc-input" placeholder="Name, email, username, or student ID"
                  autocomplete="off" spellcheck="false" aria-describedby="userSearchStatus" aria-controls="userListTable" disabled>
           <p id="userSearchStatus" class="user-search-status" role="status" aria-live="polite">Loading users...</p>
         </div>
@@ -129,6 +129,7 @@
             <thead>
               <tr>
                 <th>Username</th>
+                <th>Student ID</th>
                 <th>Email</th>
                 <th>Status</th>
                 <th>Role</th>
@@ -493,8 +494,15 @@
           </div>
           
           <div class="form-group" style="margin-bottom: 1rem;">
-            <label for="editUserEmail" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Email (read-only)</label>
-            <input type="email" id="editUserEmail" name="email" class="form-input" style="width: 100%;" disabled>
+            <label for="editUserEmail" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Email</label>
+            <input type="email" id="editUserEmail" name="email" class="form-input" style="width: 100%;" maxlength="254" autocomplete="off" aria-describedby="editUserEmailHint" required>
+            <p id="editUserEmailHint" class="sc-lead--sm">Confirm the address before saving. Email changes take effect immediately for sign-in and password recovery.</p>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 1rem;">
+            <label for="editUserStudentId" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Student ID number</label>
+            <input type="text" id="editUserStudentId" name="student_id" class="form-input" style="width: 100%;" inputmode="numeric" pattern="[0-9]{1,64}" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="editUserStudentIdHint">
+            <p id="editUserStudentIdHint" class="sc-lead--sm">Digits only. Leave blank if not applicable.</p>
           </div>
 
           <div class="form-group" style="margin-bottom: 1.5rem;">

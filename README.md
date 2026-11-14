@@ -19,7 +19,7 @@ and each one has its own document under [`docs/`](docs/).
 | Problem, in practice | What was built | Doc |
 |---|---|---|
 | Two documents disagree — the handbook names one Dean of Education, a later page names another — and the model picks whichever chunk ranked higher, confidently | **Data Conflicts.** A CLI extracts facts and reports contradictions; an admin pins the correct value, which is injected into the prompt as authoritative | [DATA_CONFLICTS.md](docs/DATA_CONFLICTS.md) |
-| Old and new bulletins both retrieve; the model can't tell which is current | **Document Freshness.** Documents are dated, compared, and the newer source wins — checked *before* indexing | [DOCUMENT_FRESHNESS.md](docs/DOCUMENT_FRESHNESS.md) |
+| Old and new bulletins both retrieve and their answers get mixed | **Current-source selection.** Relevant current uploads form the answer context; the 2024 handbook is fallback rather than filler. Effective dates remain separate metadata | [DOCUMENT_FRESHNESS.md](docs/DOCUMENT_FRESHNESS.md) |
 | "I don't have that information" is a dead end for the student and invisible to staff | **Content Gaps.** Refusals are detected, grouped by topic, and listed on an admin dashboard as a to-do list | [CONTENT_GAPS.md](docs/CONTENT_GAPS.md) |
 | Students type Taglish and Waray; the corpus is English | **Language support.** Local terms are mapped to English search terms before retrieval | [LANGUAGE_SUPPORT.md](docs/LANGUAGE_SUPPORT.md) |
 | "when is enrollment" depends on today's date, which the model has no idea about | **Calendar awareness.** Admin-entered periods, real date arithmetic, deadlines | [ACADEMIC_CALENDAR.md](docs/ACADEMIC_CALENDAR.md) |
@@ -495,10 +495,33 @@ store table; in file mode, set `LOGIN_ACTIVITY_FILE` to a path on shared persist
 storage. Failed recording does not prevent a successful sign-in. Passwords, tokens,
 and IP addresses are not stored in these events.
 
+**Current-document precedence** is enforced before prompt/citation assembly. The
+answer path keeps the bounded reranked candidate pool until it selects sources,
+so a newer matching upload is not discarded merely because handbook chunks took
+the first context slots. Current uploads recorded in the `Files` catalog can take
+precedence over the 2024 handbook even without an effective-date record. An
+explicitly older/future effective date does not become current just because the
+file was uploaded recently. Upload dates are never relabelled as effective dates.
+
+When this rule selects current sources, handbook passages and unselected older
+sources are removed from the answer context and citation set. Earlier assistant
+answers and summaries are withheld from that answer's factual context without
+deleting the saved conversation. Missing details must be acknowledged rather
+than filled from an older handbook. Complementary current uploads stay together;
+their upload times, seconds apart, do not make one replace another. Explicit
+historical/version-comparison questions can still use the requested older version.
+
+Selection uses query/section/body matching, not a guarantee of complete semantic
+coverage. Unrelated, empty, title-only, contents-page, or reference-only candidates
+do not displace the handbook. If the new material never reaches the retrieval
+candidate pool, this stage cannot recover it. The runtime needs `dynamodb:Scan` on
+`Files` for upload chronology; on lookup failure only known effective dates can
+establish precedence. This change does not delete documents or require reindexing.
+
 Upload official academic calendars and notices through **Documents**. The manual
 Academic Calendar and Announcements panels and chat announcement banners are removed.
-Chat uses retrieved documents for these topics, with the existing effective-date
-priority rules; upload order alone does not establish priority.
+Chat uses retrieved documents for these topics, with the query-scoped source
+selection and effective-date rules above; upload order alone is not proof of an answer.
 
 Existing manual records and their legacy calendar/announcement APIs are preserved,
 but chat no longer reads those records or polls `/api/announcements`. Uploading a

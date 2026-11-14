@@ -47,6 +47,7 @@ _tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
 _tmp.write('{"docs": {}, "updated_at": ""}')
 _tmp.close()
 os.environ["DOC_FRESHNESS_FILE"] = _tmp.name
+os.environ["STORE_BACKEND"] = "file"
 
 
 from rag.freshness import (  # noqa: E402

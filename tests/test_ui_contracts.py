@@ -201,14 +201,37 @@ class UIContracts(unittest.TestCase):
         for ident in ("closeEditUserModal", "cancelEditUser"):
             self.assertEqual(dom.by_id(ident)[1]["type"], "button")
         self.assertEqual(dom.by_id("closeEditUserModal")[1]["aria-label"], "Close user editor")
-        self.assertIn("disabled", dom.by_id("editUserEmail")[1])
         self.assertEqual(dom.by_id("editUserCognitoUsername")[1]["name"], "cognito_username")
+
+    def test_user_editor_accepts_email_and_numeric_student_id(self):
+        html, dom = self.page("/dashboard")
+        email = dom.by_id("editUserEmail")[1]
+        self.assertEqual((email["type"], email["name"]), ("email", "email"))
+        self.assertIn("required", email)
+        student_id = dom.by_id("editUserStudentId")[1]
+        self.assertEqual((student_id["type"], student_id["name"]), ("text", "student_id"))
+        self.assertEqual(student_id["inputmode"], "numeric")
+        self.assertEqual(student_id["pattern"], "[0-9]{1,64}")
+        self.assertEqual(student_id["maxlength"], "64")
+        self.assertNotIn("required", student_id)
+        for attrs in (email, student_id):
+            self.assertNotIn("disabled", attrs)
+            self.assertNotIn("readonly", attrs)
+            self.assertIsNotNone(dom.by_id(attrs["aria-describedby"]))
+        self.assertIn("Email changes take effect immediately", html)
+
+    def test_user_management_no_longer_exposes_deletion(self):
+        script = Path("sc_assistant/static/js/dashboard.js").read_text(encoding="utf-8")
+        self.assertNotIn("delete-user", script)
+        self.assertNotIn("/api/dashboard/users/delete", script)
+        self.assertIn("/api/dashboard/users/update", script)
 
     def test_user_preview_supplies_the_editor_api_contract(self):
         response = app.test_client().get("/api/dashboard/users").get_json()
         self.assertTrue(response["success"])
         for user in response["users"]:
-            self.assertTrue({"id", "username", "email", "role", "status", "joined"} <= user.keys())
+            self.assertTrue({"id", "username", "email", "student_id", "role", "status", "joined"} <= user.keys())
+            self.assertIsInstance(user["student_id"], str)
             self.assertIn(user["role"], ("user", "admin"))
 
     def test_user_search_is_labeled_and_announces_results(self):
@@ -217,6 +240,7 @@ class UIContracts(unittest.TestCase):
         self.assertEqual(search["type"], "search")
         self.assertEqual(search["aria-controls"], "userListTable")
         self.assertEqual(search["aria-describedby"], "userSearchStatus")
+        self.assertIn("student ID", search["placeholder"])
         self.assertIn("disabled", search)
         self.assertTrue(any(tag == "label" and attrs.get("for") == "userSearch" for tag, attrs in dom.elements))
         self.assertEqual(dom.by_id("userSearchStatus")[1]["role"], "status")

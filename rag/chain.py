@@ -19,6 +19,8 @@ from src.prompt import system_prompt, response_language_prompt
 from rag.reranker import rerank, rerank_multi
 from rag.conflicts import authority_block
 from rag.freshness import freshness_block, source_priority, doc_key, get_doc_dates
+from rag.source_policy import SOURCE_SELECTION_GUIDANCE, select_documents
+from aws.dynamodb import get_file_upload_dates
 
 from rag.citations import build_citations
 
@@ -441,8 +443,9 @@ def retrieve_documents(
     """
     The single entry point for "given a query, give me the documents".
 
-    Kept separate from the LangGraph node so it can be exercised offline
-    (`probe_retrieval.py`) with exactly the same code path the app uses.
+    Returns ranked candidates. The graph applies current-source selection before
+    constructing the answer context and citations. Retrieval probes can inspect
+    the same candidate pool without invoking answer generation.
 
     Two query strings, deliberately
     -------------------------------
@@ -781,27 +784,12 @@ class ChatState(TypedDict):
 
 def docs_to_context(docs, dates=None) -> str:
     """
-    Flatten the selected documents into the prompt's context block, labelling
-    which of them supersedes the others.
+    Flatten selected documents, retaining source dates without declaring that
+    unrelated dated documents supersede one another.
 
-    The label is derived from recorded effective dates, not from a filename.
-    What used to be here was:
-
-        is_base = "samar-college-2024.pdf" in source.lower()
-        priority_tag = "" if is_base else " [NEW UPDATE - OVERRIDE BASE KNOWLEDGE]"
-
-    That reads as recency but the actual rule is "is not called
-    samar-college-2024.pdf". Every consequence follows from that mismatch: a
-    freshly uploaded scan of a 2019 memo was tagged as overriding current policy,
-    `Samar-College-update-2026.pdf` was ranked against a string literal rather
-    than against 2024's real date, and renaming the handbook inverted the base
-    case silently. It also fired on a single-document answer, telling the model
-    to override knowledge that nothing had contradicted.
-
-    `source_priority()` returns {} unless at least two cited sources have
-    DIFFERENT known dates, so the tag now appears only where there is a genuine
-    supersession to report — and when it does appear it names the date, so the
-    model is being given evidence rather than an instruction to trust.
+    These are recorded effective dates, not upload timestamps. Actual exclusion
+    is query-scoped and happens in select_documents before this serialization.
+    An earlier date alone does not invalidate an unrelated document's facts.
     """
     priority = source_priority(
         *{(getattr(d, "metadata", None) or {}).get("source", "") for d in docs},
@@ -828,12 +816,9 @@ def docs_to_context(docs, dates=None) -> str:
             # nothing truthful to say about precedence, so nothing is said.
             priority_tag = ""
         elif rank["is_newest"]:
-            priority_tag = f" [MOST RECENT SOURCE — effective {rank['date']}]"
+            priority_tag = f" [MOST RECENT DATED SOURCE — effective {rank['date']}]"
         else:
-            priority_tag = (
-                f" [SUPERSEDED — effective {rank['date']}; a newer source is "
-                f"also quoted below]"
-            )
+            priority_tag = f" [EARLIER EFFECTIVE DATE — effective {rank['date']}]"
 
         text   = (
             f"[DOCUMENT {i + 1}]{priority_tag}\n"
@@ -1035,7 +1020,7 @@ def create_graph():
                 timings.start("retrieval+rerank")
                 final_docs = [] if interpretation and interpretation.status == "clarify" else retrieve_documents(
                     standalone_query,
-                    top_k=FINAL_TOP_K,
+                    top_k=RERANK_CANDIDATES,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
                     user_question=user_text,
                     timings=timings,
@@ -1052,20 +1037,6 @@ def create_graph():
                     if future is not None:
                         future.cancel()
 
-            # Retrieval is done; everything from here to the answer call is
-            # prompt assembly: verified facts, document dates, and role guidance.
-            # The history summary below is another LLM call on a long
-            # conversation, so this is a real phase and not a rounding error.
-            emit_phase(
-                progress,
-                "preparing",
-                documents=len(final_docs),
-                sources=len({
-                    (getattr(d, "metadata", None) or {}).get("source", "")
-                    for d in final_docs
-                }),
-            )
-
             # Whatever the optimizer did or did not do, the search text used for
             # verified-fact matching below is what retrieval actually ran with.
             standalone_query = pick_search_query(user_text, standalone_query)
@@ -1073,11 +1044,28 @@ def create_graph():
 
             request_budget.remaining()
             dates = get_doc_dates()
+            uploads = {}
+            if final_docs:
+                request_budget.remaining()
+                try:
+                    uploads = get_file_upload_dates()
+                except Exception:  # Optional metadata must not hide otherwise usable dated sources.
+                    print("[chain] Upload chronology unavailable; using recorded source dates.")
+            selection = select_documents(
+                final_docs,
+                [user_text, standalone_query, *split_question(user_text), *language_variants(user_text)],
+                dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
+            )
+            final_docs = selection.documents
+            emit_phase(
+                progress, "preparing", documents=len(final_docs),
+                sources=len({(getattr(d, "metadata", None) or {}).get("source", "") for d in final_docs}),
+            )
             context_str = docs_to_context(final_docs, dates=dates)
 
 
             # === STEP 3: Handle Conversation Summary ===
-            if len(history) > 10:
+            if len(history) > 10 and not selection.restricted:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
                     summary = summary_future.result(timeout=request_budget.remaining(3))
@@ -1089,9 +1077,10 @@ def create_graph():
                     print(f"  History summarization failed (non-fatal): {e}")
                     history = history[-6:]
 
-            history_str = "\n".join(
-                [f"{m['role'].upper()}: {m['content']}" for m in history]
-            )
+            # Keep the stored conversation intact, but do not feed obsolete
+            # assistant facts or summaries back into a current-source answer.
+            prompt_history = [m for m in history if m.get("role") == "user"] if selection.restricted else history
+            history_str = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in prompt_history)
 
             # Admin-verified overrides for anything the corpus contradicts
             # itself about (e.g. two different deans for the same college).
@@ -1154,6 +1143,8 @@ def create_graph():
             final_system_prompt += interpretation_guidance(
                 interpretation, unavailable=wants_rewrite and interpretation is None,
             )
+            if selection.restricted:
+                final_system_prompt += "\n\n" + SOURCE_SELECTION_GUIDANCE
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.
             messages = [SystemMessage(content=f"{final_system_prompt}\n\n{response_language_prompt}")]
