@@ -1,5 +1,6 @@
 import boto3
 import mimetypes
+from contextlib import closing
 from botocore.exceptions import ClientError
 from botocore.client import Config
 from config import S3_BUCKET_NAME, AWS_REGION
@@ -82,3 +83,20 @@ def get_s3_presigned_url(object_name, for_download=False, expiration=3600):
     except Exception as e:
         print(f"Error generating presigned URL: {e}")
         return None
+
+
+def read_s3_file(object_name, max_bytes):
+    """Read a bounded original from our private bucket, without a public URL."""
+    try:
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=object_name)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "NotFound", "404"):
+            raise FileNotFoundError(object_name) from exc
+        raise
+    with closing(response["Body"]) as body:
+        if response.get("ContentLength", 0) > max_bytes:
+            raise OverflowError("Document exceeds the preview size limit")
+        data = body.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise OverflowError("Document exceeds the preview size limit")
+        return data

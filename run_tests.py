@@ -83,6 +83,7 @@ SUITES = [
     ("Current document source policy",  "test_source_policy.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
+    ("Citation passage navigation",     "test_citation_navigation.py"),
     ("Calendar awareness (dates)",      "test_calendar.py"),
     ("Announcements (live window)",     "test_announcements.py"),
     ("Taglish/Waray query expansion",   "test_language.py"),
@@ -110,6 +111,7 @@ SUITES = [
     # the parsing.
     ("Document precedence (newest wins)", "test_doc_priority.py"),
     ("DOCX ingestion and upload safety", "test_docx_ingestion.py"),
+    ("DOCX browser previews and downloads", "test_document_preview.py"),
     ("Catalog context and PDF fallbacks", "test_catalog_ingestion.py"),
 
 

@@ -167,9 +167,10 @@ $(document).ready(function() {
     const placeholders = [];
     const uniqueSources = []; 
 
-    function makeBadge(filename, rawPage, precedingText) {
-      const cleanPage = (rawPage || '').replace(/\.0$/, '').trim();
+    function makeBadge(filename, rawPage, precedingText, passage = '') {
       const file = filename.trim();
+      const isDocx = file.toLowerCase().endsWith('.docx');
+      const cleanPage = isDocx ? '' : (rawPage || '').replace(/\.0$/, '').trim();
       
       let sourceIndex = uniqueSources.indexOf(file);
       if (sourceIndex === -1) {
@@ -178,9 +179,15 @@ $(document).ready(function() {
       }
       const citationNumber = sourceIndex + 1;
       const displayText = `[${citationNumber}]`;
-      const titleText = cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`;
+      const titleText = isDocx && passage ? `Go to cited passage in ${file}` :
+        (cleanPage ? `Click to view ${file}, page ${cleanPage}` : `Click to view ${file}`);
       
       let url = `/chat/document/${encodeURIComponent(file)}`;
+
+      if (isDocx) {
+        // Fragments stay in the browser, so excerpts are not sent to server logs.
+        url += passage ? '#' + new URLSearchParams({quote: passage}).toString() : '#citation=unavailable';
+      }
       
       if (cleanPage && file.toLowerCase().endsWith('.pdf')) {
         let bestWord = "";
@@ -205,9 +212,9 @@ $(document).ready(function() {
       }
       
       const badge = (
-        `<a href="${url}" target="_blank" ` +
-        `data-source="${file}" ` +
-        `title="${titleText}" ` +
+        `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" ` +
+        `data-source="${escapeHtml(file)}" ` +
+        `title="${escapeHtml(titleText)}" ` +
         `style="background: transparent; border: none; padding: 0 2px; font-size: 0.85em; cursor: pointer; white-space: nowrap; text-decoration: none; color: #007bff; font-weight: bold;">` +
         `<sup>${displayText}</sup>` +
         `</a>`
@@ -219,9 +226,20 @@ $(document).ready(function() {
     }
 
     const withPlaceholders = rawText.replace(
-      /\[SOURCE:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\s*\]/gi,
+      /\[SOURCE:\s*([^\]|]+?)(?:\s*\|\s*([^\]]*))?\s*\]/gi,
       function(match, filename, rawPageStr, offset, fullString) {
         const precedingText = fullString.slice(0, offset);
+
+        if (filename.trim().toLowerCase().endsWith('.docx')) {
+          const quote = (rawPageStr || '').match(/^quote:\s*([\s\S]*)$/i);
+          const excerpt = quote ? quote[1].trim() : '';
+          const passage = excerpt.length >= 8 && excerpt.length <= 300 ? excerpt : '';
+          return makeBadge(filename, '', precedingText, passage);
+        }
+
+        if (/^quote:/i.test(rawPageStr || '')) {
+          return makeBadge(filename, '', precedingText);
+        }
 
         if (!rawPageStr || !rawPageStr.trim()) {
           return makeBadge(filename, '', precedingText);

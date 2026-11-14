@@ -1,0 +1,74 @@
+{% from "partials/brand.html" import college_brand %}
+{% macro render_blocks(blocks) -%}
+  {% for block in blocks %}
+    {% if block.kind == 'heading' %}
+      <h{{ block.level }}>{{ block.text }}</h{{ block.level }}>
+    {% elif block.kind == 'paragraph' %}
+      <p>{{ block.text }}</p>
+    {% elif block.kind == 'list' %}
+      {% set tag = 'ol' if block.ordered else 'ul' %}
+      <{{ tag }}>{% for text in block['items'] %}<li>{{ text }}</li>{% endfor %}</{{ tag }}>
+    {% elif block.kind == 'table' %}
+      <div class="preview-table" tabindex="0" role="region" aria-label="Scrollable document table">
+        <table>
+          <caption class="preview-table-caption">Document table</caption>
+          <tbody>
+            {% for row in block.rows %}
+              <tr>{% for cell in row %}<td colspan="{{ cell.colspan }}">{{ render_blocks(cell.blocks) }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  {% endfor %}
+{%- endmacro %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ filename }} - Document preview - Samar College Assistant</title>
+  <link rel="icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+  <script src="{{ url_for('static', filename='js/document-preview.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui.utilities.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/polish.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/console.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/document-preview.css') }}">
+</head>
+<body class="document-preview">
+  <a class="skip-link" href="#document-content">Skip to document</a>
+  <header class="preview-bar">
+    <div class="preview-bar-inner ui:flex ui:flex-wrap ui:items-center ui:justify-between ui:gap-4">
+      {{ college_brand() }}
+      {% if download_url %}
+        <a class="preview-download" href="{{ download_url }}">Download original</a>
+      {% endif %}
+    </div>
+  </header>
+  <main class="preview-main" id="document-content" tabindex="-1">
+    <div class="preview-intro">
+      <p class="preview-label">Word document / Text preview</p>
+      <h1>{{ filename }}</h1>
+      <p class="preview-note">A simplified view of the document's text and tables. For exact formatting, images and other embedded content, download the original.</p>
+      <p class="preview-location" id="citation-location" role="status" hidden></p>
+    </div>
+    {% if error %}
+      <section class="preview-paper preview-state" aria-labelledby="preview-state-title">
+        <h2 id="preview-state-title">Preview unavailable</h2>
+        <p>{{ error }}</p>
+      </section>
+    {% elif blocks %}
+      <article class="preview-paper preview-content" aria-label="Document text">
+        {{ render_blocks(blocks) }}
+      </article>
+    {% else %}
+      <section class="preview-paper preview-state" aria-labelledby="preview-state-title">
+        <h2 id="preview-state-title">No text to preview</h2>
+        <p>This document may contain only images or embedded content. Download the original to view it.</p>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>

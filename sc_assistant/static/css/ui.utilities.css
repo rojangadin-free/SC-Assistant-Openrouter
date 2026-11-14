@@ -1,2 +1,2 @@
 /*! tailwindcss v4.3.4 | MIT License | https://tailwindcss.com */
-@layer theme{:root,:host{--ui-spacing:.25rem}}@layer utilities{.ui\:grid{display:grid}.ui\:gap-2{gap:calc(var(--ui-spacing) * 2)}}
+@layer theme{:root,:host{--ui-spacing:.25rem}}@layer utilities{.ui\:flex{display:flex}.ui\:grid{display:grid}.ui\:flex-wrap{flex-wrap:wrap}.ui\:items-center{align-items:center}.ui\:justify-between{justify-content:space-between}.ui\:gap-2{gap:calc(var(--ui-spacing) * 2)}.ui\:gap-4{gap:calc(var(--ui-spacing) * 4)}}

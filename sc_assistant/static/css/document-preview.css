@@ -1,0 +1,105 @@
+/* A readable document surface using the existing college portal tokens. */
+body.document-preview {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  overflow: auto;
+  font-size: 1rem;
+}
+
+.preview-bar {
+  background: var(--con-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 18px 24px;
+}
+.preview-bar-inner { max-width: 1040px; margin-inline: auto; }
+.preview-bar .college-brand { min-height: 44px; }
+.preview-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 18px;
+  border: 1px solid var(--con-nav-ink);
+  border-radius: var(--con-r-ctl);
+  background: var(--con-nav-ink);
+  color: var(--con-surface);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.preview-download:hover { text-decoration: underline; text-underline-offset: 3px; }
+.preview-download:focus-visible,
+.preview-table:focus-visible { outline: 2px solid var(--con-nav-ink); outline-offset: 4px; }
+
+.preview-main { max-width: 944px; margin-inline: auto; padding: 32px 24px 64px; }
+.preview-intro { margin-bottom: 24px; }
+.preview-label { margin-bottom: 8px; color: var(--con-nav-ink); font-size: 0.8125rem; font-weight: 600; }
+.preview-intro h1 { font-size: 1.5rem; line-height: 1.4; overflow-wrap: anywhere; }
+.preview-note { max-width: 72ch; margin-top: 12px; color: var(--text-secondary); font-size: 0.875rem; }
+.preview-location {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-left: 3px solid var(--con-nav-ink);
+  background: var(--con-tint);
+  font-size: 0.875rem;
+}
+.citation-highlight {
+  background: var(--sc-yellow-light);
+  color: var(--text-primary);
+  outline: 1px solid var(--sc-yellow);
+  border-radius: 2px;
+  scroll-margin: 80px;
+}
+.citation-highlight:focus { outline: 2px solid var(--con-nav-ink); outline-offset: 2px; }
+.preview-paper {
+  padding: 40px 48px;
+  background: var(--con-surface);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--con-nav-ink);
+  border-radius: 0 0 var(--con-r-card) var(--con-r-card);
+  box-shadow: var(--con-shadow);
+  overflow-wrap: anywhere;
+}
+.preview-content p, .preview-content li { white-space: pre-wrap; line-height: 1.75; }
+.preview-content p + p { margin-top: 12px; }
+.preview-content h2, .preview-content h3,
+.preview-content h4, .preview-content h5, .preview-content h6 {
+  margin: 28px 0 12px;
+  color: var(--text-primary);
+}
+.preview-content h2 { font-family: var(--font-display); font-size: 1.625rem; }
+.preview-content h3 { font-size: 1.1875rem; }
+.preview-content > :first-child, .preview-content td > :first-child { margin-top: 0; }
+.preview-content ul, .preview-content ol { padding-left: 1.5em; margin: 16px 0; }
+.preview-content li + li { margin-top: 6px; }
+.preview-table { max-width: 100%; overflow-x: auto; margin: 24px 0; border: 1px solid var(--border); }
+.preview-table table { min-width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+.preview-table td { min-width: 8rem; padding: 12px 16px; border: 1px solid var(--border); vertical-align: top; }
+.preview-table td:first-child { border-left: 0; }
+.preview-table td:last-child { border-right: 0; }
+.preview-table tr:first-child > td { border-top: 0; }
+.preview-table tr:last-child > td { border-bottom: 0; }
+.preview-table-caption { padding: 6px 16px; text-align: left; color: var(--text-secondary); background: var(--con-tint); font-size: 0.75rem; }
+.preview-state h2 { margin-bottom: 12px; font-size: 1.25rem; }
+.preview-state p { color: var(--text-secondary); }
+
+@media (max-width: 600px) {
+  .preview-bar { padding: 16px; }
+  .preview-main { padding: 24px 16px 40px; }
+  .preview-paper { padding: 24px 20px; }
+  .preview-intro h1 { font-size: 1.25rem; }
+}
+@media (max-width: 480px) {
+  .preview-download { width: 100%; }
+}
+@media print {
+  body.document-preview { background: white; color: black; }
+  .preview-bar, .skip-link { display: none; }
+  .preview-main, .preview-paper { max-width: none; padding: 0; }
+  .preview-paper { border: 0; box-shadow: none; background: white; color: black; }
+  .preview-paper h2, .preview-paper h3, .preview-paper h4,
+  .preview-paper h5, .preview-paper h6 { color: black; }
+  .preview-table { overflow: visible; break-inside: avoid; }
+  .preview-table-caption { color: black; }
+}

@@ -1,6 +1,6 @@
 from flask import (
     Blueprint, render_template, jsonify, request, send_from_directory, session, redirect, url_for,
-    Response, stream_with_context
+    Response, stream_with_context, current_app, make_response, abort
 )
 import json
 import datetime
@@ -10,13 +10,14 @@ import uuid
 import os
 import queue
 import concurrent.futures
+from pathlib import Path
 from PIL import Image
 from werkzeug.exceptions import HTTPException
 from rag.chain import app_graph, stream_answer
 from rag.chat_runtime import chat_runtime, ConcurrentTurnError
 from rag.runtime import CapacityError, RequestBudget, answer_pool, preparation_pool, env_int
 
-from aws.s3 import get_s3_presigned_url
+from aws.s3 import get_s3_presigned_url, read_s3_file
 from aws.dynamodb import (
     upsert_conversation, list_conversations,
     get_conversation, delete_conversation_from_db,
@@ -39,6 +40,7 @@ from rag.escalation import (
 )
 
 from .utils import get_session_id, is_admin, json_safe_sets
+from .document_preview import MAX_DOCX_BYTES, build_docx_preview
 from src.helper import encode_image
 
 
@@ -811,24 +813,59 @@ def read_escalation_reply(esc_id):
 
 @bp.route('/document/<filename>')
 def serve_document(filename):
+    if (filename in (".", "..") or any(char in filename for char in ("/", "\\", ":"))
+            or any(ord(char) < 32 or ord(char) == 127 for char in filename)):
+        abort(404)
+    data_dir = (Path(__file__).resolve().parent.parent / "data").resolve()
+    local_path = (data_dir / filename).resolve()
+    if local_path.parent != data_dir:
+        abort(404)
+    download = request.args.get("download") == "1"
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, '..', 'data')
-    local_path = os.path.join(data_dir, filename)
-    
-    # 1. Check if the file exists locally (e.g., initial seed documents)
-    if os.path.exists(local_path):
-        return send_from_directory(data_dir, filename)
-        
-    # 2. If not found locally, fetch the presigned URL from S3
+    if filename.lower().endswith(".docx") and not download:
+        # Chat sessions include guests; no account or admin role is required.
+        if not session.get("user"):
+            return redirect(url_for("auth.auth_page"))
+        blocks, error, status = [], None, 200
+        try:
+            if local_path.is_file():
+                with local_path.open("rb") as source:
+                    data = source.read(MAX_DOCX_BYTES + 1)
+            else:
+                data = read_s3_file(filename, MAX_DOCX_BYTES)
+            blocks = build_docx_preview(data)
+        except FileNotFoundError:
+            error, status = "This document is no longer available.", 404
+        except OverflowError:
+            error, status = "This document is too large for a browser preview. Download the original to read it.", 413
+        except ValueError:
+            error, status = "This document could not be previewed. Download the original to open it in Word.", 422
+        except Exception as exc:
+            current_app.logger.warning("Document preview unavailable: %s", type(exc).__name__)
+            error, status = "The document could not be loaded. Try again later, or download the original.", 503
+        response = make_response(render_template(
+            "document_preview.html", filename=filename, blocks=blocks, error=error,
+            download_url=url_for("chat.serve_document", filename=filename, download=1)
+            if status != 404 else None,
+        ), status)
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
+            "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        )
+        return response
+
+    # PDFs retain their native browser viewer; downloads always return originals.
+    if local_path.is_file():
+        return send_from_directory(data_dir, filename, as_attachment=download)
     try:
-        s3_url = get_s3_presigned_url(filename, for_download=False)
+        s3_url = get_s3_presigned_url(filename, for_download=download)
         if s3_url:
             return redirect(s3_url)
     except Exception as e:
         print(f"Error fetching {filename} from S3: {e}")
-        
-    # 3. If neither worked, return a 404
     return "Document not found", 404
 
 

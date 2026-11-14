@@ -217,6 +217,8 @@ def delete_file(filename):
 @bp.route("/api/files/view-url/<filename>")
 def get_view_url(filename):
     if not session.get("user"): return jsonify({"success": False, "message": "Unauthorized"}), 403
+    if filename.lower().endswith(".docx"):
+        return jsonify({"success": True, "url": url_for("chat.serve_document", filename=filename)})
     try:
         url = get_s3_presigned_url(filename, for_download=False)
         if url: return jsonify({"success": True, "url": url})
