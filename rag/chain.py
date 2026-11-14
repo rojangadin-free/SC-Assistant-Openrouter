@@ -904,7 +904,7 @@ def create_graph():
                     print(f"Image analysis failed (non-fatal): {e}")
                     return None
 
-            # 🚀 PARALLEL TASK 2: DynamoDB Student Record Fetch
+            # PARALLEL TASK 2: Account-linked student record fetch
             def task_student_fetch():
                 if not uid: return ""
                 try:
@@ -917,10 +917,15 @@ def create_graph():
                         # If user disabled data consent, provide ONLY basic academic context for personalization
                         if state.get("data_consent") is False:
                             print("  Data consent disabled. Providing basic profile only.")
+                            record_note = (
+                                "SYNTHETIC DEMO DATA: this sample name is not proof of enrollment or identity. "
+                                if student.get("is_demo") is True else
+                                "The user has account so he/she is a continuing student already but no further details are available due to privacy settings. "
+                            )
                             return (
                                 "System Note: The user has explicitly opted out of sharing their personal student data. "
-                                "Do not provide specific grades, balances, or schedules."
-                                "The user has account so he/she is a continuing student already but no further details are available due to privacy settings. "
+                                "Do not provide specific grades, balances, or schedules. "
+                                f"{record_note}"
                                 f"Name: {student.get('full_name')}, "
                             )
                         

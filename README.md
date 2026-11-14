@@ -406,6 +406,8 @@ Data-quality and retrieval-debugging scripts. All are run from the repo root.
 | `make_pwa_icons.py` | Regenerates the installed-app icons from the school logo |
 | `create_stores_table.py` | Creates the DynamoDB table behind `rag/store.py` and copies local JSON in |
 | `create_reports_table.py` | Creates the DynamoDB table for reports |
+| `create_dummy_students.py` | Creates a separate, synthetic-only SQLite student database; never calls AWS |
+| `deploy_student_database.py` | Exports a consistent snapshot and provisions it over SSH/SCP without replacing host data |
 | `seed_students.py`, `link_students.py`, `student_debug.py` | Dummy student records and Cognito accounts, for development |
 
 A useful pairing before shipping new PDFs:
@@ -413,6 +415,135 @@ A useful pairing before shipping new PDFs:
 ```bash
 python tools/check_data_conflicts.py && python store_index.py
 ```
+
+---
+
+## Dummy Student Database
+
+Generate an independent SQLite roster containing **2,900,001** synthetic students,
+with student numbers **100000 through 3000000 inclusive**:
+
+```bash
+python tools/create_dummy_students.py --db dummy_students.sqlite3
+```
+
+This standalone script uses only Python's standard library. It creates profiles,
+sample enrollments, grades, and coherent tuition/payment balances, not Cognito
+accounts. Inserts are batched; it never creates millions of rows during app startup.
+Subject codes, names, and units come from the six BSIT term lists in
+`tools/seed_students.py`, preserved exactly in `rag/student_subjects.py`. The seed
+provides years 1-3 only, so generated enrollments use those BSIT terms rather than
+inventing fourth-year or other-program curricula. Repeated subjects across terms
+are retained. This is seed data, not independently verified current curriculum;
+student identities, grades, schedules, fees, and enrollment assignments stay synthetic.
+Existing files are not overwritten. Use `--resume` only to continue a matching
+interrupted generation, or `--start-id 100000 --end-id 100009` for a ten-row test.
+An incomplete or incompatible database cannot serve student records.
+
+To upgrade an existing three-subject placeholder database without regenerating it:
+
+```bash
+python tools/create_dummy_students.py --db dummy_students.sqlite3 --update-subjects
+```
+
+The upgrade creates a separate SQLite backup before an atomic in-place migration.
+Student numbers, account bindings, stored grade values, payments, and balances are
+preserved. BSIT program/term assignments and the shared catalog are updated;
+weighted GPA and the per-subject breakdown reflect the new subjects. The upgrade
+does not import or execute the AWS seeder. Restart the app after upgrading.
+
+Opt in when starting the application; existing DynamoDB student records remain the
+default and are not modified:
+
+```text
+STUDENT_RECORDS_BACKEND=sqlite_demo
+DUMMY_STUDENT_DB_PATH=/absolute/persistent/path/dummy_students.sqlite3
+```
+
+After email verification, the app links the account's current stored student ID
+to its matching dummy record. Verified sign-in retries any missing link, including
+for accounts created before this feature. Links use Cognito pool + immutable
+account UID, not the text entered on the login page. A record can belong to only
+one account; duplicate claims cannot steal it, and editing a profile ID does not
+move an existing binding. Leading-zero aliases are not collapsed into other IDs.
+
+An out-of-range, missing, or already-claimed ID does not prevent account creation
+or email/username sign-in, but grants no new record. In demo mode, lookup misses
+and database failures never fall back to real records by email. Consent still
+controls personal-record context, and answers based on generated records must be
+labeled as demo data. A typed ID is not proof of ownership of real academic data;
+connecting a real registrar database requires a trusted verification process.
+
+The database and SQLite sidecars are ignored by Git and Docker. The deployment
+workflow mounts `/var/lib/sc-assistant` and enables the SQLite backend after
+validating its database. Bootstrap that host once using the SSH procedure below.
+Preserve the database and its journal/WAL files together when backing up active
+storage. Do not put it under `static/`, upload it as a knowledge document, or bake
+it into an image. Separate hosts require a shared database service, not independent
+copies of this SQLite file. The generator does not change `.env` or deploy settings.
+
+### Automated SSH Provisioning
+
+Prerequisites: the Linux deployment host has Python 3.10 or later, verified SSH
+host keys, and an operator allowed to run `sudo -n` for the installer. The current
+Docker image runs as root, so deployed storage is root-owned with directory mode
+`0700` and database mode `0600`. Existing ownership/permissions are validated,
+not recursively changed. The workflow refuses a non-root image until an appropriate
+ownership policy is configured. Deployment must use the same self-hosted machine
+that holds the database; pin a runner label if multiple eligible hosts exist.
+
+From this repository on Windows, run the following with your actual connection
+details and the **same Cognito pool used by the deployment**:
+
+```powershell
+python tools/deploy_student_database.py transfer `
+  --host ubuntu@YOUR_EC2_HOST `
+  --identity-file "C:\keys\your-ec2.pem" `
+  --pool-id YOUR_COGNITO_USER_POOL_ID
+```
+
+An existing SSH-config alias/agent can replace `--identity-file`. Optional options
+include `--port` and `--remote-python`; use `--no-sudo` only for an SSH session
+already running as root. Unknown host keys and password prompts are not bypassed:
+verify the server fingerprint with your normal SSH client first.
+The default source is this repository's `dummy_students.sqlite3`; provide
+`--source` if the active database is elsewhere. The helper does not load `.env`.
+
+The script ships a small, standard-library-only installer bundle, creates private
+staging, and checks the remote destination first. A valid existing database wins:
+its account links are preserved and no local database is exported or uploaded.
+When the destination is absent, it pins a read transaction on the current local
+`dummy_students.sqlite3`, exports via SQLite's backup API (including committed
+WAL data), and sends a self-contained snapshot over SCP. The host verifies the
+checksum, size, current schema, complete ID range, and Cognito pool before atomic
+no-replace publication at `/var/lib/sc-assistant/dummy_students.sqlite3`. The
+installed file uses WAL, with its whole writable directory mounted by Docker.
+Only invocation-owned temporary files are cleaned up. No AWS calls, credentials,
+`.env`, or database files are bundled with the installer code.
+
+This is a point-in-time cutover, not replication. Pause local registration/writes
+during cutover, then use the host database as the authority. Later local claims
+are not merged into an existing host database. Do not regenerate or restore the
+host database to refresh subjects; use the explicit catalog migration instead.
+
+The workflow pulls and checks the new image and validates the database **before**
+stopping the serving container. Missing/invalid/incompatible data fails deployment
+with the old app left running. It replaces only `rag-app-container`; host-wide
+container deletion and volume/network pruning have been removed. First bootstrap
+must finish before deploying the new workflow. Remote Python/root permissions
+and SSH keys are operator configuration, not credentials stored in GitHub Actions.
+
+For a separate local export, without SSH:
+
+```bash
+python tools/deploy_student_database.py export --source dummy_students.sqlite3 --output current-snapshot.sqlite3 --pool-id YOUR_COGNITO_USER_POOL_ID
+```
+
+The export file must not already exist. Never use the old pre-migration backup as
+a current snapshot, copy a live WAL database with plain file-copy commands, or
+publish snapshots as public build artifacts. Provisioning never creates accounts,
+reseeds an existing database, upgrades it implicitly, or transfers ownership of a
+claimed record.
 
 ---
 

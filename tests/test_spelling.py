@@ -957,6 +957,26 @@ with patch.object(reranker, "_load_model", return_value=None), patch.object(
                       and "PRIVATE_SCHEDULE_0830" not in assembled
                       and not student_formatter.called)
 
+        demo_record = {"full_name": "Demo Student 100000", "is_demo": True}
+        uid_lookup.return_value = demo_record
+        email_lookup.reset_mock()
+        student_formatter.reset_mock()
+        student_formatter.return_value = "SYNTHETIC DEMO DATA: not proof of enrollment.\nDemo Student 100000\nDEMO_PRIVATE_GRADE_125"
+        for consent in (True, False):
+            student_formatter.reset_mock()
+            result = node({
+                "input": "What are my grades?", "chat_history": [], "role": "student",
+                "uid": "demo-account-uid", "user_email": "demo@example.invalid", "data_consent": consent,
+            })
+            assembled = result["messages_to_llm"][0].content
+            check(f"demo consent={consent}: synthetic provenance is retained",
+                  "SYNTHETIC DEMO DATA" in assembled and "Demo Student 100000" in assembled
+                  and "not proof of enrollment" in assembled)
+            check(f"demo consent={consent}: only consented grades reach the model",
+                  ("DEMO_PRIVATE_GRADE_125" in assembled) == consent
+                  and student_formatter.call_count == int(consent)
+                  and not email_lookup.called)
+
         for name, provider in manual_providers.items():
             check(f"{name} is never consulted during prompt assembly", not provider.called)
 

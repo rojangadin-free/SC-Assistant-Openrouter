@@ -289,7 +289,9 @@ def create_test_app(cognito=None, clock=None):
     namespace.update(bp=bp, render_template=render_template, jsonify=jsonify, request=request,
                      session=session, redirect=redirect, url_for=url_for, time=clock or time, secrets=secrets,
                      is_admin=lambda: session.get("role") == "admin", reset_flows=reset_store,
-                     ResetFlowError=ResetFlowError, record_login=record_login)
+                      ResetFlowError=ResetFlowError, record_login=record_login,
+                      dummy_students_enabled=lambda: False,
+                      link_dummy_student_record=lambda *args, **kwargs: "disabled")
     tree = ast.parse((ROOT / "sc_assistant/auth.py").read_text(encoding="utf-8"))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "sc_assistant/auth.py", "exec"), namespace)  # noqa: S102

@@ -98,6 +98,8 @@ _fake_students = types.ModuleType("aws.students")
 _fake_students.get_student_by_uid = lambda *a, **k: None
 _fake_students.get_student_by_email = lambda *a, **k: None
 _fake_students.format_student_context = lambda *a, **k: ""
+_fake_students.dummy_students_enabled = lambda: False
+_fake_students.link_dummy_student_record = lambda *a, **k: "disabled"
 _fake_students.list_students = lambda *a, **k: []
 sys.modules["aws.students"] = _fake_students
 

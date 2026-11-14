@@ -27,6 +27,7 @@ from aws.cognito import (
     sign_up_user,
     signup_mutation_lock,
 )
+from aws.students import dummy_students_enabled, link_dummy_student_record
 from config import COGNITO_USER_POOL_ID
 from rag.login_activity import record_login
 
@@ -41,6 +42,27 @@ bp = Blueprint('auth', __name__)
 def prevent_auth_caching(response):
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _link_verified_dummy_student(username, *, expected_email, expected_uid=None):
+    """Claim synthetic data only from the verified account's current attributes."""
+    try:
+        if not dummy_students_enabled():
+            return "disabled"
+        if not username or not expected_email:
+            return "unverified"
+        account = cognito_client.admin_get_user(UserPoolId=COGNITO_USER_POOL_ID, Username=username)
+        attrs = {attr["Name"]: attr["Value"] for attr in account.get("UserAttributes", [])}
+        uid = attrs.get("sub")
+        if (account.get("UserStatus") != "CONFIRMED" or not uid
+                or attrs.get("email_verified") not in (True, "true")
+                or attrs.get("email", "").strip().lower() != expected_email.strip().lower()
+                or (expected_uid is not None and uid != expected_uid)):
+            return "unverified"
+        return link_dummy_student_record(COGNITO_USER_POOL_ID, uid, attrs.get("custom:student_id"))
+    except Exception:  # noqa: BLE001 - a demo-database outage must not undo account verification or login
+        print("[auth] Dummy student record linking is unavailable.")
+        return "unavailable"
 
 
 def _signup_csrf_token():
@@ -135,6 +157,7 @@ def signup():
                         "delivery_pending": bool(result.get("delivery_pending")),
                         "message": result.get("message", "Check your email for your verification code.")})
     session.pop("pending_signup", None)
+    _link_verified_dummy_student(username, expected_email=email)
     return jsonify({"success": True, "requires_confirmation": False,
                     "message": "Account created. Please sign in.", "redirect": url_for("auth.auth_page")})
 
@@ -165,6 +188,7 @@ def confirm_signup():
     except Exception as error:  # noqa: BLE001 - agreement persistence must not undo email verification
         # The agreement was already accepted; the existing login default is true.
         print(f"[auth] Agreement preference could not be saved ({type(error).__name__}).")
+    _link_verified_dummy_student(pending["username"], expected_email=pending["email"])
     session.pop("pending_signup", None)
     return jsonify({**result, "redirect": url_for("auth.auth_page")})
 
@@ -230,6 +254,11 @@ def login():
             return jsonify({"success": False, "message": "Sign-in could not read your account email. Please contact the school administrator."}), 503
         if claims.get("email_verified") not in (True, "true"):
             return jsonify({"success": False, "message": "Verify your email before signing in. Contact the school administrator if your account is already confirmed."}), 403
+
+        # Retry links for verified older accounts and interrupted confirmations.
+        # Neither the typed login identifier nor a mutable profile ID is a UID.
+        _link_verified_dummy_student(claims.get("cognito:username") or claims["sub"],
+                                     expected_email=email, expected_uid=claims["sub"])
         
         session.clear()
         session.update({

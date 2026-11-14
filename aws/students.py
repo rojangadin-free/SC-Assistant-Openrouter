@@ -1,11 +1,37 @@
+import os
+
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from aws.dynamodb_access import ThreadLocalTable
+from rag.dummy_students import DummyStudentDatabase
 
 students_table = ThreadLocalTable("StudentRecords")
 
 
+def dummy_students_enabled():
+    backend = os.getenv("STUDENT_RECORDS_BACKEND", "dynamodb").strip().lower()
+    if backend not in ("dynamodb", "sqlite_demo"):
+        raise ValueError("STUDENT_RECORDS_BACKEND must be dynamodb or sqlite_demo.")
+    return backend == "sqlite_demo"
+
+
+def _dummy_database():
+    path = os.getenv("DUMMY_STUDENT_DB_PATH", "").strip()
+    if not path:
+        raise RuntimeError("Set DUMMY_STUDENT_DB_PATH to a generated dummy student database.")
+    return DummyStudentDatabase(path)
+
+
+def link_dummy_student_record(pool_id, uid, student_number):
+    if not dummy_students_enabled():
+        return "disabled"
+    return _dummy_database().link_account(pool_id, uid, student_number)
+
+
 def get_student_by_uid(uid):
+    if dummy_students_enabled():
+        pool_id = os.getenv("COGNITO_USER_POOL_ID", "")
+        return _dummy_database().get_by_uid(pool_id, uid)
     try:
         resp = students_table.get_item(Key={"student_id": uid})
         return resp.get("Item")
@@ -15,6 +41,9 @@ def get_student_by_uid(uid):
 
 
 def get_student_by_email(email):
+    # Demo mode must never expose real records through the legacy email fallback.
+    if dummy_students_enabled():
+        return None
     try:
         resp = students_table.query(
             IndexName="email-index",
@@ -33,6 +62,8 @@ def get_student_by_email(email):
 
 
 def upsert_student(record):
+    if dummy_students_enabled():
+        raise RuntimeError("Dummy roster rows are read-only in the application.")
     try:
         students_table.put_item(Item=record)
         return True
@@ -42,6 +73,8 @@ def upsert_student(record):
 
 
 def list_all_students():
+    if dummy_students_enabled():
+        raise RuntimeError("Bulk listing of the dummy student database is not supported.")
     try:
         resp = students_table.scan()
         return resp.get("Items", [])
@@ -61,7 +94,20 @@ def format_student_context(student):
     if not student:
         return ""
     try:
-        L = []
+        L = ["<student_record>"]
+        if student.get("is_demo") is True:
+            L += [
+                "SYNTHETIC DEMO DATA - NOT OFFICIAL STUDENT RECORDS",
+                "Student identities, enrollment assignments, grades, schedules and balances are generated for testing only.",
+                "Clearly label generated student-specific results as demo data. They are not proof of enrollment or identity.",
+                "",
+            ]
+            if student.get("subject_catalog_source") == "tools/seed_students.py":
+                L += [
+                    "Subject codes, names and units are copied exactly from the BSIT lists in tools/seed_students.py, not invented placeholders.",
+                    "This seed catalog is not independent verification of the current official curriculum or this student's enrollment.",
+                    "",
+                ]
         name   = student.get("full_name", "N/A")
         sno    = student.get("student_number", "N/A")
         prog   = student.get("program", "N/A")
@@ -74,9 +120,8 @@ def format_student_context(student):
         stand  = student.get("remarks", "N/A")
 
         L += [
-            "<student_record>",
             "=" * 72,
-            "STUDENT PERSONAL ACADEMIC RECORD — SAMAR COLLEGE",
+            "SYNTHETIC DEMO STUDENT RECORD" if student.get("is_demo") is True else "STUDENT PERSONAL ACADEMIC RECORD — SAMAR COLLEGE",
             "=" * 72,
             f"Name              : {name}",
             f"Student No.       : {sno}",
@@ -342,4 +387,5 @@ def format_student_context(student):
         import traceback
         print(f"[format_student_context] Error: {e}\n{traceback.format_exc()}")
         n=student.get("full_name","N/A"); g=student.get("gpa","N/A"); b=student.get("balance","N/A")
-        return f"<student_record>\nName: {n}\nGPA: {g}\nBalance: PHP {b}\n</student_record>"
+        demo_note = "SYNTHETIC DEMO DATA - NOT OFFICIAL STUDENT RECORDS\n" if student.get("is_demo") is True else ""
+        return f"<student_record>\n{demo_note}Name: {n}\nGPA: {g}\nBalance: PHP {b}\n</student_record>"

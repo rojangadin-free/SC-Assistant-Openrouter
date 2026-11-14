@@ -4,12 +4,26 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: sc-assistant-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   Continuous-Integration:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+
+      - name: Set up deployment-tool Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Test student database deployment tools
+        run: |
+          python -B tests/test_student_database_deploy.py
+          python -B tests/test_student_database_ssh.py
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
@@ -35,7 +49,7 @@ jobs:
 
   Continuous-Deployment:
     needs: Continuous-Integration
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -51,24 +65,31 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Cleanup Runner Resources
+      - name: Prepare and validate persistent student database
+        env:
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest
+          COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
         run: |
-          # Stop all Docker containers (ignore error if none exist)
-          docker stop $(docker ps -aq) || true
-          # Remove all Docker containers (ignore error if none exist)
-          docker rm $(docker ps -aq) || true
-          # Remove all Docker images to force fresh pull
-          docker rmi $(docker images -q) --force || true
-          # Prune unused Docker volumes and networks
-          docker volume prune -f
-          docker network prune -f
-          # Remove all unused Docker data
-          docker system prune -a --volumes -f
-          # Clean apt cache and lists
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          # Vacuum system logs older than 3 days
-          sudo journalctl --vacuum-time=3d
+          set -euo pipefail
+          docker pull "$IMAGE_URI"
+          APP_UID=$(docker run --rm --network none --entrypoint python "$IMAGE_URI" -c 'import os; print(os.getuid())')
+          if [ "$APP_UID" != "0" ]; then
+            echo "The provisioning policy expects the current root-running Docker image. Configure ownership before changing Docker USER." >&2
+            exit 1
+          fi
+          # This one-purpose, network-isolated init creates only the private leaf.
+          # No recursive chmod/chown, volume pruning, seeding, or snapshot restore.
+          docker run --rm --network none --user 0:0 --entrypoint python \
+            --mount type=bind,source=/var/lib,target=/var/lib \
+            "$IMAGE_URI" tools/deploy_student_database.py prepare-directory \
+            --directory /var/lib/sc-assistant --require-root
+          # Fail BEFORE stopping the serving container if bootstrap is missing or invalid.
+          # Run the SSH transfer command once; later deployments retain this host's claims.
+          docker run --rm --network none --entrypoint python \
+            --mount type=bind,source=/var/lib/sc-assistant,target=/var/lib/sc-assistant \
+            "$IMAGE_URI" tools/deploy_student_database.py check \
+            --destination /var/lib/sc-assistant/dummy_students.sqlite3 \
+            --pool-id "$COGNITO_USER_POOL_ID" --require-root
 
       - name: Run New Docker Container
         env:
@@ -76,13 +97,20 @@ jobs:
           RERANKER_ENABLED: ${{ vars.RERANKER_ENABLED || 'true' }}
           RAG_DEBUG: ${{ vars.RAG_DEBUG || 'true' }}
         run: |
+          set -euo pipefail
           CONTAINER_NAME="rag-app-container"
           IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest"
 
-          # Pull the latest image and run the new container
-          docker pull $IMAGE_URI
-          docker run -d --name $CONTAINER_NAME --restart always \
+          # Replace only this application, after database preflight has succeeded.
+          if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+            docker stop --time 130 "$CONTAINER_NAME"
+            docker rm "$CONTAINER_NAME"
+          fi
+          docker run -d --name "$CONTAINER_NAME" --restart always \
             -p 8080:8080 \
+            --mount type=bind,source=/var/lib/sc-assistant,target=/var/lib/sc-assistant \
+            -e STUDENT_RECORDS_BACKEND=sqlite_demo \
+            -e DUMMY_STUDENT_DB_PATH=/var/lib/sc-assistant/dummy_students.sqlite3 \
             -e WEB_INDEXING_ENABLED=true \
             -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
             -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
@@ -99,4 +127,4 @@ jobs:
             -e FLASK_SECRET_KEY="${{ secrets.FLASK_SECRET_KEY }}" \
             -e AGENTROUTER_API_KEY="${{ secrets.AGENTROUTER_API_KEY }}" \
             -e COGNITO_CLIENT_SECRET="${{ secrets.COGNITO_CLIENT_SECRET }}" \
-            $IMAGE_URI
+            "$IMAGE_URI"

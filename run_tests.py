@@ -69,6 +69,11 @@ SUITES = [
     ("School signup and email verification", "test_auth_signup.py"),
     ("Standard Cognito password recovery",  "test_password_reset.py"),
     ("Admin account editing",               "test_admin_users.py"),
+    ("Separate dummy student database",     "test_dummy_students.py"),
+    ("Seed subject catalog and migration",  "test_seeded_subjects.py"),
+    ("Student snapshot provisioning",       "test_student_database_deploy.py"),
+    ("Student SSH deployment automation",   "test_student_database_ssh.py"),
+    ("Verified dummy record linking",       "test_student_linking.py"),
     ("Rendered UI contracts",               "test_ui_contracts.py"),
     # Storage first: if the seam under all four stores is broken, every failure
     # below it is a symptom and reading them in order wastes time.
