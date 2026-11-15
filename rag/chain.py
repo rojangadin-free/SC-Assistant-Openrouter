@@ -920,7 +920,7 @@ query_optimizer_model = ChatOpenAI(
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0,
     extra_body={"reasoning": {"enabled": False}},
-    timeout=max(0.1, OPTIMIZER_BUDGET_SECONDS),
+    timeout=max(5, OPTIMIZER_BUDGET_SECONDS),
     max_retries=0,
     max_tokens=1024,
 )
