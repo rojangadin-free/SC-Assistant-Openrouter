@@ -360,7 +360,7 @@ class NewerRetrievalTests(unittest.TestCase):
                 error = ValueError("index service refused the filtered lookup")
                 getattr(self.hybrid, failed_leaf).invoke.side_effect = error
                 chosen = Mock()
-                with self.assertRaisesRegex(RuntimeError, "Newer document search is unavailable") as raised:
+                with self.assertRaisesRegex(RuntimeError, "Filtered document search is unavailable") as raised:
                     self.retrieve(question, on_selection=chosen)
                 self.assertIs(raised.exception.__cause__, error)
                 chosen.assert_not_called()
@@ -593,6 +593,76 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertNotIn("OLD_OFFERING_IN_HISTORY", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
         self.summary.assert_not_called()
+
+    def test_institution_history_searches_the_handbook_even_when_current_hits_contain_history(self):
+        history_doc = document(BASE, "THE HISTORICAL ACCOUNT OF SAMAR COLLEGE\n"
+                               "Our school opened its doors on July 1, 1949 under the name of Samar Junior College.",
+                               "history", page=8, section_heading="THE HISTORICAL ACCOUNT OF SAMAR COLLEGE")
+        course = document("Curriculum.docx", "Course Code | Subject | Units\nGE 2 | Readings in Philippine History | 3\n"
+                          "General education subjects offered in the first year.", "history-class",
+                          collection_heading="CITAS Curriculum", section_heading="First Year")
+        hybrid = self.install([course], baseline=[course])
+        exact = {"source": {"$eq": BASE}}
+        hybrid.filtered = lambda query, filters: [history_doc] if filters == exact else [course]
+        self.uploads = {"Curriculum.docx": STAMP}
+        question = "history of samar college"
+        past = [{"role": "user", "content": "confirmed current offerings"},
+                {"role": "assistant", "content": "ONLY_CURRENT_PROGRAMS_CLAIM: CITAS and CBM curricula."}] * 6
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=json.dumps({
+            "status": "unchanged", "question": question,
+            "search_query": question + " current offerings CITAS", "clarification": "",
+        }))
+        result = self.chat(question, past)
+        self.assertEqual(result["citations"], ["history"], self.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("July 1, 1949", prompt)
+        self.assertIn("Samar Junior College", prompt)
+        self.assertIn("<institution_history_request>", prompt)
+        self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+        self.assertNotIn("Readings in Philippine History", prompt)
+        self.assertNotIn("ONLY_CURRENT_PROGRAMS_CLAIM", prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(self.ranking.call_args.args[0], question)
+        self.assertTrue(any(call.kwargs["filter"] == exact for call in hybrid.dense.invoke.call_args_list))
+        self.assertTrue(hybrid.ensemble.invoke.called, "Historical recall is not limited to newer sources")
+        self.summary.assert_not_called()
+
+    def test_missing_history_does_not_prepare_an_entire_knowledge_base_absence_claim(self):
+        unrelated = document("Curriculum.docx", "Readings in Philippine History is a first year subject.",
+                             "history-subject", collection_heading="Curriculum")
+        self.install([unrelated], baseline=[unrelated])
+        result = self.chat("history of samar college")
+        self.assertEqual(result["citations"], [], self.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("<institution_history_request>", prompt)
+        self.assertIn("retrieved", prompt)
+        self.assertNotIn("Readings in Philippine History", prompt)
+        self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+
+    def test_resolved_institution_history_reference_gets_the_same_evidence_boundary(self):
+        history_doc = document(BASE, "The college was established as documented in this historical account of its founding.",
+                               "founding", section_heading="Historical Account")
+        self.install([history_doc], baseline=[history_doc])
+        question = "when was it founded?"
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=json.dumps({
+            "status": "unchanged", "question": question,
+            "search_query": "when was Samar College founded?", "clarification": "",
+        }))
+        past = [{"role": "user", "content": "tell me about Samar College"},
+                {"role": "assistant", "content": "OLD_NO_HISTORY_CLAIM"}]
+        result = self.chat(question, past)
+        self.assertEqual(result["citations"], ["founding"], self.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("<institution_history_request>", prompt)
+        self.assertIn("tell me about Samar College", prompt)
+        self.assertNotIn("OLD_NO_HISTORY_CLAIM", prompt)
+
+    def test_failed_reference_search_cannot_claim_that_history_is_missing(self):
+        self.install([])
+        self.hybrid.sparse.invoke.side_effect = RuntimeError("service unavailable")
+        with self.assertRaisesRegex(RuntimeError, "Filtered document search is unavailable"):
+            self.retrieve("history of samar college")
+        self.ranking.assert_not_called()
 
     def test_reference_query_keeps_the_resolved_named_unit(self):
         old = document(BASE, "College of Arts and Sciences (CAS)\nPrograms offered: OLD_CAS_FIELD.", "old-cas")

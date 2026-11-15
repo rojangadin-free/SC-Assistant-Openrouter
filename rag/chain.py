@@ -98,7 +98,7 @@ dense_retriever = PineconeHybridSearchRetriever(
 
 retriever = EnsembleRetriever(
     retrievers=[sparse_retriever, dense_retriever],
-    weights=[0.45, 0.55],
+    weights=[0.20, 0.80],
 )
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
@@ -464,9 +464,9 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=No
             raise
         except Exception as e:
             if metadata_filter is not None:
-                # A failed current-source search is not evidence that only the
-                # old handbook can answer. Let the request fail without stale facts.
-                raise RuntimeError("Newer document search is unavailable") from e
+                # A failed source-scoped search cannot establish absence or
+                # justify an answer from an unrelated/stale fallback.
+                raise RuntimeError("Filtered document search is unavailable") from e
             print(f"  Retrieval failed for '{q[:48]}...' (non-fatal): {e}")
             return []
 
@@ -554,7 +554,8 @@ def retrieve_documents(
 
     top_k = top_k or FINAL_TOP_K
     from rag.source_policy import (
-        catalog_source_names, department_catalog_queries, newer_source_names, program_catalog_queries,
+        catalog_source_names, department_catalog_queries, history_source_names,
+        institution_history_queries, newer_source_names, program_catalog_queries,
     )
     from rag.unit_identity import is_unit_reference, requested_unit
 
@@ -619,6 +620,9 @@ def retrieve_documents(
     scope_question = split_source
     if not requested_unit(split_source) and is_unit_reference(split_source) and requested_unit(primary):
         scope_question = primary
+    if is_unit_reference(split_source) and institution_history_queries(primary):
+        scope_question = primary
+    history_queries = institution_history_queries(scope_question)
     relevance_queries = list(dict.fromkeys([
         scope_question, *phrasings, *aspects, *language_variants(split_source),
     ]))
@@ -638,7 +642,16 @@ def retrieve_documents(
 
     preferred_docs = []
     selection = select_documents([], relevance_queries, dates=dates, uploads=uploads)
-    if current_sources:
+    if history_queries:
+        # Do not let current-source hits decide whether the handbook is searched.
+        # The unfiltered pass below still discovers history in any other source.
+        sources = history_source_names(dates=dates, uploads=uploads)
+        preferred_docs = multi_query_retrieve(
+            primary, filtered_queries=[(history_queries[0], {"source": {"$eq": source}}) for source in sources],
+            timeout=request_budget.remaining(30) if request_budget else None,
+            allow_spelling=allow_spelling,
+        )
+    elif current_sources:
         probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *catalog_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = [(probe, source_filter) for probe in probes]
@@ -673,7 +686,7 @@ def retrieve_documents(
         else:
             initial_docs = multi_query_retrieve(
                 primary,
-                extra_queries=phrasings[1:] + aspects + catalog_queries,
+                extra_queries=phrasings[1:] + aspects + catalog_queries + history_queries,
                 timeout=request_budget.remaining(30) if request_budget else None,
                 allow_spelling=allow_spelling,
             )
@@ -704,13 +717,13 @@ def retrieve_documents(
 
     if on_selection is not None:
         on_selection(selection)
-    if selection.restricted or catalog_queries:
-        # Reserve space for each current source (and each college catalog unit)
+    if selection.restricted or catalog_queries or history_queries:
+        # Reserve space for each source and catalog/history section
         # before the reranker's fixed scoring budget, not after it has cut them.
         groups = {}
         for doc in initial_docs:
             md = doc.metadata or {}
-            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries else ""
+            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries or history_queries else ""
             groups.setdefault((doc_key(md.get("source", "")), str(section)), []).append(doc)
         initial_docs = [
             documents[rank]
@@ -1249,13 +1262,16 @@ def create_graph():
 
 
             # === STEP 3: Handle Conversation Summary ===
-            from rag.source_policy import department_catalog_queries, program_catalog_queries
+            from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries
             from rag.unit_identity import is_unit_reference
 
             department_listing = bool(department_catalog_queries(user_text))
             program_listing = bool(program_catalog_queries(user_text))
+            institution_history = bool(institution_history_queries(user_text) or (
+                is_unit_reference(user_text) and institution_history_queries(standalone_query)
+            ))
             scoped_answer = selection.restricted or bool(selection.requested_unit)
-            if len(history) > 10 and not scoped_answer and not department_listing and not program_listing:
+            if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
                     summary = summary_future.result(timeout=request_budget.remaining(3))
@@ -1268,11 +1284,11 @@ def create_graph():
                     history = history[-6:]
 
             # Keep the stored conversation intact, but do not feed obsolete
-            # assistant facts or summaries back into a current-source answer.
-            if department_listing or (program_listing and not is_unit_reference(user_text)):
+            # assistant facts or summaries back into a scoped document answer.
+            if department_listing or ((program_listing or institution_history) and not is_unit_reference(user_text)):
                 prompt_history = []
             else:
-                prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing else history
+                prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
             history_str = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in prompt_history)
 
             # Admin-verified overrides for anything the corpus contradicts
@@ -1350,6 +1366,10 @@ def create_graph():
                 from rag.source_policy import PROGRAM_LIST_GUIDANCE
 
                 final_system_prompt += "\n\n" + PROGRAM_LIST_GUIDANCE
+            if institution_history:
+                from rag.source_policy import INSTITUTION_HISTORY_GUIDANCE
+
+                final_system_prompt += "\n\n" + INSTITUTION_HISTORY_GUIDANCE
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.
             messages = [SystemMessage(content=f"{final_system_prompt}\n\n{response_language_prompt}")]

@@ -373,6 +373,16 @@ class QueryInterpretationTests(unittest.TestCase):
         parsed = parse_interpretation(response("current offerings"), "curent offerings")
         self.assertEqual(parsed.question, "current offerings")
 
+    def test_institution_history_is_not_rewritten_as_the_previous_program_request(self):
+        question = "history of samar college"
+        history = [{"role": "user", "content": "confirmed current offerings"},
+                   {"role": "assistant", "content": "CITAS and CBM curricula and organizational structure."}]
+        for query in (question + " current programs CITAS", question + " curricula organizational structure"):
+            with self.subTest(query=query):
+                parsed = parse_interpretation(response(question, status="unchanged", query=query), question, history)
+                self.assertEqual(parsed.question, question)
+                self.assertEqual(parsed.search_query, question)
+
     def test_unnamed_followups_and_nonunit_codes_still_use_history(self):
         for original, topic, query in (
             ("what programs does it offer?", "College of Liberal Arts and Sciences",

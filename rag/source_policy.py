@@ -61,6 +61,16 @@ as confirmed current, even with a citation or disclaimer. For an explicit histor
 request, identify the requested edition and keep it separate from current offerings.
 Do not restore omitted programs from previous answers, summaries or memory.
 </program_list_request>"""
+INSTITUTION_HISTORY_GUIDANCE = """<institution_history_request>
+The user asks about the institution's history, origins or founding, not History
+subjects or a current program list. Use the supplied historical narrative and cite
+its source pages. A newer curriculum or organizational chart does not supersede
+older evidence about past events. Distinguish event dates from the document edition;
+do not describe historical programs or officeholders as confirmed current.
+Previous replies and conversation summaries are not historical evidence. If the
+retrieved passages omit a fact, say it was not found in the retrieved material;
+do not claim the entire knowledge base has no history document or only curricula.
+</institution_history_request>"""
 
 _NOISE = frozenset([
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
@@ -247,10 +257,48 @@ def program_catalog_queries(query) -> list[str]:
     return [f"{query.strip()} programs offered", f"{query.strip()} degree course offerings"]
 
 
+def institution_history_queries(query) -> list[str]:
+    """Bounded history probes, distinct from history courses and personal records."""
+    if not isinstance(query, str):
+        return []
+    text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+    if not re.search(r"\b(?:colleges?|school|university|institution|institute|academy|campus|department|unit)\b", text):
+        return []
+    if re.search(r"\b(?:courses?|subjects?|curriculum|syllabus|grades?|credits?|prerequisites?|"
+                 r"enrollment|admissions?|payment|fees?|records?|requirements?|programs?|deans?|hours)\b", text):
+        return []
+    if not re.search(
+        r"\b(?:history|background|origins?|founding)\s+(?:of|about|behind)\b|^history\b(?!\s+department\b)|"
+        r"\b(?:school|colleges?|university|institution|academy|campus)\s+history\b|"
+        r"\b(?:historical|origins?|founders?|founded|founding|established|establishment|beginnings|began|opened)\b|"
+        r"\b(?:when|what year)\s+did\b.{0,100}\b(?:open|start|begin)\b", text,
+    ):
+        return []
+    return [f"{query.strip()} historical account humble beginnings", f"{query.strip()} founding origins established"]
+
+
+def history_source_names(*, dates, uploads) -> list[str]:
+    """Raw reference-source names are search hints, never proof of history coverage."""
+    names = [name for name in (uploads or {}) if isinstance(name, str)]
+    for key, record in (dates or {}).items():
+        filename = record.get("filename") if isinstance(record, dict) else None
+        names.append(filename if isinstance(filename, str) and filename.strip() else key)
+    # Keep configured spellings too: a normalized date key is not necessarily the
+    # case-sensitive source value stored in the index.
+    names.extend(DEFAULT_FALLBACK_SOURCES)
+    defaults = {doc_key(name) for name in DEFAULT_FALLBACK_SOURCES}
+    return list(dict.fromkeys(name for name in names if isinstance(name, str) and (
+        doc_key(name) in defaults or re.search(r"\b(?:handbook|history|historical|heritage|anniversary)\b",
+                                             doc_key(name).replace("_", " ").replace("-", " "))
+    )))
+
+
 def _historical(question, today):
     text = question.lower()
     if re.search(r"\b(?:ignore|disregard|exclude|do not use|don't use)\b.{0,55}\b(?:2024|handbook)\b", text):
         return False
+    if institution_history_queries(question):
+        return True
     if re.search(r"\bwhat (?:has |have )?changed\b|\bchanges (?:from|since|between)\b", text):
         return True
     if re.search(r"\b(?:compare|comparison|difference|differences|versus|vs)\b", text) and (
@@ -351,8 +399,11 @@ def _relevant(document, queries, unit=None):
     reference_lines = [line for line in lines if re.search(
         r"\b(?:see|refer to|consult|read)\b.{0,80}\b(?:handbook|manual|chapter|page)\b", line, re.IGNORECASE
     )]
+    history_request = bool(institution_history_queries(queries[0])) if queries else False
     for query, department_query in zip(queries, department_queries):
         if department_query:
+            continue
+        if history_request and not institution_history_queries(query):
             continue
         subject = requested_unit(query) if unit else None
         if unit and subject and not same_unit(unit.name, subject.name):
@@ -374,6 +425,30 @@ def _relevant(document, queries, unit=None):
             continue
         # A heading alone is not an answer, but a concise named/value row can be.
         if len(words) <= 10 and body_terms <= terms and not re.search(r"[:=|]\s*\S|\d", text):
+            continue
+        if history_request:
+            history_metadata = re.search(
+                r"\b(?:history|historical|humble beginnings|origins?|founding|milestones?|timeline)\b",
+                headings + " " + title, re.IGNORECASE,
+            )
+            if not history_metadata and re.search(
+                r"\b(?:roster|faculty|staff|personnel|qualifications|organizational|organizational structure)\b",
+                headings + " " + title, re.IGNORECASE,
+            ):
+                continue
+            historical_heading = re.search(
+                r"\b(?:history|historical|humble beginnings|origins?|founding|milestones?|timeline)\b",
+                headings + " " + title + " " + " ".join(text.splitlines()[:2]), re.IGNORECASE,
+            )
+            course_scope = re.search(
+                r"\b(?:curriculum|curricula|syllabus|courses?|subjects?|semester|bachelor|credits?)\b",
+                headings + " " + title, re.IGNORECASE,
+            ) or re.search(r"\b(?:course code|subject|prerequisites?|credits?|units)\b", text[:200], re.IGNORECASE)
+            narrative = re.search(r"\b(?:school|college|university|institution|institute|academy|campus)\b", text, re.IGNORECASE) and re.search(
+                r"\b(?:founded|founders?|established|opened|began|renamed|formerly|incorporated|expanded)\b", text, re.IGNORECASE,
+            )
+            if narrative or (historical_heading and not course_scope):
+                return True
             continue
         catalog_request = program_request or re.search(r"\b(?:programs?|courses?|degrees?|majors?|offered)\b", query, re.IGNORECASE)
         catalog_scope = re.search(r"\b(?:programs?|courses?|degrees?)\s+(?:offered|offering|offerings|catalog|catalogue)\b",
@@ -409,6 +484,22 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
     sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
     ordinary = Selection(documents[:limit], False, tuple(sorted(original_sources - sources)),
                          unit.name if unit else "")
+    if queries and institution_history_queries(queries[0]):
+        # Past events need relevant historical evidence, not the newest upload.
+        # Filter before limits so curriculum subjects named History cannot crowd
+        # the institutional narrative out of the reranker candidate budget.
+        historical = [doc for doc in documents if _relevant(doc, queries, unit)]
+        if not _historical(queries[0], today):
+            # An explicit instruction to exclude the handbook still applies to
+            # a history question; the historical subject does not override it.
+            baselines = _chronology(sources, dates=dates, uploads=uploads, today=today,
+                                    fallback_sources=fallback_sources)[0]
+            historical = [doc for doc in historical if (
+                (source := doc_key((getattr(doc, "metadata", None) or {}).get("source", ""))) not in baselines
+                and "handbook" not in source
+            )]
+        retained_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in historical}
+        return Selection(historical[:limit], False, tuple(sorted(original_sources - retained_sources)), unit.name if unit else "")
     if not queries or _historical(queries[0], today):
         return ordinary
     baselines, eligible_uploads, eligible_dated, known_baselines = _chronology(

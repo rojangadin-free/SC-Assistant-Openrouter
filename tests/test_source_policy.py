@@ -115,6 +115,77 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertEqual(result.documents, [old, current])
                 self.assertFalse(result.restricted)
 
+    def test_institution_history_keeps_handbook_narrative_not_history_subjects(self):
+        old = document(text="THE HISTORICAL ACCOUNT OF SAMAR COLLEGE\n"
+                       "Our school opened its doors on July 1, 1949 under the name of Samar Junior College.",
+                       section_heading="THE HISTORICAL ACCOUNT OF SAMAR COLLEGE", page=8)
+        course = document("Curriculum.docx", "Course Code | Subject | Units\n"
+                          "GE 2 | Readings in Philippine History | 3\nFirst year general education subjects.",
+                          section_heading="First Year / General Education", collection_heading="CITAS Curriculum")
+        newer_history = document("College_History.docx", "The school expanded into its next campus building, "
+                                 "as described in the documented institutional timeline.", section_heading="Institutional History")
+        uploads = {course.metadata["source"]: UPLOADS[UPDATE], newer_history.metadata["source"]: UPLOADS[UPDATE]}
+        for query in ("history of samar college", "Historical background of Samar College",
+                      "When was Samar College established?", "Who founded Samar College?"):
+            with self.subTest(query=query):
+                result = self.select([course, old, newer_history], query, uploads=uploads)
+                self.assertEqual(result.documents, [old, newer_history])
+                self.assertFalse(result.restricted, "Older historical facts are not superseded by a newer curriculum")
+
+    def test_history_heading_cross_reference_or_course_list_is_not_historical_evidence(self):
+        for body, heading in (
+            ("History of Samar College", "History of Samar College"),
+            ("Historical account\nSee the handbook for the full story.", "Historical Account"),
+            ("Table of contents\nHistorical Account..........8\nStudent Services..........30", "Contents"),
+            ("HIST 101 | History of Education | 3 units\nA required first year subject.", "History Curriculum"),
+            ("The department offers Readings in Philippine History as a three unit subject.", "Course Offerings"),
+            ("The current school officials and departments are shown in this organizational structure.", "Organization"),
+            ("A faculty member graduated from another university, founded many years before joining this school.", "Faculty Qualifications"),
+        ):
+            with self.subTest(body=body):
+                unrelated = document("Current.docx", body, section_heading=heading)
+                self.assertEqual(self.select([unrelated], "history of samar college",
+                                             uploads={"Current.docx": UPLOADS[UPDATE]}).documents, [])
+
+    def test_institution_history_intent_is_not_history_classes_or_student_records(self):
+        from rag.source_policy import institution_history_queries
+
+        for query in ("history of samar college", "River University historical background",
+                      "The origins of North Academy", "Who founded the school?", "When did the college open?"):
+            with self.subTest(query=query):
+                probes = institution_history_queries(query)
+                self.assertEqual(len(probes), 2)
+                self.assertTrue(all(probe.startswith(query + " ") for probe in probes))
+        for query in ("Current History courses at Samar College", "My enrollment history at the college",
+                      "What grade did I receive in History at the school?", "Who is the dean of the History Department?",
+                      "What programs does the Department of History offer?", "current offerings", "", None):
+            with self.subTest(query=query):
+                self.assertEqual(institution_history_queries(query), [])
+
+    def test_institution_history_respects_an_explicit_handbook_exclusion(self):
+        old = document(text="The school opened its doors to its first students as described in this historical account.",
+                       section_heading="Historical Account")
+        recent = document("College_History.docx", "The college expanded into its next campus building in the documented timeline.",
+                          section_heading="Institutional History")
+        result = self.select([old, recent], "Ignore the 2024 handbook. History of Samar College",
+                             uploads={"College_History.docx": UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [recent])
+
+    def test_reference_source_hints_keep_registered_paths_and_case(self):
+        from rag.source_policy import history_source_names
+
+        archived = "Archive/Student_Handbook_2024.PDF"
+        history = "School_Historical_Account.DOCX"
+        hints = history_source_names(dates={
+            "historical_account.docx": {"filename": history},
+            BASE.lower(): {"effective_date": "2024-01-01"},
+        }, uploads={archived: UPLOADS[UPDATE], "CITAS_Curriculum.docx": UPLOADS[UPDATE]})
+        self.assertIn(archived, hints)
+        self.assertIn(history, hints)
+        self.assertIn(BASE, hints)
+        self.assertNotIn("CITAS_Curriculum.docx", hints)
+        self.assertEqual(len(hints), len(set(hints)))
+
     def test_catalog_cannot_replace_uncovered_fee_guidance(self):
         current = document("Programs_Offered.docx", "Course Offering\nBSIT and BSBA are listed.", section="Course Offering")
         old = document(text="BSIT tuition fee is OLD_FEE.")

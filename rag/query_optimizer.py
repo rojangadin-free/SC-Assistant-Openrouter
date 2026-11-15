@@ -243,11 +243,11 @@ def parse_interpretation(content, original: str, history=None) -> QueryInterpret
         # A fresh general question must not inherit a named unit from history.
         query = question
     if not unit and not is_unit_reference(question):
-        from rag.source_policy import program_catalog_queries
+        from rag.source_policy import institution_history_queries, program_catalog_queries
 
-        if program_catalog_queries(question):
-            # A catalog request supplies its own subject. Old unit names and
-            # years are not missing context, even if appended as loose keywords.
+        if program_catalog_queries(question) or institution_history_queries(question):
+            # An explicit catalog/history topic supplies its own subject. Prior
+            # unit names and offerings are not missing context or search terms.
             query = question
     return QueryInterpretation(status, question, query)
 
