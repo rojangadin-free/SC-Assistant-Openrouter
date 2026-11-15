@@ -138,6 +138,7 @@ section("1b. Difficult spellings require full-query interpretation")
 PHRASE_TYPOS = [
     ("latin hnit requirements", "latin honor requirements"),
     ("latin hnir requirements", "latin honor requirements"),
+    ("latn hnir", "latin honor"),
     ("Latin hnit requirements?", "Latin honor requirements?"),
     ("latin hnoir requirements", "latin honor requirements"),
     ("latni honors requirements", "latin honors requirements"),
@@ -155,7 +156,7 @@ for typed, meant in PHRASE_TYPOS[-2:]:
     check(f"local repair preserves punctuation: {typed!r}", correct_query(typed) == meant)
 
 for question in (
-    "hnit requirements", "admission hnir requirements",
+    "hnit requirements", "admission hnit requirements",
     "latin history requirements", "latin hint requirements",
     "latin HNIT requirements", "latin Hnir requirements",
     "latin hzzzz requirements", "latni hnit requirements",
@@ -170,8 +171,12 @@ for question in (
 ):
     check(f"no unsupported phrase guess: {question!r}",
           correct_query(question) == "", correct_query(question))
-check("short typos are not guessed without their phrase context",
-      suggest("hnit") is None and suggest("hnir") is None)
+check("short typos requiring consonant changes still need contextual interpretation",
+      suggest("hnit") is None)
+check("an unambiguous missing/mistyped vowel combination is repaired locally",
+      suggest("hnir") == "honor" and correct_query("latn hnir") == "latin honor")
+check("vowel repair does not replace the surrounding subject",
+      correct_query("admission hnir requirements") == "admission honor requirements")
 check("a severe typo is not guessed by a special-case local phrase table",
       misspellings("latin hnit requirements") == [])
 
@@ -444,6 +449,8 @@ check("a missing vocabulary file still loads the seed terms",
       _spelling.vocabulary_size() > 0)
 check("and the headline repair still works from seeds alone",
       _spelling.suggest("honir") == "honor", _spelling.suggest("honir"))
+check("both reported typos are repaired from seeds without a model",
+      _spelling.correct_query("latn hnir") == "latin honor")
 for typo in ("hnit", "hnir"):
     check(f"missing vocabulary still requests contextual interpretation: {typo}",
           should_optimize(f"latin {typo} requirements", []))
@@ -559,6 +566,19 @@ def fetch(query):
     return [stale] if "lost" in query.split() or "dens" in query.split() else [current]
 
 
+class _Retriever(SimpleNamespace):
+    def weighted_reciprocal_rank(self, results):
+        # Both fake leaves return the same order; fusion preserves that order.
+        return results[0] if results else []
+
+
+def filtered_fetch(query, *, filter):
+    condition = filter["source"]
+    allowed = condition.get("$in", [condition.get("$eq")])
+    return [doc for doc in namespace["retriever"].invoke(query)
+            if doc.metadata.get("source") in allowed]
+
+
 def optimize(messages):
     if isinstance(messages[-1], dict):
         optimizer_prompts.append(messages)
@@ -599,7 +619,9 @@ namespace = {
     "spelling_variants": spelling_variants, "dictation_variants": dictation_variants,
     "language_variants": language_variants, "should_optimize": should_optimize,
     "pick_search_query": pick_search_query, "Deadline": Deadline, "Timings": Timings,
-    "retriever": SimpleNamespace(invoke=fetch),
+    "retriever": _Retriever(invoke=fetch),
+    "sparse_retriever": SimpleNamespace(invoke=filtered_fetch),
+    "dense_retriever": SimpleNamespace(invoke=filtered_fetch),
     "rerank": reranker.rerank, "rerank_multi": reranker.rerank_multi,
     "summarizer": SimpleNamespace(invoke=optimize),
     "query_optimizer_model": SimpleNamespace(invoke=optimize),
@@ -677,6 +699,14 @@ with patch.object(reranker, "_load_model", return_value=None):
               typo["messages"][-1] == "latin honor requirements"
               and typo["citations"] == ["honors"]
               and "interpretation was unavailable" in typo["messages"][0])
+        for question, expected in (("latn hnir", "latin honor"),
+                                   ("latin hnir requirements", "latin honor requirements")):
+            typo, state = chat_snapshot(question)
+            check(f"complete local repair survives optimizer failure: {question!r}",
+                  typo["messages"][-1] == expected and typo["citations"] == ["honors"]
+                  and all("hnir" not in probe.split() and "latn" not in probe.split()
+                          for probe in typo["probes"])
+                  and state["input"] == question)
     clean, _ = chat_snapshot("latin honor requirements")
     typo, _ = chat_snapshot("latin honir requirements")
     check("a complete question is interpreted and uses the same answer path",
@@ -706,6 +736,49 @@ with patch.object(reranker, "_load_model", return_value=None):
         check("retrieval cannot reapply a spelling hint rejected by the interpreter",
               snapshot["messages"][-1] == "what is a good meal before exams"
               and all("medal" not in query for query in snapshot["probes"] + snapshot["scores"]))
+
+
+unit_docs = [
+    SimpleNamespace(page_content="CAS_ONLY_RECORD: Arts and Sciences programs.",
+                    metadata={"source": "CAS.docx", "chunk_id": "cas",
+                              "section_heading": "College of Arts and Sciences"}),
+    SimpleNamespace(page_content="CITAS_ONLY_RECORD: Information Technology programs.",
+                    metadata={"source": "CITAS.docx", "chunk_id": "citas",
+                              "section_heading": "College of Information Technology and Allied Sciences"}),
+]
+
+
+def fetch_units(query):
+    probes.append(query)
+    return unit_docs
+
+
+def shorten_to_previous_unit(messages):
+    # Reproduce the erroneous model output, not the intended correction logic.
+    return SimpleNamespace(content=json.dumps({
+        "status": "corrected", "question": "cas", "search_query": "cas", "clarification": "",
+    }))
+
+
+cas_history = [{"role": "user", "content": "cas"},
+               {"role": "assistant", "content": "CAS_OLD_REPLY: Arts and Sciences."}]
+with patch.object(reranker, "_load_model", return_value=None), patch.dict(namespace, {
+    "retriever": _Retriever(invoke=fetch_units),
+    "query_optimizer_model": SimpleNamespace(invoke=shorten_to_previous_unit),
+}):
+    for question in ("cas", "citas", "Citas"):
+        snapshot, state = chat_snapshot(question, cas_history)
+        code = question.lower()
+        check(f"a wrong interpretation cannot rename the unit: {question!r}",
+              snapshot["messages"][-1] == question and snapshot["citations"] == [code])
+        other = "citas" if code == "cas" else "cas"
+        check(f"retrieval and answer context stay within the requested unit: {question!r}",
+              f"{code.upper()}_ONLY_RECORD" in snapshot["messages"][0]
+              and f"{other.upper()}_ONLY_RECORD" not in snapshot["messages"][0]
+              and all(not re.search(rf"\b{other}\b", probe, re.IGNORECASE) for probe in snapshot["probes"]))
+        check(f"the topic switch preserves stored input and history: {question!r}",
+              state["input"] == question and state["chat_history"] == cas_history
+              and "CAS_OLD_REPLY" not in snapshot["messages"][0])
 
 
 # The exact reported failures must reach honors evidence, including for a guest
@@ -748,7 +821,7 @@ with patch.dict(namespace, {
                 snapshot, _ = chat_snapshot("what about latin hnir requirements", admission_history)
                 late.set_result(QueryInterpretation("corrected", "latin honor requirements", "latin honor requirements"))
                 check("a late result cannot mutate a response already being prepared",
-                      snapshot["messages"][-1] == "what about latin hnir requirements"
+                      snapshot["messages"][-1] == "what about latin honor requirements"
                       and "interpretation was unavailable" in snapshot["messages"][0])
         phases = []
         with patch.object(namespace["optimizer_pool"], "submit", side_effect=runtime.CapacityError("busy")):
@@ -814,7 +887,7 @@ language_policy = namespace["response_language_prompt"]
 with patch.object(reranker, "_load_model", return_value=None):
     with patch.dict(namespace, {
         "system_prompt": answer_prompts.system_prompt,
-        "retriever": SimpleNamespace(invoke=lambda query: [notice_doc]),
+        "retriever": _Retriever(invoke=lambda query: [notice_doc]),
     }):
         for question, prior, image in language_cases:
             snapshot, state = chat_snapshot(question, prior, image)
@@ -882,7 +955,7 @@ with patch.object(reranker, "_load_model", return_value=None), patch.object(
     with patch.dict(namespace, {
         **manual_providers,
         "system_prompt": answer_prompts.system_prompt,
-        "retriever": SimpleNamespace(invoke=lambda query: [calendar_doc, notice_doc]),
+        "retriever": _Retriever(invoke=lambda query: [calendar_doc, notice_doc]),
         "FINAL_TOP_K": 2,
         "get_doc_dates": lambda: date_records,
         "source_priority": freshness.source_priority, "doc_key": freshness.doc_key,
@@ -1020,7 +1093,7 @@ for i in range(6):
 original_history = [dict(message) for message in history_with_old_facts]
 with patch.dict(namespace, {
     "system_prompt": answer_prompts.system_prompt,
-    "retriever": SimpleNamespace(invoke=lambda query: [*old_pages, new_admission, new_registrar]),
+    "retriever": _Retriever(invoke=lambda query: [*old_pages, new_admission, new_registrar]),
     "rerank": unchanged_ranking, "rerank_multi": unchanged_ranking,
     "FINAL_TOP_K": 2, "get_doc_dates": lambda: source_dates,
     "get_file_upload_dates": catalog_reader,
@@ -1053,7 +1126,7 @@ with patch.dict(namespace, {
           ranked_sizes and all(size == namespace["RERANK_CANDIDATES"] for size in ranked_sizes))
     check("upload metadata is read once per answer, not once per document", catalog_reader.call_count == 3)
 
-    with patch.dict(namespace, {"retriever": SimpleNamespace(invoke=lambda query: [old_pages[0], new_admission])}):
+    with patch.dict(namespace, {"retriever": _Retriever(invoke=lambda query: [old_pages[0], new_admission])}):
         historical = node({"input": "Compare the 2024 and 2026 enrollment procedures.", "role": "guest", "chat_history": []})
         text = historical["messages_to_llm"][0].content if historical["messages_to_llm"] else ""
         check("explicit version comparisons retain both requested source versions",
@@ -1066,7 +1139,7 @@ with patch.dict(namespace, {
         metadata={"source": "Honors-Notice.docx", "page": 1, "chunk_id": "honors-notice"},
     )
     with patch.dict(namespace, {
-        "retriever": SimpleNamespace(invoke=lambda query: [old_pages[0], unrelated]),
+        "retriever": _Retriever(invoke=lambda query: [old_pages[0], unrelated]),
         "get_file_upload_dates": lambda: {"Honors-Notice.docx": "2026-11-13T03:00:00Z"},
     }):
         fallback = node({"input": "What is the enrollment procedure?", "role": "guest", "chat_history": []})

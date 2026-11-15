@@ -1,20 +1,25 @@
 """Offline contracts for general interpretation, not per-question replacement rules."""
 
-import _bootstrap  # noqa: F401
-
 import json
 import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
+
+import _bootstrap  # noqa: F401
 
 from rag import spelling
 from rag.latency import should_optimize
 from rag.query_optimizer import (
-    OPTIMIZER_PROMPT, interpretation_guidance, optimizer_messages, parse_interpretation,
+    OPTIMIZER_PROMPT,
+    interpretation_guidance,
+    optimizer_messages,
+    parse_interpretation,
 )
 
 
@@ -35,14 +40,15 @@ class QueryInterpretationTests(unittest.TestCase):
         spelling.reload_vocabulary()
 
     def tearDown(self):
-        self.vocabulary.stop()
         spelling.reload_vocabulary()
+        self.vocabulary.stop()
         self.temp.cleanup()
 
     def test_general_corrections_are_accepted_without_a_phrase_table(self):
         cases = [
             ("latin hnit requirements", "latin honor requirements"),
             ("latin hnir requirements", "latin honor requirements"),
+            ("latn hnir", "latin honor"),
             ("sign the internship contact", "sign the internship contract"),
             ("where is the xegistrar", "where is the registrar"),
             ("wat ar reqrmnts fr enrllmnt", "what are requirements for enrollment"),
@@ -97,6 +103,35 @@ class QueryInterpretationTests(unittest.TestCase):
         self.assertIn("fallible hints", messages[0]["content"])
         self.assertIn("every word is correctly spelled", OPTIMIZER_PROMPT)
         self.assertNotIn("latin hnit", OPTIMIZER_PROMPT.lower())
+
+    def test_dynamodb_history_metadata_is_not_sent_to_interpretation(self):
+        history = [
+            {"role": "user", "content": "Which departments are listed?", "timestamp": Decimal(1794719000)},
+            {"role": "assistant", "content": "See the current programs offered document.",
+             "citations": [{"source": "Samar-College-2024.pdf", "pages": [Decimal(48)],
+                            "score": Decimal("0.656")}],
+             "private_metadata": {"identifier": "PRIVATE_METADATA_VALUE", "flags": {"one", "two"}}},
+        ]
+        before = deepcopy(history)
+        payload = json.loads(optimizer_messages("college department", "college department", history)[1]["content"])
+        self.assertEqual(payload["history"], [
+            {"role": "user", "content": "Which departments are listed?"},
+            {"role": "assistant", "content": "See the current programs offered document."},
+        ])
+        self.assertNotIn("PRIVATE_METADATA_VALUE", json.dumps(payload))
+        self.assertEqual(history, before)
+
+    def test_only_valid_dialogue_turns_are_used_for_interpretation(self):
+        history = [
+            {"role": "system", "content": "Previous subject: degree programs."},
+            {"role": "tool", "content": "PRIVATE_TOOL_METADATA"},
+            {"role": "assistant", "content": Decimal("1.25")},
+            {"role": ["user"], "content": "INVALID_ROLE"},
+            None,
+            {"role": "user", "content": "college department"},
+        ]
+        payload = json.loads(optimizer_messages("college department", "college department", history)[1]["content"])
+        self.assertEqual(payload["history"], [history[0], history[-1]])
 
     def test_new_document_terms_supply_first_letter_candidates(self):
         self.assertFalse(spelling.is_known("microcredential"))
@@ -159,6 +194,25 @@ class QueryInterpretationTests(unittest.TestCase):
         self.assertIn("honor", hints)
         if "unit" in hints:
             self.assertLess(hints.index("honor"), hints.index("unit"))
+
+    def test_missing_and_mistyped_vowels_are_repaired_without_a_model(self):
+        for typed, meant in (
+            ("latn hnir", "latin honor"),
+            ("latin hnir requirements", "latin honor requirements"),
+            ("what are latn hnir requirements?", "what are latin honor requirements?"),
+            ("latn hnir for citas", "latin honor for citas"),
+        ):
+            with self.subTest(typed=typed):
+                self.assertEqual(spelling.correct_query(typed), meant)
+                self.assertEqual(spelling.spelling_variants(typed), [meant])
+        self.assertEqual(spelling.misspellings("latn hnir"), [("latn", "latin"), ("hnir", "honor")])
+        self.assertEqual(spelling._suggest("mdol", spelling._Vocabulary({"medal": 7})), "medal")
+
+    def test_two_edit_repairs_need_unique_targets_and_unchanged_consonants(self):
+        self.assertIsNone(spelling._suggest("hnir", spelling._Vocabulary({"honor": 31, "honer": 99})))
+        self.assertIsNone(spelling._suggest("hnir", spelling._Vocabulary({"honor": 2})))
+        for word in ("hnit", "HNIR", "Hnir", "hnir-101", "hnir\u0301"):
+            self.assertEqual(spelling.correct_query(word), "")
 
     def test_rare_ocr_membership_does_not_hide_alternatives(self):
         self.path.write_text(json.dumps({"terms": {"registar": 1, "registrar": 12}}), encoding="utf-8")
@@ -233,6 +287,121 @@ class QueryInterpretationTests(unittest.TestCase):
         latest = "latin honors requirements"
         parsed = parse_interpretation(response(latest, status="unchanged", query="enrollment requirements"), latest, history)
         self.assertEqual(parsed.search_query, latest)
+
+    def test_explicit_unit_names_cannot_expand_from_assistant_history(self):
+        for unit, replacement in (
+            ("college of arts and science", "College of Liberal Arts and Sciences"),
+            ("college of art and science", "College of Liberal Arts and Sciences"),
+            ("College of Arts and Sciences", "College of Liberal Arts and Sciences"),
+            ("cOlLeGe oF ArT aNd ScIeNcEs", "College of Liberal Arts and Sciences"),
+            ("college of river studies", "College of Applied River Studies"),
+            ("College of Valley Studies", "College of Valley Studies and Technology"),
+        ):
+            with self.subTest(unit=unit):
+                original = f"Tell me about {unit}"
+                history = [{"role": "user", "content": "Which college departments are listed?"},
+                           {"role": "assistant", "content": f"The current catalog lists {replacement}."}]
+                before = deepcopy(history)
+                parsed = parse_interpretation(response(original, status="unchanged", query=replacement),
+                                              original, history)
+                self.assertEqual(parsed.question, original)
+                self.assertEqual(parsed.search_query, original)
+                self.assertEqual(history, before)
+
+    def test_named_unit_substitutions_are_not_spelling_repairs(self):
+        for original, altered in (("college of arts and science", "college of liberal arts and sciences"),
+                                  ("college of river studies", "college of applied river studies"),
+                                  ("CAS", "CLAS"), ("cas", "clas")):
+            with self.subTest(original=original), self.assertRaises(ValueError):
+                parse_interpretation(response(altered), original)
+
+    def test_unit_acronym_queries_cannot_import_a_different_unit_from_history(self):
+        for original, replacement in (("CAS", "College of Liberal Arts and Sciences (CLAS)"),
+                                      ("cas", "College of Liberal Arts and Sciences (CLAS)"),
+                                      ("CaS", "College of Liberal Arts and Sciences (CLAS)"),
+                                      ("CRS", "College of Applied River Studies (CARS)")):
+            with self.subTest(original=original):
+                history = [{"role": "assistant", "content": f"The current catalog lists {replacement}."}]
+                query = f"{original} {replacement}"
+                parsed = parse_interpretation(response(original, status="unchanged", query=query), original, history)
+                self.assertEqual(parsed.question, original)
+                self.assertEqual(parsed.search_query, original)
+
+    def test_known_acronyms_cannot_be_shortened_or_replaced_in_any_casing(self):
+        history = [{"role": "user", "content": "cas"},
+                   {"role": "assistant", "content": "College of Arts and Sciences (CAS)."}]
+        for original, altered in (
+            ("citas", "cas"), ("Citas", "cas"), ("CITAS", "CAS"),
+            ("tell me about citas", "tell me about cas"),
+            ("citas subjects", "cas subjects"),
+            ("bsit tuition", "bsed tuition"),
+        ):
+            with self.subTest(original=original), self.assertRaises(ValueError):
+                parse_interpretation(response(altered), original, history)
+        parsed = parse_interpretation(response("CITAS"), "citas", history)
+        self.assertEqual(parsed.question, "CITAS")
+
+    def test_lowercase_citas_is_a_fresh_subject_not_a_cas_followup(self):
+        history = [{"role": "user", "content": "cas"},
+                   {"role": "assistant", "content": "CAS programs and departments."}]
+        for query in ("cas", "citas cas programs"):
+            parsed = parse_interpretation(response("citas", status="unchanged", query=query), "citas", history)
+            self.assertEqual(parsed.question, "citas")
+            self.assertEqual(parsed.search_query, "citas")
+        payload = json.loads(optimizer_messages("citas", "citas", history)[1]["content"])
+        self.assertEqual(payload["protected_acronyms"], ["citas"])
+        self.assertEqual(payload["original_question"], "citas")
+
+    def test_current_offerings_do_not_inherit_the_previous_cas_or_handbook_scope(self):
+        original = "confirmed current offerings"
+        history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
+                   "CAS reflects the 2024 handbook edition only, not confirmed current offerings."}]
+        for query in (original + " CAS", original + " 2024 handbook", original):
+            with self.subTest(query=query):
+                parsed = parse_interpretation(response(original, status="unchanged", query=query), original, history)
+                self.assertEqual(parsed.question, original)
+                self.assertEqual(parsed.search_query, original)
+
+    def test_confirmation_and_current_status_are_not_spelling_repairs(self):
+        self.path.write_text(json.dumps({"terms": {"conferred": 40}}), encoding="utf-8")
+        spelling.reload_vocabulary()
+        self.assertEqual(spelling.correct_query("confirmed current offerings"), "")
+        for original, altered in (("confirmed current offerings", "conferred current offerings"),
+                                  ("current programs", "curated programs")):
+            with self.subTest(original=original), self.assertRaises(ValueError):
+                parse_interpretation(response(altered), original)
+        parsed = parse_interpretation(response("current offerings"), "curent offerings")
+        self.assertEqual(parsed.question, "current offerings")
+
+    def test_unnamed_followups_and_nonunit_codes_still_use_history(self):
+        for original, topic, query in (
+            ("what programs does it offer?", "College of Liberal Arts and Sciences",
+             "what programs does College of Liberal Arts and Sciences offer?"),
+            ("and for BSIT", "enrollment requirements", "enrollment requirements for BSIT"),
+            ("and for HUM-101", "course prerequisites", "course prerequisites for HUM-101"),
+            ("and for art", "course prerequisites", "course prerequisites for art"),
+        ):
+            with self.subTest(original=original):
+                history = [{"role": "user", "content": topic}]
+                parsed = parse_interpretation(response(original, status="unchanged", query=query), original, history)
+                self.assertEqual(parsed.question, original)
+                self.assertEqual(parsed.search_query, query)
+
+    def test_general_department_list_does_not_inherit_previous_cas_subject(self):
+        original = "college department"
+        history = [{"role": "user", "content": "College of Arts and Sciences"},
+                   {"role": "assistant", "content": "The handbook describes CAS."}]
+        parsed = parse_interpretation(response(original, status="unchanged",
+                                              query="College of Arts and Sciences college department"), original, history)
+        self.assertEqual(parsed.search_query, original)
+
+    def test_unit_reference_preserves_last_user_subject_not_wrong_assistant_name(self):
+        original = "what programs does it offer?"
+        history = [{"role": "user", "content": "College of Arts and Sciences"},
+                   {"role": "assistant", "content": "College of Liberal Arts and Sciences offers Sociology."}]
+        parsed = parse_interpretation(response(original, status="unchanged",
+                                              query="College of Liberal Arts and Sciences programs offered"), original, history)
+        self.assertEqual(parsed.search_query, "unit College of Arts and Sciences: what programs does it offer?")
 
     def test_clarification_does_not_choose_a_topic(self):
         original = "requirements for that thing"

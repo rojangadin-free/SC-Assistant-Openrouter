@@ -679,7 +679,9 @@ def smart_chunking(
             if len(separators) == 1:
                 separator = separators[0]
                 if separator > 0 and all(_MD_TABLE_ROW.match(line) for line in table_lines[separator - 1:]):
-                    table_header = table_lines[separator - 1:separator + 1]
+                    table_header = [line for line in table_lines[:separator - 1]
+                                    if re.match(r"^\[TABLE\s+context:", line, re.IGNORECASE)]
+                    table_header.extend(table_lines[separator - 1:separator + 1])
 
             # Oversized block: split by lines first (keeps list items intact),
             # falling back to sentences for prose.
@@ -698,8 +700,8 @@ def smart_chunking(
                 if current_tokens + unit_tokens > max_tokens and current_parts:
                     emit_current()
                     if table_header and _MD_TABLE_ROW.match(unit) and unit not in table_header:
-                        # Continuation rows need their column labels, not a tail
-                        # of unrelated overlap from the previous chunk.
+                        # Repeat the table's context and columns, not unrelated
+                        # overlap or a subject row from the previous chunk.
                         current_parts = list(table_header)
                         current_tokens = sum(count(line) for line in table_header)
                 current_parts.append(unit)

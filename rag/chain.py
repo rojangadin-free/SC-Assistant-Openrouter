@@ -104,7 +104,7 @@ retriever = EnsembleRetriever(
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
 RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
-FINAL_TOP_K = 15        # documents actually sent to the LLM
+FINAL_TOP_K = 25        # documents actually sent to the LLM
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +162,9 @@ def expand_queries(query: str, allow_spelling: bool = True) -> List[str]:
         return []
 
     queries = [query]
+    from rag.source_policy import department_catalog_queries
+
+    queries.extend(department_catalog_queries(query))
 
     # Dictation repair BEFORE anything else looks at the words, because the
     # artefacts it removes are invisible to every step below. A recogniser hands
@@ -254,9 +257,8 @@ def expand_queries(query: str, allow_spelling: bool = True) -> List[str]:
 # the final list majority-rule: the two principal asks dominate, and the CITAS
 # evidence lands at rank 13 of a 12-slot list — retrieved, then thrown away.
 #
-# So the question is split on its coordinators (and / or / commas / semicolons)
-# and each part is ranked separately. Splitting is purely syntactic, so it works
-# on any document set and any subject matter.
+# Separate requests are ranked individually, but coordinators inside a named
+# college, office or program must stay attached to that name.
 # ---------------------------------------------------------------------------
 
 # Interrogatives that mark the start of a new ask ("... and WHO is the dean").
@@ -268,7 +270,7 @@ _QUESTION_WORDS = (
 # one of these. It needs an interrogative, NOT the previous part's noun.
 _DETERMINERS = ("the", "a", "an", "its", "their", "his", "her")
 
-# Splitting a 6-word question into fragments produces noise, not aspects.
+# Short list members such as "elementary" are valid after a real boundary.
 MIN_PART_TERMS = 1
 MAX_PARTS = 4
 
@@ -278,9 +280,8 @@ def split_question(question: str) -> List[str]:
     Split a compound question into its parts. Returns [] when the question is
     single-purpose (the common case), so callers can skip the extra work.
 
-    The split is conservative: a part is kept only if it still carries a content
-    word, and the original question is always ranked alongside the parts, so an
-    over-eager split cannot lose information.
+    A part must carry a content word, and the original question is also ranked.
+    Qualified names stay intact: their internal conjunctions are not new asks.
 
     Two kinds of coordinated fragment, and they need opposite treatment
     -------------------------------------------------------------------
@@ -311,9 +312,49 @@ def split_question(question: str) -> List[str]:
     if not q:
         return []
 
-    # Split on commas, semicolons, and the words "and"/"or" used as coordinators.
-    raw_parts = re.split(r"\s*[;,]\s*|\s+\band\b\s+|\s+\bor\b\s+", q, flags=re.I)
-    parts = [p.strip(" ?.!") for p in raw_parts if p and p.strip(" ?.!")]
+    name_head = re.compile(
+        r"\b(?:college|school|department|faculty|office|institute|university|center|centre|"
+        r"bachelor|master|doctor|associate)\s+(?:of|for|in)\s+\S", re.I,
+    )
+    request_start = re.compile(
+        rf"^(?:(?:please|also)\s+)*(?:{'|'.join(_QUESTION_WORDS)}|tell|show|list|give|find|"
+        r"explain|describe|compare|provide)\b|^(?:can|could|would|will)\s+you\b", re.I,
+    )
+    role_start = re.compile(
+        rf"^(?:(?:{'|'.join(_DETERMINERS)})\s+)?(?:(?:acting|interim|vice|assistant|associate)\s+)*"
+        r"(?:deans?|principals?|presidents?|heads?|chairs?|chairpersons?|directors?|registrars?|"
+        r"managers?|coordinators?|officers?|faculty|staff|teachers?)\b", re.I,
+    )
+
+    def starts_name(text):
+        return name_head.match(re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.I))
+
+    boundaries = list(re.finditer(
+        r"\s*([;,])\s*(?:(?:and|or)\s+)?|\s+\b(?:and|or)\b\s+", q, flags=re.I,
+    ))
+    parts, start = [], 0
+    for index, boundary in enumerate(boundaries):
+        left = q[start:boundary.start()].strip(" ?.!")
+        end = boundaries[index + 1].start() if index + 1 < len(boundaries) else len(q)
+        right = q[boundary.end():end].strip(" ?.!")
+        if re.fullmatch(r"i\s+mean|actually|to\s+clarify|rather", left, re.I):
+            continue
+        role = role_start.match(right)
+        separate_role = role and (
+            right.split()[0].lower() in _DETERMINERS
+            or re.search(r"\b(?:of|for|in|at)\b", right[role.end():], re.I)
+        )
+        independent = (request_start.match(right) or separate_role or starts_name(right)
+                       or re.match(r"^(?:the|a|an)\s+.+\b(?:of|for|in|at)\s+\S", right, re.I)
+                       or re.match(r"^(?:its|their|his|her)\s+", right, re.I))
+        if boundary.group(1) != ";" and name_head.search(left) and not independent:
+            continue
+        if left:
+            parts.append(left)
+        start = boundary.end()
+    tail = q[start:].strip(" ?.!")
+    if tail:
+        parts.append(tail)
 
     if len(parts) < 2:
         return []
@@ -334,13 +375,21 @@ def split_question(question: str) -> List[str]:
         # fragment can be substituted in its place. Cut after a preposition
         # when there is one ("... principal OF highschool"), because that is
         # exactly the slot a bare fragment fills.
-        lowered = [w.strip("?,.").lower() for w in first_words]
-        cut = None
-        for i, w in enumerate(lowered):
-            if w in ("of", "for", "in", "at"):
-                cut = i + 1
-        if cut is not None and cut < len(first_words):
-            stem = " ".join(first_words[:cut]).strip()
+        name = name_head.search(parts[0])
+        if name:
+            # The name's own "of" is not the role's stem: avoid producing
+            # "dean of the College of College of ..." for a second college.
+            prefix = re.sub(r"\b(?:the|a|an)\s*$", "", parts[0][:name.start()], flags=re.I).strip()
+            if re.search(r"\b(?:of|for|in|at)$", prefix, re.I):
+                stem = prefix
+        else:
+            lowered = [w.strip("?,.").lower() for w in first_words]
+            cut = None
+            for i, w in enumerate(lowered):
+                if w in ("of", "for", "in", "at"):
+                    cut = i + 1
+            if cut is not None and cut < len(first_words):
+                stem = " ".join(first_words[:cut]).strip()
 
     aspects: List[str] = []
     for i, p in enumerate(parts):
@@ -350,9 +399,11 @@ def split_question(question: str) -> List[str]:
         words = p.split()
         first_word = words[0].strip("?,.").lower() if words else ""
 
-        if i == 0 or first_word in _QUESTION_WORDS:
+        if i == 0 or request_start.match(p):
             aspect = p                                  # already a question
-        elif first_word in _DETERMINERS and opener:
+        elif starts_name(p) and stem:
+            aspect = f"{stem} {p}"                      # another named unit
+        elif opener and (first_word in _DETERMINERS or role_start.match(p)):
             aspect = f"{opener} {p}"                    # case 2: self-contained
         elif stem:
             aspect = f"{stem} {p}"                      # case 1: shares the noun
@@ -373,7 +424,7 @@ def split_question(question: str) -> List[str]:
 
 
 def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=None,
-                         allow_spelling: bool = True) -> list:
+                         allow_spelling: bool = True, filtered_queries=None) -> list:
 
     """
     Fan out to companion queries and merge results, de-duplicated, preserving
@@ -382,6 +433,9 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=No
     `extra_queries` lets the caller add its own retrieval probes — used to run
     BOTH the user's natural question and the LLM's keyword rewrite, so recall
     never depends on which of the two the rewriter happened to produce.
+
+    When supplied, `filtered_queries` is an explicit list of (query, filter)
+    jobs for the newer-source pass, rather than unfiltered index searches.
     """
     queries = expand_queries(query, allow_spelling=allow_spelling)
 
@@ -392,17 +446,32 @@ def multi_query_retrieve(query: str, extra_queries: List[str] = None, timeout=No
 
     # Reuse the bounded per-worker pool. Two probes per request at a time keep
     # a multipart question from monopolizing it while preserving every phrasing.
-    def fetch(q):
+    jobs = filtered_queries if filtered_queries is not None else [(q, None) for q in queries]
+
+    def fetch(job):
+        q, metadata_filter = job
         try:
+            if metadata_filter is not None:
+                # EnsembleRetriever does not reliably forward invoke kwargs.
+                # Bind the filter at each leaf, without changing shared settings.
+                results = [
+                    leaf.invoke(q, filter=metadata_filter)
+                    for leaf in (sparse_retriever, dense_retriever)
+                ]
+                return retriever.weighted_reciprocal_rank(results)
             return retriever.invoke(q)
         except (CapacityError, TimeoutError):
             raise
         except Exception as e:
+            if metadata_filter is not None:
+                # A failed current-source search is not evidence that only the
+                # old handbook can answer. Let the request fail without stale facts.
+                raise RuntimeError("Newer document search is unavailable") from e
             print(f"  Retrieval failed for '{q[:48]}...' (non-fatal): {e}")
             return []
 
     result_lists = retrieval_pool.map_ordered(
-        fetch, queries,
+        fetch, jobs,
         timeout=timeout if timeout is not None else env_int("RETRIEVAL_TIMEOUT_SECONDS", 30),
         in_flight=2,
     )
@@ -437,15 +506,18 @@ def retrieve_documents(
     progress=None,
     request_budget=None,
     allow_spelling: bool = True,
+    dates=None,
+    uploads=None,
+    on_selection=None,
 ) -> list:
 
 
     """
     The single entry point for "given a query, give me the documents".
 
-    Returns ranked candidates. The graph applies current-source selection before
-    constructing the answer context and citations. Retrieval probes can inspect
-    the same candidate pool without invoking answer generation.
+    Search newer sources first and apply relevance-aware source selection before
+    reranking/caps. `on_selection` retains that decision for the graph's history
+    boundary even if the ranker later returns fewer or no documents.
 
     Two query strings, deliberately
     -------------------------------
@@ -481,6 +553,10 @@ def retrieve_documents(
     """
 
     top_k = top_k or FINAL_TOP_K
+    from rag.source_policy import (
+        catalog_source_names, department_catalog_queries, newer_source_names, program_catalog_queries,
+    )
+    from rag.unit_identity import is_unit_reference, requested_unit
 
     # Collect the rewrite before assembling the phrasings, but AFTER this
     # function has been entered — the caller kicked the LLM off earlier, so
@@ -517,6 +593,20 @@ def retrieve_documents(
 
     primary = phrasings[0]
 
+    # One chronology snapshot is shared by acquisition, selection and generation.
+    dates = get_doc_dates() if dates is None else dates
+    if uploads is None:
+        try:
+            uploads = get_file_upload_dates()
+        except Exception:
+            print("[retrieval] Upload chronology unavailable; using recorded source dates.")
+            uploads = {}
+    current_sources = newer_source_names(dates=dates, uploads=uploads)
+    catalog_queries = list(dict.fromkeys(
+        probe for phrasing in phrasings
+        for probe in (department_catalog_queries(phrasing) or program_catalog_queries(phrasing))
+    ))
+
 
 
     # A compound question ("X, Y and Z?") is split so each part can be ranked
@@ -524,6 +614,14 @@ def retrieve_documents(
     # because it still has its grammar; a keyword rewrite usually does not.
     split_source = user_question or primary
     aspects = split_question(split_source)
+    # The accepted user's question, not a history-enriched keyword rewrite,
+    # decides scope. Only a genuine reference may use its resolved unit first.
+    scope_question = split_source
+    if not requested_unit(split_source) and is_unit_reference(split_source) and requested_unit(primary):
+        scope_question = primary
+    relevance_queries = list(dict.fromkeys([
+        scope_question, *phrasings, *aspects, *language_variants(split_source),
+    ]))
 
     if verbose:
         print(f"\n=== STEP 1: Retrieval (Queries: {phrasings}) ===")
@@ -538,20 +636,91 @@ def retrieve_documents(
     # splitting and expansion.
     emit_phase(progress, "searching")
 
-    try:
-        initial_docs = multi_query_retrieve(
-            primary,
-            extra_queries=phrasings[1:] + aspects,
+    preferred_docs = []
+    selection = select_documents([], relevance_queries, dates=dates, uploads=uploads)
+    if current_sources:
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *catalog_queries]))
+        source_filter = {"source": {"$in": current_sources}}
+        jobs = [(probe, source_filter) for probe in probes]
+        catalogs = catalog_source_names(current_sources) if catalog_queries else []
+        if catalogs:
+            # A large curriculum must not hide a smaller Programs Offered file
+            # even within the current-source top-k. Titles are discovery hints;
+            # the returned text still has to pass the relevance policy.
+            jobs = [
+                (catalog_queries[0], {"source": {"$eq": source}})
+                for source in catalogs
+            ] + jobs
+        preferred_docs = multi_query_retrieve(
+            primary, filtered_queries=jobs,
             timeout=request_budget.remaining(30) if request_budget else None,
             allow_spelling=allow_spelling,
         )
+        selection = select_documents(
+            preferred_docs, relevance_queries, dates=dates, uploads=uploads,
+            limit=max(1, len(preferred_docs)),
+        )
         if verbose:
-            print(f"  RRF + expansion returned {len(initial_docs)} candidates")
+            print(f"  Newer-source search: {len(current_sources)} files, {len(preferred_docs)} candidates")
+            if catalogs:
+                counts = {source: sum((doc.metadata or {}).get("source") == source for doc in preferred_docs)
+                          for source in catalogs}
+                print(f"  Catalog sources checked (retrieved chunks): {counts}")
+
+    try:
+        if selection.restricted:
+            initial_docs = selection.documents
+        else:
+            initial_docs = multi_query_retrieve(
+                primary,
+                extra_queries=phrasings[1:] + aspects + catalog_queries,
+                timeout=request_budget.remaining(30) if request_budget else None,
+                allow_spelling=allow_spelling,
+            )
+            # Keep newer results for comparisons/historical asks and for another
+            # relevance decision alongside any baseline found by the fallback.
+            seen = {(d.metadata or {}).get("chunk_id") or (
+                (d.metadata or {}).get("source"), (d.metadata or {}).get("page"), d.page_content
+            ) for d in initial_docs}
+            for doc in preferred_docs:
+                key = (doc.metadata or {}).get("chunk_id") or (
+                    (doc.metadata or {}).get("source"), (doc.metadata or {}).get("page"), doc.page_content
+                )
+                if key not in seen:
+                    seen.add(key)
+                    initial_docs.append(doc)
+            selection = select_documents(
+                initial_docs, relevance_queries, dates=dates, uploads=uploads,
+                limit=max(1, len(initial_docs)),
+            )
+            initial_docs = selection.documents
+        if verbose:
+            print(f"  Source-eligible pool contains {len(initial_docs)} candidates")
     except (CapacityError, TimeoutError):
         raise
     except Exception as e:
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
+
+    if on_selection is not None:
+        on_selection(selection)
+    if selection.restricted or catalog_queries:
+        # Reserve space for each current source (and each college catalog unit)
+        # before the reranker's fixed scoring budget, not after it has cut them.
+        groups = {}
+        for doc in initial_docs:
+            md = doc.metadata or {}
+            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries else ""
+            groups.setdefault((doc_key(md.get("source", "")), str(section)), []).append(doc)
+        initial_docs = [
+            documents[rank]
+            for rank in range(max((len(documents) for documents in groups.values()), default=0))
+            for documents in groups.values() if rank < len(documents)
+        ]
+    if verbose:
+        mode = "newer sources only" if selection.restricted else "fallback/comparison search"
+        chosen = sorted({(d.metadata or {}).get("source", "Unknown") for d in initial_docs})
+        print(f"  Source policy before reranking: {mode}; sources={chosen}")
 
     # The cross-encoder is next, and on CPU it is usually the longest single
     # phase of the request. The count is the CANDIDATE pool, because that is
@@ -566,7 +735,7 @@ def retrieve_documents(
         # The whole question is included as one more "aspect" so documents that
         # answer several parts at once are not penalised.
         final_docs = rerank_multi(
-            [*aspects, *phrasings],
+            [*aspects, *phrasings, *catalog_queries],
             initial_docs,
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
@@ -578,7 +747,7 @@ def retrieve_documents(
             initial_docs,
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
-            queries=phrasings[1:],
+            queries=phrasings[1:] + catalog_queries,
             request_budget=request_budget,
         )
 
@@ -1023,6 +1192,15 @@ def create_graph():
                 # Both queries now share the accepted intent. Never let the raw
                 # typo compete with it or reach the answer model after correction.
                 timings.start("retrieval+rerank")
+                dates = get_doc_dates()
+                uploads = {}
+                source_selections = []
+                if not (interpretation and interpretation.status == "clarify"):
+                    request_budget.remaining()
+                    try:
+                        uploads = get_file_upload_dates()
+                    except Exception:
+                        print("[chain] Upload chronology unavailable; using recorded source dates.")
                 final_docs = [] if interpretation and interpretation.status == "clarify" else retrieve_documents(
                     standalone_query,
                     top_k=RERANK_CANDIDATES,
@@ -1032,6 +1210,9 @@ def create_graph():
                     progress=progress,
                     request_budget=request_budget,
                     allow_spelling=interpretation is None,
+                    dates=dates,
+                    uploads=uploads,
+                    on_selection=source_selections.append,
                 )
 
                 timings.stop("retrieval+rerank")
@@ -1048,20 +1229,18 @@ def create_graph():
 
 
             request_budget.remaining()
-            dates = get_doc_dates()
-            uploads = {}
-            if final_docs:
-                request_budget.remaining()
-                try:
-                    uploads = get_file_upload_dates()
-                except Exception:  # Optional metadata must not hide otherwise usable dated sources.
-                    print("[chain] Upload chronology unavailable; using recorded source dates.")
-            selection = select_documents(
-                final_docs,
-                [user_text, standalone_query, *split_question(user_text), *language_variants(user_text)],
-                dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
-            )
-            final_docs = selection.documents
+            if source_selections:
+                # Do not reclassify a reduced ranked pool: that could forget that
+                # obsolete sources were excluded before scoring and restore history.
+                selection = source_selections[-1]
+                final_docs = final_docs[:FINAL_TOP_K]
+            else:
+                selection = select_documents(
+                    final_docs,
+                    [user_text, standalone_query, *split_question(user_text), *language_variants(user_text)],
+                    dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
+                )
+                final_docs = selection.documents
             emit_phase(
                 progress, "preparing", documents=len(final_docs),
                 sources=len({(getattr(d, "metadata", None) or {}).get("source", "") for d in final_docs}),
@@ -1070,7 +1249,13 @@ def create_graph():
 
 
             # === STEP 3: Handle Conversation Summary ===
-            if len(history) > 10 and not selection.restricted:
+            from rag.source_policy import department_catalog_queries, program_catalog_queries
+            from rag.unit_identity import is_unit_reference
+
+            department_listing = bool(department_catalog_queries(user_text))
+            program_listing = bool(program_catalog_queries(user_text))
+            scoped_answer = selection.restricted or bool(selection.requested_unit)
+            if len(history) > 10 and not scoped_answer and not department_listing and not program_listing:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
                     summary = summary_future.result(timeout=request_budget.remaining(3))
@@ -1084,7 +1269,10 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a current-source answer.
-            prompt_history = [m for m in history if m.get("role") == "user"] if selection.restricted else history
+            if department_listing or (program_listing and not is_unit_reference(user_text)):
+                prompt_history = []
+            else:
+                prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing else history
             history_str = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in prompt_history)
 
             # Admin-verified overrides for anything the corpus contradicts
@@ -1150,6 +1338,18 @@ def create_graph():
             )
             if selection.restricted:
                 final_system_prompt += "\n\n" + SOURCE_SELECTION_GUIDANCE
+            if selection.requested_unit:
+                from rag.source_policy import unit_selection_guidance
+
+                final_system_prompt += "\n\n" + unit_selection_guidance(selection, final_docs)
+            if department_listing:
+                from rag.source_policy import DEPARTMENT_LIST_GUIDANCE
+
+                final_system_prompt += "\n\n" + DEPARTMENT_LIST_GUIDANCE
+            if program_listing:
+                from rag.source_policy import PROGRAM_LIST_GUIDANCE
+
+                final_system_prompt += "\n\n" + PROGRAM_LIST_GUIDANCE
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.
             messages = [SystemMessage(content=f"{final_system_prompt}\n\n{response_language_prompt}")]

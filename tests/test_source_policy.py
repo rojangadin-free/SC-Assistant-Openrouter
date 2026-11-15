@@ -9,7 +9,13 @@ from unittest.mock import Mock, patch
 
 import _bootstrap  # noqa: F401
 
-from rag.source_policy import select_documents
+from rag.source_policy import (
+    catalog_source_names,
+    department_catalog_queries,
+    newer_source_names,
+    program_catalog_queries,
+    select_documents,
+)
 
 BASE = "Samar-College-2024.pdf"
 UPDATE = "Samar_Colleges_Inc_Admission_Policy.docx"
@@ -59,6 +65,55 @@ class SourcePolicyTests(unittest.TestCase):
         result = self.select([document(text="BA Sociology was offered in the old program list."), current],
                              "Is BA Sociology offered?", uploads={current.metadata["source"]: UPLOADS[UPDATE]})
         self.assertEqual(result.documents, [current])
+
+    def test_short_offering_requests_select_the_current_catalog_not_old_training(self):
+        source = "Samar_college_Inc_Programs_offered.docx"
+        current = document(source, "College of Information Technology and Allied Sciences\n"
+                           "Bachelor of Science in Information Technology",
+                           collection_heading="Programs Offered")
+        old = document(text="SCTI Training Offerings\nCookery NC II\nOLD_TRAINING_ENTRY")
+        notice = document("Library_Notice.docx", "Confirmed current library operating hours: eight to five.")
+        for query in ("confirmed current offerings", "current offerings", "latest offerings",
+                      "program offerings", "what courses are currently offered?"):
+            with self.subTest(query=query):
+                result = self.select([old, notice, current], query, uploads={
+                    source: UPLOADS[UPDATE], notice.metadata["source"]: UPLOADS[UPDATE],
+                })
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.documents, [current])
+                self.assertIn(BASE.lower(), result.discarded_sources)
+
+    def test_confirmed_current_offerings_cannot_fall_back_to_unverified_old_lists(self):
+        old = document(text="SCTI Training Offerings\nCookery NC II\nOLD_TRAINING_ENTRY")
+        for body, uploads in (("Programs Offered 2026", {"Programs_Offered.docx": UPLOADS[UPDATE]}),
+                              ("Programs Offered\nSee the handbook for the list.", {"Programs_Offered.docx": UPLOADS[UPDATE]}),
+                              ("Programs offered: Bachelor of River Studies.", {})):
+            with self.subTest(body=body, uploads=uploads):
+                current = document("Programs_Offered.docx", body, collection_heading="Programs Offered")
+                result = self.select([old, current], "confirmed current offerings", uploads=uploads)
+                self.assertEqual(result.documents, [])
+                self.assertFalse(result.restricted, "Do not claim a verified current source was found")
+        self.assertEqual(self.select([old], "current offerings", uploads={}).documents, [])
+
+    def test_current_offering_request_keeps_explicit_unit_identity(self):
+        old = document(text="College of Arts and Sciences\nBachelor of OLD_CAS_FIELD",
+                       section_heading="College of Arts and Sciences")
+        other = document("Programs_Offered.docx", "College of Liberal Arts and Sciences\n"
+                         "Bachelor of CURRENT_CLAS_FIELD", collection_heading="Programs Offered")
+        uploads = {other.metadata["source"]: UPLOADS[UPDATE]}
+        current = self.select([old, other], "Current offerings for College of Arts and Sciences", uploads=uploads)
+        self.assertEqual(current.documents, [])
+        self.assertEqual(current.requested_unit, "College of Arts and Sciences")
+        self.assertEqual(self.select([old, other], "cas", uploads=uploads).documents, [old])
+
+    def test_historical_offering_requests_still_keep_requested_editions(self):
+        old = document(text="Programs offered: OLD_PROGRAM.")
+        current = document("Programs_Offered.docx", "Programs offered: CURRENT_PROGRAM.")
+        for query in ("What programs were offered in 2024?", "Compare the 2024 handbook and current offerings"):
+            with self.subTest(query=query):
+                result = self.select([old, current], query, uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [old, current])
+                self.assertFalse(result.restricted)
 
     def test_catalog_cannot_replace_uncovered_fee_guidance(self):
         current = document("Programs_Offered.docx", "Course Offering\nBSIT and BSBA are listed.", section="Course Offering")
@@ -203,6 +258,461 @@ class SourcePolicyTests(unittest.TestCase):
         docs = [document(), document("s3://bucket/SAMAR-COLLEGE-2024.PDF", "Enrollment uses another page of the same handbook.")]
         result = self.select(docs, uploads={BASE: UPLOADS[UPDATE]})
         self.assertFalse(result.restricted)
+
+    def test_department_list_uses_current_catalog_without_literal_department(self):
+        current = document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies",
+                           collection_heading="Programs Offered", section_heading="College of River Studies")
+        old = document(text="College departments: OLD_UNIT and OMITTED_OLD_UNIT.")
+        for query in ("college department", "academic department", "What are the college departments?"):
+            with self.subTest(query=query):
+                result = self.select([old, current], query, uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.documents, [current])
+                self.assertIs(result.documents[0], current)
+
+    def test_department_alias_also_preserves_specific_contact_relevance(self):
+        current = document("Contacts.docx", "River departments contact: CURRENT_PHONE.")
+        result = self.select([document(), current], "Who is the contact for River department?",
+                             uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [current])
+
+    def test_department_catalog_uses_all_heading_metadata_and_named_departments(self):
+        for key in ("section_heading", "collection_heading", "section", "header"):
+            for name in ("College of River Studies", "River Studies Department", "Department of River Studies"):
+                with self.subTest(key=key, name=name):
+                    current = document("Offerings_Update.docx", "Bachelor of River Studies", **{key: name})
+                    result = self.select([document(), current], "List the academic departments",
+                                         uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                    self.assertEqual(result.documents, [current])
+                    self.assertEqual(current.metadata[key], name)
+
+    def test_substantive_catalog_keeps_all_unit_chunks_before_rosters_and_curricula(self):
+        source = "Programs_Offered.DOCX"
+        river = document(source, "Bachelor of River Studies", section_heading="College of River Studies",
+                         collection_heading="Programs Offered", chunk_id="river")
+        valley = document(source, "Bachelor of Valley Studies", section_heading="College of Valley Studies",
+                          collection_heading="Programs Offered", chunk_id="valley")
+        third = document(source, "Bachelor of Forest Studies", section_heading="Forest Studies Department",
+                         collection_heading="College Course Offerings", chunk_id="forest")
+        roster = document("Staff_2026.docx", "College of River Studies | Dean: Current Person\n"
+                          "College of OLD_ROSTER_UNIT | Dean: Other Person", section_heading="College Directory")
+        curriculum = document("Curriculum.docx", "College of River Studies\nYear 1: field methods and data analysis")
+        unknown = document("Legacy_Program_Catalog.pdf", "College of UNKNOWN_OLD_UNIT\nBachelor of Old Studies")
+        shs = document(source, "English Department | Teacher: Current Person",
+                       section_heading="SHS Academic Departments", collection_heading="Programs Offered")
+        stub = document(source, "College of OMITTED_UNIT\nRefer to the handbook for the list of programs.",
+                        collection_heading="Programs Offered")
+        bare = document(source, "Programs Offered 2026", collection_heading="Programs Offered")
+        docs = [document(), roster, unknown, curriculum, shs, valley, bare, river, stub, third]
+        before = deepcopy(docs)
+        uploads = {name: UPLOADS[UPDATE] for name in (source, roster.metadata["source"], curriculum.metadata["source"])}
+        result = self.select(docs, "What are the college departments?", uploads=uploads)
+        self.assertTrue(result.restricted)
+        self.assertEqual(result.documents, [valley, river, third])
+        self.assertEqual(result.discarded_sources,
+                         ("curriculum.docx", "legacy_program_catalog.pdf", BASE.lower(), "staff_2026.docx"))
+        self.assertEqual(self.select(docs, "academic department", uploads=uploads, limit=2).documents, [valley, river])
+        self.assertEqual(docs, before)
+        for actual, original in zip(result.documents, [valley, river, third]):
+            self.assertIs(actual, original)
+
+    def test_complementary_current_department_catalogs_remain_in_input_order(self):
+        first = document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies")
+        second = document("Course_Catalog.docx", "College of Valley Studies\nBachelor of Valley Studies")
+        result = self.select([document(), second, first], "Which academic departments are available?",
+                             uploads={first.metadata["source"]: "2026-11-13T02:39:20Z",
+                                      second.metadata["source"]: "2026-11-13T02:39:33Z"})
+        self.assertEqual(result.documents, [second, first])
+
+    def test_structural_college_unit_list_need_not_have_a_catalog_filename(self):
+        current = document("Academic_Update.docx", "College departments\n1. College of River Studies\n"
+                           "2. College of Valley Studies")
+        result = self.select([document(), current], "List the college departments",
+                             uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+        self.assertTrue(result.restricted)
+        self.assertEqual(result.documents, [current])
+
+    def test_named_catalog_rows_are_evidence_even_when_repeated_in_metadata(self):
+        for name in ("College of River Studies", "Department of River Studies", "River Studies Department"):
+            with self.subTest(name=name):
+                current = document("Programs_Offered.docx", name, section_heading=name,
+                                   collection_heading="College Programs Offered")
+                result = self.select([document(), current], "List the academic departments",
+                                     uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [current])
+
+    def test_bare_catalog_body_is_not_substantive_unit_coverage_from_metadata(self):
+        for body in ("Programs Offered 2026", "Course Offering", "Academic Catalog", "Academic Departments"):
+            with self.subTest(body=body):
+                current = document("Programs_Offered.docx", body, section_heading="College of River Studies")
+                self.assertFalse(self.select([document(), current], "academic department",
+                                             uploads={current.metadata["source"]: UPLOADS[UPDATE]}).restricted)
+
+    def test_department_list_falls_back_when_modern_documents_do_not_answer(self):
+        bodies = (
+            "Samar College\nThe academic calendar lists the final examination dates.",
+            "Ask your college department about the enrollment requirements.",
+            "The College of River Studies held a meeting about the academic calendar.",
+            "College of River Studies students attend orientation every Friday.",
+            "Academic departments should refer students to their advisers for enrollment.",
+            "Year 1 curriculum: field methods, data analysis, and a laboratory class.",
+            "Programs Offered 2026",
+            "Course Offering\nSee the handbook for the complete list of college departments.",
+            "College of River Studies\nRefer to the handbook for all academic departments.",
+        )
+        old = document(text="College departments: OLD_UNIT and PREVIOUS_UNIT.")
+        for body in bodies:
+            with self.subTest(body=body):
+                current = document("Programs_Offered.docx", body, collection_heading="Programs Offered")
+                result = self.select([old, current], "What are the academic departments?",
+                                     uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertFalse(result.restricted)
+                self.assertEqual(result.documents, [old, current])
+
+    def test_shs_teacher_rosters_and_qualifications_are_not_college_catalogs(self):
+        cases = (
+            ("English Department | Teacher: Current Person", {"collection_heading": "Senior High School"}),
+            ("English Department | Teacher: Current Person", {"section_heading": "SHS Academic Departments"}),
+            ("Senior High School\nEnglish Department | Teacher: Current Person", {}),
+            ("Junior High School\nDepartment of River Studies\nBachelor of River Studies", {}),
+            ("Samar College\nEnglish Department | Teacher: Current Person\nBachelor of Literature",
+             {"section_heading": "Faculty Qualifications"}),
+            ("Department of River Studies\nTeacher: Current Person\nBachelor of River Studies",
+             {"section_heading": "Academic Departments"}),
+            ("Dr. Current Person | Bachelor of River Studies", {"section_heading": "River Studies Department"}),
+            ("College of River Studies\nTeacher: Current Person", {"section_heading": "Teacher Roster"}),
+        )
+        for text, headings in cases:
+            with self.subTest(text=text, headings=headings):
+                current = document("Programs_Offered.docx", text, **headings)
+                old = document()
+                result = self.select([old, current], "college department",
+                                     uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertFalse(result.restricted)
+                self.assertEqual(result.documents, [old, current])
+
+    def test_department_catalog_does_not_override_chronology(self):
+        current = document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies")
+        old = document()
+        for stamp in ("2019-06-01", "2027-06-01"):
+            with self.subTest(stamp=stamp):
+                result = self.select([old, current], "college departments", dates={
+                    **DATES, "programs_offered.docx": {"effective_date": stamp},
+                }, uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertFalse(result.restricted)
+                self.assertEqual(result.documents, [old, current])
+        self.assertFalse(self.select([old, current], "academic departments", uploads={}).restricted)
+
+    def test_historical_department_requests_keep_all_requested_versions(self):
+        docs = [document(), document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies")]
+        for query in ("What were the college departments in 2024?", "List academic departments in the 2024 handbook",
+                      "Compare the previous and current college departments", "What changed in academic departments?"):
+            with self.subTest(query=query):
+                result = self.select(docs, query, uploads={docs[1].metadata["source"]: UPLOADS[UPDATE]})
+                self.assertFalse(result.restricted)
+                self.assertEqual(result.documents, docs)
+
+    def test_explicit_level_and_role_questions_keep_existing_non_list_behavior(self):
+        shs = document("Roster.docx", "SHS academic departments: Languages and Mathematics.")
+        other = document("Roster.docx", "An unrelated page from the same source.")
+        result = self.select([document(), shs, other], "What are the SHS academic departments?",
+                             uploads={"Roster.docx": UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [shs, other])
+        dean = document("Roster.docx", "Dean of River Studies: Current Person.")
+        result = self.select([document(), dean, other], "Who is the college dean of River Studies?",
+                             uploads={"Roster.docx": UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [dean, other])
+
+    def test_compound_department_and_fee_aspects_retain_both_current_sources(self):
+        fees = document("Fee_Update.docx", "Tuition fees: CURRENT_FEE.")
+        queries = ["List college departments and tuition fees", "college departments", "tuition fees"]
+        for body in ("College of River Studies", "College of River Studies\nBachelor of River Studies"):
+            with self.subTest(body=body):
+                catalog = document("Programs_Offered.docx", body, section_heading="College of River Studies",
+                                   collection_heading="Programs Offered")
+                result = self.select([document(), fees, catalog], queries, uploads={
+                    catalog.metadata["source"]: UPLOADS[UPDATE], fees.metadata["source"]: UPLOADS[UPDATE],
+                })
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.documents, [fees, catalog])
+
+    def test_explicit_cas_name_selects_its_old_section_not_similar_current_catalogs(self):
+        old = document(text="College of Arts and Sciences (CAS)\nBachelor of Arts in Sociology", page=48,
+                       section_heading="College of Arts and Sciences")
+        current = [document(source, f"{unit}\n{degree}", collection_heading="Programs Offered")
+                   for source, unit, degree in (
+                       ("CLAS_Programs.docx", "College of Liberal Arts and Sciences (CLAS)",
+                        "Bachelor of Arts in Sociology"),
+                       ("Business_Programs.docx", "College of Business", "Bachelor of Business Administration"),
+                       ("Management_Programs.docx", "College of Management", "Bachelor of Management"),
+                       ("IT_Programs.docx", "College of Information Technology", "Bachelor of Information Technology"),
+                   )]
+        docs = [*current, document(text="Enrollment requires OLD_FORM.", page=5), old]
+        before = deepcopy(docs)
+        for query in ("college of arts and science", "Tell me about college of art and science.",
+                      "What programs does College of Arts and Sciences offer?",
+                      "What programs does cOlLeGe oF ArT aNd ScIeNcEs offer?"):
+            with self.subTest(query=query):
+                result = self.select(docs, query,
+                                     uploads={doc.metadata["source"]: UPLOADS[UPDATE] for doc in current})
+                self.assertEqual(result.documents, [old])
+                self.assertIs(result.documents[0], old)
+                self.assertEqual(result.documents[0].metadata["source"], BASE)
+                self.assertEqual(result.documents[0].metadata["page"], 48)
+        self.assertEqual(docs, before)
+
+    def test_dean_query_retains_academic_council_name_and_designation(self):
+        profile = document(text="The CAS is headed by a College Dean under the Vice-President.",
+                           section_heading="College of Arts and Sciences", page=31)
+        roster = document(text="Dr. River Example, PhD Vice-President for Academic Affairs / Dean College of Arts and Sciences",
+                          section_heading="Academic Council", page=144)
+        other = document("Current_Programs.docx", "College of Liberal Arts and Sciences\nBachelor of Arts in Sociology.")
+        result = self.select([profile, other, roster], "dean of cas",
+                             uploads={other.metadata["source"]: UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [profile, roster])
+        self.assertIn("Dr. River Example", result.documents[1].page_content)
+        self.assertEqual(result.documents[1].metadata["page"], 144)
+
+    def test_named_unit_matching_does_not_accept_inserted_or_appended_modifiers(self):
+        for unit, other in (("College of River Studies", "College of Applied River Studies"),
+                            ("College of Valley Studies", "College of Valley Studies and Technology")):
+            with self.subTest(unit=unit, other=other):
+                old = document(text="Bachelor of Community Studies", section_heading=unit)
+                current = document("Programs_Offered.docx", "Bachelor of Community Studies",
+                                   section_heading=other, collection_heading="Programs Offered")
+                result = self.select([current, old], f"What programs does {unit.lower()} offer?",
+                                     uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [old])
+
+    def test_newer_exact_cas_coverage_wins_without_an_always_handbook_rule(self):
+        unit = "College of Arts and Sciences (CAS)"
+        old = document(text=f"{unit}\nBachelor of Arts in OLD_SUBJECT")
+        current = document("Programs_Offered.docx", f"{unit}\nBachelor of Arts in CURRENT_SUBJECT")
+        other = document("Other_Programs.docx", "College of Liberal Arts and Sciences (CLAS)\n"
+                         "Bachelor of Arts in OTHER_SUBJECT", collection_heading="Programs Offered")
+        for chronology in ("upload", "effective_date"):
+            with self.subTest(chronology=chronology):
+                dates = dict(DATES)
+                uploads = {}
+                for doc in (current, other):
+                    source = doc.metadata["source"]
+                    if chronology == "upload":
+                        uploads[source] = UPLOADS[UPDATE]
+                    else:
+                        dates[source.lower()] = {"effective_date": "2026-06-01", "date_source": "document"}
+                result = self.select([other, old, current], "What programs does College of Arts and Sciences offer?",
+                                     dates=dates, uploads=uploads)
+                self.assertEqual(result.documents, [current])
+                self.assertIs(result.documents[0], current)
+
+    def test_explicit_unit_acronyms_do_not_match_other_units(self):
+        for unit, acronym, other, other_acronym in (
+            ("College of Arts and Sciences", "CAS", "College of Liberal Arts and Sciences", "CLAS"),
+            ("College of River Studies", "CRS", "College of Applied River Studies", "CARS"),
+        ):
+            old = document(text=f"{unit} ({acronym})\nBachelor of Community Studies")
+            current = document("Programs_Offered.docx", f"{other} ({other_acronym})\nBachelor of Community Studies")
+            for query in (acronym, acronym.lower(), f"What programs does {acronym.title()} offer?"):
+                with self.subTest(query=query, other=other):
+                    result = self.select([current, old], query,
+                                         uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                    self.assertEqual(result.documents, [old])
+
+    def test_explicit_clas_and_broad_catalog_queries_do_not_force_old_cas_fallback(self):
+        old = document(text="College of Arts and Sciences (CAS)\nPrograms offered: BA Sociology.")
+        clas = document("Programs_Offered.docx", "College of Liberal Arts and Sciences (CLAS)\n"
+                        "Bachelor of Arts in Communication", collection_heading="Programs Offered")
+        business = document("Business_Catalog.docx", "College of Business and Management\n"
+                            "Bachelor of Business Administration", collection_heading="Programs Offered")
+        for query, expected in (("College of Liberal Arts and Sciences", [clas]), ("CLAS", [clas]),
+                                ("college department", [clas, business]),
+                                ("What programs are offered?", [clas, business]),
+                                ("Is BA Sociology offered?", [clas, business])):
+            with self.subTest(query=query):
+                result = self.select([old, clas, business], query, uploads={
+                    clas.metadata["source"]: UPLOADS[UPDATE], business.metadata["source"]: UPLOADS[UPDATE],
+                })
+                self.assertEqual(result.documents, expected)
+
+    def test_named_unit_compound_queries_keep_other_requested_topics(self):
+        named_query = "Who is the dean of College of Arts and Sciences?"
+        named = document("College_Staff.docx", "College of Arts and Sciences (CAS)\nDean: Dr. Current Dean.")
+        for other_query, text in (("Who is the principal?", "Principal: Ms. Current Head."),
+                                  ("What are the tuition fees?", "Tuition fees: CURRENT_FEE.")):
+            with self.subTest(other_query=other_query):
+                other = document("Campus_Update.docx", text)
+                queries = [f"{named_query[:-1]} and {other_query.lower()}", named_query, other_query]
+                result = self.select([document(), other, named], queries, uploads={
+                    named.metadata["source"]: UPLOADS[UPDATE], other.metadata["source"]: UPLOADS[UPDATE],
+                })
+                self.assertEqual(result.documents, [other, named])
+
+
+class SourceDiscoveryTests(unittest.TestCase):
+    def test_program_probes_preserve_qualifiers_and_do_not_reclassify_other_questions(self):
+        for query in ("confirmed current offerings", "current senior high programs",
+                      "current offerings for College of River Studies", "programs offered in 2024"):
+            with self.subTest(query=query):
+                probes = program_catalog_queries(query)
+                self.assertEqual(len(probes), 2)
+                self.assertTrue(all(probe.startswith(query + " ") for probe in probes))
+        for query in ("What are the tuition fees for BSIT?", "Who manages degree programs?",
+                      "What is a degree?", "Current subjects and prerequisites", "When are course offerings announced?",
+                      "Compare current and 2024 program offerings", None, ""):
+            with self.subTest(query=query):
+                self.assertEqual(program_catalog_queries(query), [])
+
+    def newer(self, *, dates=None, uploads=None, **kwargs):
+        with patch("rag.freshness.get_doc_dates", side_effect=AssertionError("No store reads")), \
+                patch("rag.freshness._store", side_effect=AssertionError("No store reads")):
+            return newer_source_names(dates=dates, uploads=uploads, today=TODAY, **kwargs)
+
+    def test_raw_upload_spelling_precedes_date_record_filename_and_keys(self):
+        uploads = {"s3://bucket/Programs_Offered.DOCX": UPLOADS[UPDATE],
+                   r"C:\uploads\COURSE-Offerings.docx": "invalid", "Calendar.docx": UPLOADS[UPDATE]}
+        dates = {**DATES, "programs_offered.docx": {"filename": "Programs_Offered.docx", "effective_date": "2026-06-01"},
+                 "course-offerings.docx": {"filename": "Course-Offerings.docx", "effective_date": "2025-06-01"},
+                 "academic_catalog.pdf": {"filename": "Academic_Catalog.PDF", "effective_date": "2025-08-01"}}
+        before = deepcopy((dates, uploads))
+        self.assertEqual(self.newer(dates=dates, uploads=uploads),
+                         [*uploads, "Academic_Catalog.PDF"])
+        self.assertEqual((dates, uploads), before)
+
+    def test_discovery_returns_all_potential_sources_before_query_relevance(self):
+        dates = {**DATES, "policy-2025.pdf": {"filename": "Policy-2025.PDF"},
+                 "policy-2026.pdf": {"filename": "Policy-2026.PDF"}}
+        uploads = {"Unrelated_Calendar.docx": UPLOADS[UPDATE], "Course-Offerings.docx": UPLOADS[UPDATE]}
+        self.assertEqual(self.newer(dates=dates, uploads=uploads), [*uploads, "Policy-2025.PDF", "Policy-2026.PDF"])
+        self.assertEqual(self.newer(dates=dates), ["Policy-2025.PDF", "Policy-2026.PDF"])
+
+    def test_distinct_raw_upload_keys_are_not_lost_to_normalized_deduplication(self):
+        uploads = {"Programs_Offered.DOCX": UPLOADS[UPDATE], "programs_offered.docx": UPLOADS[UPDATE]}
+        dates = {"programs_offered.docx": {"filename": "PROGRAMS_OFFERED.docx", "effective_date": "2026-06-01"}}
+        self.assertEqual(self.newer(dates=dates, uploads=uploads), list(uploads))
+
+    def test_discovery_and_selection_share_date_and_upload_eligibility(self):
+        cases = (
+            (None, None, False), (None, "invalid", False), (None, "2023-01-01T00:00:00Z", False),
+            (None, "2027-01-01T00:00:00Z", False), (None, UPLOADS[UPDATE], True),
+            ("invalid", "invalid", False), ("2019-06-01", UPLOADS[UPDATE], False),
+            ("2027-06-01", UPLOADS[UPDATE], False), ("2024-06-01", None, False),
+            ("2024-06-01", UPLOADS[UPDATE], True), ("2025-06-01", None, True),
+            ("2025-06-01", "invalid", True), ("2025-06-01", "2027-01-01T00:00:00Z", True),
+        )
+        for effective, uploaded, expected in cases:
+            with self.subTest(effective=effective, uploaded=uploaded):
+                dates = {**DATES, UPDATE.lower(): {"filename": UPDATE, "effective_date": effective}}
+                uploads = {UPDATE: uploaded}
+                names = self.newer(dates=dates, uploads=uploads)
+                self.assertEqual(names, [UPDATE] if expected else [])
+                result = select_documents([document(), document(UPDATE)], "Enrollment requirements",
+                                          dates=dates, uploads=uploads, today=TODAY)
+                self.assertEqual(result.restricted, expected)
+
+    def test_filename_dates_and_recorded_dates_keep_existing_precedence(self):
+        dates = {**DATES, "old-title-2019.pdf": {"filename": "Old-Title-2019.PDF", "effective_date": "2026-06-01"},
+                 "misleading-2026.pdf": {"filename": "Misleading-2026.PDF", "effective_date": "2019-06-01"},
+                 "dated-2025.pdf": {}, "invalid-2026.pdf": {"effective_date": "not-a-date"}}
+        self.assertEqual(self.newer(dates=dates), ["Old-Title-2019.PDF", "dated-2025.pdf", "invalid-2026.pdf"])
+
+    def test_invalid_and_unproven_undated_sources_do_not_get_invented_dates(self):
+        dates = {"unknown.docx": {"filename": "Unknown.docx", "updated_at": UPLOADS[UPDATE], "first_seen": UPLOADS[UPDATE]},
+                 "invalid.docx": {"filename": "Invalid.docx", "effective_date": "2026-02-30"},
+                 "none.docx": None, "number.docx": {"effective_date": 2026}}
+        self.assertEqual(self.newer(dates=dates, uploads={"Future.docx": "2027-01-01T00:00:00Z"}), [])
+        self.assertEqual(self.newer(), [])
+
+    def test_default_and_renamed_handbooks_are_never_discovery_candidates(self):
+        dates = {**DATES, "student-handbook-2026.pdf": {"filename": "Student-Handbook-2026.PDF",
+                                                       "effective_date": "2024-06-01"}}
+        uploads = {BASE: UPLOADS[UPDATE], r"C:\uploads\STUDENT-Handbook-2024.PDF": UPLOADS[UPDATE],
+                   "Student-Handbook-2026.PDF": UPLOADS[UPDATE], UPDATE: "2026-11-13T02:39:29Z"}
+        self.assertEqual(self.newer(dates=dates, uploads=uploads), [UPDATE])
+
+    def test_custom_disabled_and_unknown_baselines_match_selection(self):
+        dates = {"reference.pdf": {"filename": "Reference.PDF", "effective_date": "2023-06-01"},
+                 UPDATE.lower(): {"filename": UPDATE, "effective_date": "2024-01-01"}}
+        self.assertEqual(self.newer(dates=dates, fallback_sources=["s3://bucket/REFERENCE.pdf"]), [UPDATE])
+        for baseline in ([], ["Undated.pdf"], ["Handbook-2027.pdf"]):
+            with self.subTest(baseline=baseline):
+                self.assertEqual(self.newer(dates=dates, uploads=UPLOADS, fallback_sources=baseline), [])
+
+    def test_equal_uploads_are_compared_as_utc_instants(self):
+        for timestamp, expected in (("2026-11-13T10:39:28+08:00", []),
+                                    ("2026-11-13T10:39:29+08:00", [UPDATE]),
+                                    ("2026-11-13T02:39:28", [])):
+            with self.subTest(timestamp=timestamp):
+                self.assertEqual(self.newer(dates=DATES, uploads={BASE: UPLOADS[UPDATE], UPDATE: timestamp}), expected)
+
+    def test_discovery_does_not_change_dated_only_selection_without_a_fallback_hit(self):
+        current = document("Policy-2026.PDF")
+        dates = {"policy-2026.pdf": {"filename": "Policy-2026.PDF"}}
+        self.assertEqual(self.newer(dates=dates), ["Policy-2026.PDF"])
+        result = select_documents([current], "Enrollment requirements", dates=dates, uploads={}, today=TODAY)
+        self.assertFalse(result.restricted)
+        self.assertEqual(result.documents, [current])
+
+    def test_dated_first_pass_requires_recorded_candidate_and_baseline_provenance(self):
+        current = document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies")
+        current_record = {"programs_offered.docx": {"filename": "Programs_Offered.docx", "effective_date": "2026-06-01"}}
+        baselines = (DATES, {"student-handbook.pdf": {"filename": "Student-Handbook.PDF", "effective_date": "2024-06-01"}})
+        for baseline in baselines:
+            with self.subTest(baseline=baseline):
+                dates = {**baseline, **current_record}
+                self.assertEqual(self.newer(dates=dates), ["Programs_Offered.docx"])
+                result = select_documents([current], "college departments", dates=dates, uploads={}, today=TODAY)
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.documents, [current])
+        for dates in (current_record, DATES, {**current_record, BASE.lower(): {"effective_date": "2027-06-01"}}):
+            with self.subTest(missing_or_future_baseline=dates):
+                result = select_documents([current], "college departments", dates=dates, uploads={}, today=TODAY)
+                self.assertFalse(result.restricted)
+
+
+class DepartmentProbeTests(unittest.TestCase):
+    def test_natural_broad_singular_and_plural_list_requests_have_two_generic_probes(self):
+        probes = ["college departments programs offered", "college academic units course offerings"]
+        for query in ("college department", "academic departments", "What are the academic department?",
+                      "What is the college department?", "List all college departments", "Name the academic units",
+                      "Which departments does the college have?", "What are the departments at Example College?",
+                      "Please show me the college departments", "Tell me all the academic departments",
+                      "COLLEGE ACADEMIC DEPARTMENTS", "Current academic departments"):
+            with self.subTest(query=query):
+                self.assertEqual(department_catalog_queries(query), probes)
+                self.assertTrue(all("example" not in probe for probe in probes))
+
+    def test_specific_services_roles_and_non_list_questions_are_not_broadened(self):
+        for query in ("Who is the dean of the college department?", "List college department heads",
+                      "College academic department faculty", "What is the college IT support department contact?",
+                      "What is the college guidance department?", "List academic department services",
+                      "What does an academic department do?", "What is an academic department?",
+                      "Where is the academic department office?", "How many academic departments are there?",
+                      "What are the fees for the college department?", "What is the River Studies department at college?",
+                      "Give the academic department phone number", "Academic department admission requirements",
+                      "What are the college department responsibilities?", "What is enrollment?", "Programs offered",
+                      "What programs does the academic department offer?", "List courses in the college department",
+                      "What is my college department?", "Tell me about college department activities",
+                      "The college department has a meeting tomorrow", "college IT department", "", None):
+            with self.subTest(query=query):
+                self.assertEqual(department_catalog_queries(query), [])
+
+    def test_explicit_other_school_levels_are_not_broadened_into_college_lists(self):
+        for level in ("SHS", "JHS", "senior high school", "junior high", "elementary", "basic education",
+                      "graduate", "postgraduate", "primary", "secondary", "kindergarten"):
+            with self.subTest(level=level):
+                self.assertEqual(department_catalog_queries(f"List the {level} academic departments"), [])
+                self.assertEqual(department_catalog_queries(f"List college and {level} departments"), [])
+
+    def test_catalog_source_hints_preserve_raw_paths_case_and_order(self):
+        catalog = [r"C:\uploads\PROGRAMS_Offered.DOCX", "s3://bucket/Course-Offering.pdf", "Program-Catalog.PDF",
+                   "Course_Catalogue.docx", "Academic_Catalog-2026.pdf", "Programme_Offerings.docx"]
+        sources = [catalog[0], "Student-Handbook.pdf", *catalog[1:], "Curriculum-2026.docx", "Program_Policies.pdf",
+                   "General_Course_Outline.docx", "Faculty_Roster.docx", catalog[0], None]
+        before = list(sources)
+        self.assertEqual(catalog_source_names(sources), catalog)
+        self.assertEqual(sources, before)
+        self.assertEqual(catalog_source_names(catalog[0]), [catalog[0]])
+        self.assertEqual(catalog_source_names([]), [])
 
 
 class UploadChronologyTests(unittest.TestCase):

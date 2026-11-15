@@ -421,7 +421,9 @@ def _header_of(doc) -> str:
     given window may not repeat.
     """
     md = getattr(doc, "metadata", None) or {}
-    return " ".join(str(md[k]) for k in ("section", "header") if md.get(k)).strip()
+    return " ".join(dict.fromkeys(
+        str(md[k]) for k in ("section", "header", "section_heading", "collection_heading") if md.get(k)
+    )).strip()
 
 
 def _windows_of(doc) -> List[str]:
@@ -827,4 +829,3 @@ def rerank_multi(
             break
 
     return merged[:top_k] if top_k else merged
-

@@ -385,6 +385,28 @@ class TableChunkingTests(IngestionTestCase):
         for row in table.splitlines()[2:]:
             self.assertEqual(lines.count(row), 1)
 
+    def test_large_table_continuations_repeat_the_table_context(self):
+        context = "[TABLE context: Digital Systems / Second Year / Second Semester]"
+        rows = [["CODE", "TITLE", "UNITS"]] + [
+            [f"DS {i:03d}", f"Practical laboratory subject {i:03d}", "3"]
+            for i in range(20)
+        ]
+        document = docx.Document()
+        table = self.ns["_docx_table_to_markdown"](add_table(document, rows))
+        chunks, _ = self.ns["smart_chunking"](
+            context + "\n" + table, max_tokens=65, overlap=0,
+            token_counter=lambda text: len(text.split()), running_header="Curriculum",
+        )
+        self.assertGreater(len(chunks), 1)
+        observed = []
+        for chunk in chunks:
+            self.assertIn(context, chunk)
+            parsed = markdown_rows(chunk)
+            self.assertEqual(parsed[0], rows[0])
+            self.assertGreater(len(parsed), 1)
+            observed.extend(parsed[1:])
+        self.assertEqual(observed, rows[1:])
+
 
 class UploadConfigurationTests(IngestionTestCase):
     def test_online_uploads_are_enabled_by_default_but_still_admin_only(self):
@@ -552,6 +574,100 @@ class SectionIdentityTests(IngestionTestCase):
         self.assertEqual(ids, [
             chunk.metadata["chunk_id"] for chunk in self.ns["_chunk_and_dedup"](docs)
         ])
+
+
+class CurriculumIngestionTests(IngestionTestCase):
+    def curriculum(self, rows_per_table=3):
+        document = docx.Document()
+        document.add_heading("ACADEMIC PROGRAMS", level=1)
+        programs = ("Bachelor of Science in Digital Systems (BSDS)",
+                    "Bachelor of Multimedia Arts (BMMA)")
+        expected = []
+        for program_index, program in enumerate(programs):
+            document.add_heading(program, level=2)
+            document.add_heading("Curriculum", level=3)
+            document.add_paragraph("The program includes general and professional courses.")
+            for year in ("First Year", "Second Year"):
+                document.add_heading(year, level=3)
+                for semester in ("First Semester", "Second Semester"):
+                    # Semester labels in exported curricula are often Normal, not headings.
+                    document.add_paragraph(semester)
+                    rows = [["COURSE CODE", "DESCRIPTIVE TITLE", "LEC", "LAB", "UNITS / PRE-REQUISITE"]]
+                    rows += [[f"P{program_index} {i:03d}", f"Laboratory subject {i:03d}", "2", "3", "3"]
+                             for i in range(rows_per_table)]
+                    add_table(document, rows)
+                    expected.append((program, year, semester, rows))
+        return document, expected
+
+    def test_each_semester_keeps_its_own_program_year_and_complete_rows(self):
+        document, expected = self.curriculum()
+        docs = self.ns["process_docx_linear"](self.save_docx(document), "Curriculum.DOCX")
+        extract_definitions("rag/reranker.py", ("_header_of",), self.ns)
+        tables = [doc for doc in docs if markdown_rows(doc.page_content)]
+        self.assertEqual(len(tables), len(expected), "Each semester needs independent retrieval context")
+        for table, (program, year, semester, rows) in zip(tables, expected):
+            with self.subTest(program=program, year=year, semester=semester):
+                self.assertEqual(markdown_rows(table.page_content), rows)
+                chunks = self.ns["_chunk_and_dedup"]([table])
+                self.assertEqual(len(chunks), 1)
+                for chunk in chunks:
+                    self.assertEqual(chunk.metadata["source"], "Curriculum.DOCX")
+                    self.assertIn("subjects", chunk.page_content.lower())
+                    self.assertEqual(chunk.page_content.splitlines()[0].count("ACADEMIC PROGRAMS"), 1)
+                    for label in (program, year, semester):
+                        self.assertIn(label, chunk.metadata["section_heading"])
+                        self.assertIn(label, chunk.page_content.splitlines()[0])
+                        self.assertIn(label, self.ns["_header_of"](chunk))
+                    other_program = expected[-1][0] if "BSDS" in program else expected[0][0]
+                    other_semester = "Second Semester" if semester == "First Semester" else "First Semester"
+                    self.assertNotIn(other_program, chunk.page_content)
+                    self.assertNotIn(other_semester, chunk.page_content)
+        chunks = self.ns["_chunk_and_dedup"](docs)
+        ids = [chunk.metadata["chunk_id"] for chunk in chunks]
+        self.assertEqual(len(ids), len(set(ids)), "Shared GE rows must keep distinct program/term identities")
+        self.assert_no_index_work()
+
+    def test_non_catalog_tables_keep_a_shared_caption_until_the_next_heading(self):
+        document = docx.Document()
+        program = "Bachelor of Science in Digital Systems (BSDS)"
+        document.add_heading(program, level=1)
+        document.add_heading("Third Year", level=2)
+        document.add_paragraph("First Semester")
+        for index in range(2):
+            add_table(document, [["SUBJECT", "CREDITS"], [f"Systems Laboratory {index}", "3"]])
+        document.add_heading("Second Semester", level=3)
+        add_table(document, [["SUBJECT", "CREDITS"], ["Systems Practicum", "6"]])
+        docs = self.ns["process_docx_linear"](self.save_docx(document), "Degree.docx")
+        tables = [doc for doc in docs if markdown_rows(doc.page_content)]
+        self.assertEqual(len(tables), 3)
+        for index, table in enumerate(tables):
+            heading = table.metadata["section_heading"]
+            self.assertIn(program, heading)
+            self.assertIn("Third Year", heading)
+            self.assertIn("First Semester" if index < 2 else "Second Semester", heading)
+            self.assertNotIn("Second Semester" if index < 2 else "First Semester", heading)
+            self.assertFalse(table.metadata.get("collection_heading"))
+        self.assert_no_index_work()
+
+    def test_large_curriculum_tables_keep_context_and_rows_on_every_continuation(self):
+        document, expected = self.curriculum(rows_per_table=90)
+        docs = self.ns["process_docx_linear"](self.save_docx(document), "LargeCurriculum.docx")
+        tables = [doc for doc in docs if markdown_rows(doc.page_content)]
+        self.assertEqual(len(tables), len(expected))
+        for table, (program, year, semester, rows) in zip(tables, expected):
+            chunks = self.ns["_chunk_and_dedup"]([table])
+            self.assertGreater(len(chunks), 1)
+            observed = []
+            for chunk in chunks:
+                for label in (program, year, semester):
+                    self.assertIn(label, chunk.metadata["section_heading"])
+                    self.assertIn(label, chunk.page_content.splitlines()[0])
+                parsed = markdown_rows(chunk.page_content)
+                self.assertEqual(parsed[0], rows[0])
+                self.assertGreater(len(parsed), 1)
+                observed.extend(parsed[1:])
+            self.assertEqual(observed, rows[1:])
+        self.assert_no_index_work()
 
 
 class AppendTests(IngestionTestCase):

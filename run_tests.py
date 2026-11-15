@@ -81,6 +81,7 @@ SUITES = [
     ("Successful sign-in history",      "test_login_activity.py"),
     ("Private topic usage",             "test_topic_usage.py"),
     ("Current document source policy",  "test_source_policy.py"),
+    ("Newer-source retrieval and fallback", "test_newer_retrieval.py"),
     ("Content-gap storage & detection", "test_gaps.py"),
     ("Answer source citations",         "test_citations.py"),
     ("Citation passage navigation",     "test_citation_navigation.py"),
@@ -94,6 +95,8 @@ SUITES = [
     # Local candidates plus general sentence-level interpretation.
     ("Misspelled query repair (typos)", "test_spelling.py"),
     ("General query interpretation",     "test_query_optimizer.py"),
+    ("Question boundaries and names",    "test_split_question.py"),
+    ("Explicit unit identity and dates", "test_unit_identity.py"),
 
     # Who is asking. Sits next to the announcements suite because it owns the
 

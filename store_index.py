@@ -622,6 +622,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
     sections: List[dict] = []
     current_section: dict = {"heading": "", "lines": []}
     context_buffer: List[str] = []
+    heading_stack = {}
     
     def flush_section():
         if current_section["lines"]:
@@ -630,6 +631,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
                 "lines": list(current_section["lines"]),
                 "collection_heading": current_section.get("collection_heading", ""),
             })
+            current_section["lines"] = []
             
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
@@ -645,6 +647,8 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
                 level = 1
             
             if level is not None and text:
+                heading_stack = {depth: heading for depth, heading in heading_stack.items() if depth < level}
+                heading_stack[level] = text
                 catalog_child = re.match(
                     r"^(?:(?:college|school|department|faculty)\s+of\b|"
                     r"(?:bachelor|master|doctor|associate|diploma|certificate)\b|"
@@ -706,6 +710,27 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
         elif isinstance(block, Table):
             md_table = _docx_table_to_markdown(block)
             if md_table:
+                columns = md_table.splitlines()[0]
+                course_table = re.search(r"\b(?:course|subject)\b", columns, re.IGNORECASE) and re.search(
+                    r"\b(?:code|title|description|units?|credits?)\b", columns, re.IGNORECASE,
+                )
+                if course_table:
+                    # A catalog can contain several degrees with identical year
+                    # labels. Index each course table with its owning ancestry,
+                    # not the collection's first college or the previous semester.
+                    flush_section()
+                    collection = current_section.get("collection_heading", "")
+                    caption = context_buffer[-1] if context_buffer and len(context_buffer[-1]) <= 200 else ""
+                    labels = list(dict.fromkeys(label for label in (
+                        collection, *heading_stack.values(), caption, "Curriculum subjects",
+                    ) if label))
+                    heading = " / ".join(labels)
+                    sections.append({
+                        "heading": heading,
+                        "lines": [f"[TABLE context: {heading}]\n{md_table}"],
+                        "collection_heading": collection,
+                    })
+                    continue
                 context_str = " | ".join(context_buffer)
                 current_section["lines"].append(
                     f"\n[TABLE   context: {context_str}]\n{md_table}\n"
@@ -726,7 +751,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
                     metadata={
                         "source": filename,
                         "type": "docx_section",
-                        "section_heading": sec["heading"][:200],
+                        "section_heading": sec["heading"][:2000],
                         **({"collection_heading": sec["collection_heading"][:200]} if sec.get("collection_heading") else {}),
                     },
                 )
@@ -958,7 +983,9 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
         for idx, text in enumerate(chunks):
             collection = doc.metadata.get("collection_heading")
             section_match = re.match(r"^\[SECTION:\s*([^\]]*)\]", text)
-            if collection and section_match and section_match.group(1).strip() != collection:
+            if collection and section_match and section_match.group(1).strip() != collection and not (
+                section_match.group(1).strip().startswith(collection + " / ")
+            ):
                 section_path = f"{collection} / {section_match.group(1).strip()}"
                 text = f"[SECTION: {section_path}]" + text[section_match.end():]
             if is_low_value_chunk(text):

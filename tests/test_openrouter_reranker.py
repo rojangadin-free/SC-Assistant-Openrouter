@@ -125,6 +125,30 @@ class OpenRouterTests(unittest.TestCase):
         self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["0", "1", "2", "3"])
         self.assertEqual(len(self.client.calls), 2)
 
+    def test_docx_catalog_headings_reach_both_rerankers_without_duplicates(self):
+        doc = document(0, "Bachelor of River Studies", section="College of River Studies",
+                       section_heading="College of River Studies", collection_heading="Programs Offered",
+                       private_field="NEVER_SEND_METADATA")
+        before = dict(doc.metadata)
+        header = "College of River Studies Programs Offered"
+        self.assertEqual(reranker._header_of(doc), header)
+        self.client.responses = [Response(response_rows([1]))]
+        ranked = reranker.rerank("college department", [doc])
+        self.assertEqual(ranked[0].page_content, doc.page_content)
+        sent = self.client.calls[0][2]["json"]["documents"]
+        self.assertEqual(sent, [header + "\nBachelor of River Studies"])
+        self.assertEqual(doc.metadata, before)
+        self.assertNotIn("NEVER_SEND_METADATA", json.dumps(sent))
+
+    def test_each_supported_heading_field_is_available_without_source_branding(self):
+        for field in ("section", "header", "section_heading", "collection_heading"):
+            with self.subTest(field=field):
+                doc = document(0, "Original source text", source="College_Brand.docx", **{field: "Catalog"})
+                self.assertEqual(reranker._header_of(doc), "Catalog")
+                self.client.responses = [Response(response_rows([1]))]
+                reranker.rerank("college department", [doc])
+                self.assertEqual(self.client.calls[-1][2]["json"]["documents"], ["Catalog\nOriginal source text"])
+
     def test_multi_part_merge_skips_shared_hits_before_choosing_next(self):
         self.client.responses = [Response(response_rows(row)) for row in (
             [10, 9, 0, 0], [10, 0, 9, 0], [10, 0, 0, 9],

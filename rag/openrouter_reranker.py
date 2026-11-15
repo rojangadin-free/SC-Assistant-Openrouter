@@ -177,7 +177,9 @@ def rerank_queries(queries, docs, *, top_k=None, max_pairs=40, diversify=False, 
     owners, texts = [], []
     for index, doc in enumerate(original[:max(0, min(max_pairs, MAX_DOCUMENTS))]):
         metadata = doc.metadata
-        header = " ".join(str(metadata[k]) for k in ("section", "header") if metadata.get(k))
+        header = " ".join(dict.fromkeys(
+            str(metadata[k]) for k in ("section", "header", "section_heading", "collection_heading") if metadata.get(k)
+        ))
         text = (header + "\n" + (getattr(doc, "page_content", "") or "")).strip()
         text = text[:MAX_DOCUMENT_CHARS].encode("utf-8")[:8192].decode("utf-8", errors="ignore")
         if text:

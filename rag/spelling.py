@@ -71,6 +71,8 @@ _VOWELS = frozenset("aeiouy")
 # How many single-character edits (insert / delete / substitute / transpose) a
 # repair may span. One for a short word, two once a word is long enough that two
 # edits still leave most of it intact ("enrolmnet" -> "enrollment").
+# Short words also allow a unique two-edit vowel completion with every consonant
+# intact, so a missing vowel plus a mistyped vowel need not wait for a model.
 MAX_EDITS_SHORT = 1
 MAX_EDITS_LONG = 2
 LONG_WORD_LEN = 7
@@ -98,6 +100,11 @@ MAX_CORRECTIONS = 3
 # This is a floor, not the whole vocabulary: `spell_vocab.json` adds everything
 # the real documents contain. Entries here are the terms whose misspelling is
 # most expensive — the ones that decide WHICH page is the right page.
+_SEED_ACRONYMS = (
+    "cas", "clas", "scti", "citas", "bsit", "bsed", "beed", "bsba", "bscs",
+    "bsais", "maed", "shs", "jhs",
+)
+
 _SEED_TERMS: Tuple[str, ...] = (
     # ---- Latin honors: the case that started this module -------------------
     "latin", "honor", "honors", "honour", "honours", "laude", "cum",
@@ -138,8 +145,7 @@ _SEED_TERMS: Tuple[str, ...] = (
     "college", "colleges", "school", "institute", "office", "administration",
 
     # ---- Institution-specific ---------------------------------------------
-    "samar", "catbalogan", "waray", "scti", "citas", "bsit", "bsed", "beed",
-    "bsba", "bscs", "bsais", "maed", "shs", "jhs", "senior", "highschool",
+    "samar", "catbalogan", "waray", *_SEED_ACRONYMS, "senior", "highschool",
     "elementary", "preschool", "kindergarten",
 
     # ---- Policy / conduct --------------------------------------------------
@@ -156,6 +162,7 @@ _SEED_TERMS: Tuple[str, ...] = (
 # Kept short and generic on purpose: this is the glue of a question, not its
 # subject. Anything with retrieval value belongs in the corpus vocabulary.
 _COMMON_ENGLISH = frozenset("""
+confirm confirmed current currently latest active available
 about above after again against all also always am an and another any anyone
 anything are aren't around as ask asked asking at back be because been before
 being below best better between both but by came can cannot can't come could
@@ -414,6 +421,11 @@ def is_known(word: str) -> bool:
     return w in _COMMON_ENGLISH or w in _vocabulary().freq
 
 
+def is_known_acronym(word: str) -> bool:
+    """Known seed identifiers stay distinct regardless of how users capitalize them."""
+    return (word or "").casefold() in _SEED_ACRONYMS
+
+
 # Snapshot identity prevents an in-flight old lookup from caching a result for
 # a vocabulary published after it started.
 @lru_cache(maxsize=4096)
@@ -438,9 +450,11 @@ def _suggest(word: str, vocab: _Vocabulary) -> Optional[str]:
         return None
 
     cutoff = _max_edits(w)
+    search_cutoff = max(cutoff, MAX_EDITS_LONG)
+    consonants = "".join(char for char in w if char not in _VOWELS)
 
     best: Optional[str] = None
-    best_distance = cutoff + 1
+    best_distance = search_cutoff + 1
     best_freq = 0
     tied = False
 
@@ -449,7 +463,7 @@ def _suggest(word: str, vocab: _Vocabulary) -> Optional[str]:
     # about as often as it lands on the right one.
     insertions_only = len(w) < SHORT_SUBSTITUTION_LEN
 
-    for candidate in vocab.candidates(w, cutoff):
+    for candidate in vocab.candidates(w, search_cutoff):
         freq = vocab.freq.get(candidate, 0)
         if freq < MIN_TARGET_FREQ:
             continue
@@ -463,12 +477,21 @@ def _suggest(word: str, vocab: _Vocabulary) -> Optional[str]:
             continue
 
 
-        distance = _edit_distance(w, candidate, cutoff)
-        if distance > cutoff:
+        distance = _edit_distance(w, candidate, search_cutoff)
+        if distance > search_cutoff:
+            continue
+        if distance > cutoff and (
+            len(candidate) <= len(w) or len(consonants) < 2
+            or consonants != "".join(char for char in candidate if char not in _VOWELS)
+        ):
             continue
 
 
-        if distance < best_distance or (distance == best_distance and freq > best_freq):
+        if distance == best_distance and distance > cutoff and candidate != best:
+            # Frequency alone cannot justify the extra edit when two vowel
+            # completions fit. Leave that ambiguity to contextual interpretation.
+            tied = True
+        elif distance < best_distance or (distance == best_distance and freq > best_freq):
             best, best_distance, best_freq = candidate, distance, freq
             tied = False
         elif distance == best_distance and freq == best_freq and candidate != best:
