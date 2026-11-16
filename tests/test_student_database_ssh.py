@@ -258,6 +258,94 @@ class SSHTransportTests(unittest.TestCase):
 
 
 class DeploymentWorkflowTests(unittest.TestCase):
+    def storage_script(self):
+        workflow = (ROOT / ".github/workflows/cicd.yaml").read_text(encoding="utf-8")
+        deployment = workflow.split("  Continuous-Deployment:", 1)[1]
+        blocks = re.findall(r"(?m)^        run: \|\n((?:(?:          [^\n]*)?\n)+)", deployment)
+        self.assertTrue(blocks)
+        script = "\n".join(line[10:] for line in blocks[0].splitlines())
+        self.assertIn("docker image prune", script, "Storage checks must run before checkout and image pulling")
+        return workflow, script
+
+    def run_storage(self, **changes):
+        bash = os.getenv("SC_TEST_BASH") or shutil.which("bash")
+        if bash is None:
+            self.skipTest("Bash is not available for isolated storage checks")
+        _, script = self.storage_script()
+        environment = {**os.environ, "MIN_FREE_GB": "10", "MIN_FREE_INODES": "100000",
+                       "RUNNER_TEMP": "/runner temp", "FAKE_DOCKER_ROOT": "/docker root",
+                       "FAKE_FREE_KB": str(15 * 1024 * 1024), "FAKE_INODES": "200000", **changes}
+        environment.pop("BASH_ENV", None)
+        stubs = r'''
+docker() {
+  { printf 'docker'; printf ' <%s>' "$@"; printf '\n'; } >&2
+  case "$1 $2" in
+    'info --format') printf '%s\n' "$FAKE_DOCKER_ROOT" ;;
+    'system df') return 0 ;;
+    'image prune')
+      [[ "${FAKE_PRUNE_FAIL:-0}" == 0 ]] || return 7
+      PRUNED=1 ;;
+    *) printf 'Unexpected Docker operation\n' >&2; return 99 ;;
+  esac
+}
+df() {
+  case "$1" in
+    -h|-i) return 0 ;;
+    -Pk|-Pi) ;;
+    *) return 98 ;;
+  esac
+  [[ "$#" == 3 && "$2" == -- ]] || return 97
+  local path="$3" value
+  [[ "$path" == / || "$path" == "$RUNNER_TEMP" || "$path" == "$FAKE_DOCKER_ROOT" ]] || return 96
+  [[ "${FAKE_DF_FAIL:-0}" == 0 ]] || return 95
+  if [[ "$1" == -Pk ]]; then
+    value="$FAKE_FREE_KB"
+    if [[ "$path" == / ]]; then value="${FAKE_ROOT_KB:-$value}"; fi
+    if [[ "$path" == "$FAKE_DOCKER_ROOT" ]]; then value="${FAKE_DOCKER_KB:-$value}"; fi
+    if [[ "${FAKE_AFTER_PRUNE_KB:-}" != '' && "${PRUNED:-0}" == 1 ]]; then value="$FAKE_AFTER_PRUNE_KB"; fi
+  else
+    value="$FAKE_INODES"
+  fi
+  printf 'Filesystem Blocks Used Available Use%% Mounted-on\n'
+  printf 'fixture 999999999 1 %s 1%% %s\n' "$value" "$path"
+}
+'''
+        return subprocess.run([bash, "--noprofile", "--norc", "-s"], input=stubs + "\n" + script,
+                              text=True, capture_output=True, check=False, timeout=10, env=environment)
+
+    def test_storage_preflight_and_log_limits_preserve_application_data(self):
+        workflow, script = self.storage_script()
+        deployment = workflow.split("  Continuous-Deployment:", 1)[1]
+        self.assertLess(deployment.index("Preflight runner storage"), deployment.index("uses: actions/checkout"))
+        self.assertLess(workflow.index("docker image prune"), workflow.index('docker pull "$IMAGE_URI"'))
+        self.assertIn('docker image prune --force --filter "label=org.opencontainers.image.title=sc-assistant"', script)
+        self.assertIn("LABEL org.opencontainers.image.title=sc-assistant", (ROOT / "Dockerfile").read_text(encoding="utf-8"))
+        self.assertIn("--log-driver json-file", workflow)
+        self.assertIn("--log-opt max-size=10m", workflow)
+        self.assertIn("--log-opt max-file=3", workflow)
+        for destructive in ("--all", "--volumes", "docker rm", "docker stop", "rm -", "/var/lib/sc-assistant"):
+            self.assertNotIn(destructive, script)
+
+    def test_storage_guard_checks_all_filesystems_and_inodes(self):
+        healthy = self.run_storage()
+        self.assertEqual(healthy.returncode, 0, healthy.stderr + healthy.stdout)
+        for changes in ({"FAKE_ROOT_KB": "0"}, {"FAKE_DOCKER_KB": "0"}, {"FAKE_FREE_KB": "0"},
+                        {"FAKE_INODES": "0"}, {"FAKE_INODES": "-"}, {"FAKE_DF_FAIL": "1"}):
+            with self.subTest(changes=changes):
+                result = self.run_storage(**changes)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_storage_guard_measures_after_scoped_cleanup_and_does_not_ignore_failures(self):
+        reclaimed = self.run_storage(FAKE_FREE_KB="0", FAKE_AFTER_PRUNE_KB=str(15 * 1024 * 1024))
+        self.assertEqual(reclaimed.returncode, 0, reclaimed.stdout + reclaimed.stderr)
+        failed = self.run_storage(FAKE_PRUNE_FAIL="1")
+        self.assertNotEqual(failed.returncode, 0)
+        for value in ("0", "-1", "1.5", "bad", "999999999999999999999999"):
+            with self.subTest(value=value):
+                result = self.run_storage(MIN_FREE_GB=value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("<image> <prune>", result.stderr)
+
     def test_workflow_shell_blocks_have_valid_syntax(self):
         bash = os.getenv("SC_TEST_BASH") or shutil.which("bash")
         if bash is None:

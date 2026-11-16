@@ -60,9 +60,9 @@ CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
 # that rejected the first attempt, so the student sees "Streaming interrupted."
 # with no answer at all. This model is served by OpenRouter, so a provider-side
 # block on one is not a block on the other.
-FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
+FALLBACK_MODEL_NAME = "deepseek/deepseek-v4.1-flash-1017"
 
-SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it"
+SUMMARIZER_MODEL_NAME = "google/gemini-3.1-flash-lite"
 
 
 if not PINECONE_API_KEY:

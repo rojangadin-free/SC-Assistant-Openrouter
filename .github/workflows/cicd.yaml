@@ -51,6 +51,45 @@ jobs:
     needs: Continuous-Integration
     runs-on: [self-hosted, linux]
     steps:
+      # A completely full runner needs host recovery before any job step can run.
+      - name: Preflight runner storage
+        shell: bash
+        env:
+          MIN_FREE_GB: ${{ vars.DEPLOY_MIN_FREE_GB || '10' }}
+          MIN_FREE_INODES: ${{ vars.DEPLOY_MIN_FREE_INODES || '100000' }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if ! [[ "$MIN_FREE_GB" =~ ^[1-9][0-9]{0,5}$ && "$MIN_FREE_INODES" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "::error::Storage headroom settings must be bounded positive integers."
+            exit 1
+          fi
+          docker_root="$(docker info --format '{{.DockerRootDir}}')"
+          df -h -- / "$RUNNER_TEMP" "$docker_root"
+          df -i -- / "$RUNNER_TEMP" "$docker_root"
+          docker system df
+
+          # Default image pruning removes only dangling images. Tagged images,
+          # images referenced by any container, and all volumes remain intact.
+          # Older releases without this label need reviewed, one-time host cleanup.
+          docker image prune --force --filter "label=org.opencontainers.image.title=sc-assistant"
+
+          # This is a safety floor, not a prediction of the next image's size.
+          # Allow space for the serving image, new image and extraction overhead.
+          required_kb=$((MIN_FREE_GB * 1024 * 1024))
+          for path in / "$RUNNER_TEMP" "$docker_root"; do
+            free_kb="$(df -Pk -- "$path" | awk 'NR == 2 {print $4}')"
+            free_inodes="$(df -Pi -- "$path" | awk 'NR == 2 {print $4}')"
+            if ! [[ "$free_kb" =~ ^[0-9]+$ && "$free_inodes" =~ ^[0-9]+$ ]]; then
+              echo "::error::Cannot verify free disk space and inodes on $path."
+              exit 1
+            fi
+            if ((free_kb < required_kb || free_inodes < MIN_FREE_INODES)); then
+              echo "::error::Insufficient storage on $path: ${free_kb} KiB and ${free_inodes} free inodes. Need at least ${MIN_FREE_GB} GiB and ${MIN_FREE_INODES} inodes. Free space or enlarge the volume before deploying; the serving container has not been stopped."
+              exit 1
+            fi
+          done
+
       - name: Checkout
         uses: actions/checkout@v3
 
@@ -107,6 +146,7 @@ jobs:
             docker rm "$CONTAINER_NAME"
           fi
           docker run -d --name "$CONTAINER_NAME" --restart always \
+            --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
             -p 8080:8080 \
             --mount type=bind,source=/var/lib/sc-assistant,target=/var/lib/sc-assistant \
             -e STUDENT_RECORDS_BACKEND=sqlite_demo \

@@ -578,6 +578,79 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs["filter"] == exact for call in hybrid.dense.invoke.call_args_list))
         hybrid.ensemble.invoke.assert_not_called()
 
+    def test_accepting_the_active_college_offer_uses_its_task_but_not_its_old_facts(self):
+        current = [document(PROGRAMS, unit + "\n" + degree, key, section_heading=unit,
+                            collection_heading="Programs Offered") for unit, degree, key in (
+            ("College of Information Technology and Allied Sciences", "Bachelor of Science in Information Technology", "citas"),
+            ("College of Business and Management", "Bachelor of Science in Business Administration", "cbm"),
+        )]
+        old = document(BASE, "College of Arts and Sciences\nOLD_CAS_PROGRAM", "cas",
+                       section_heading="College of Arts and Sciences")
+        hybrid = self.install(current, baseline=[old])
+        history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
+                   "OLD_CAS_CLAIM is from 2024. If you'd like, I can share details on the currently active colleges instead."}]
+        before = deepcopy(history)
+        self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+        for reply in ("yes do it", "yes, please", "YES"):
+            with self.subTest(reply=reply):
+                result = self.chat(reply, history)
+                self.assertEqual(set(result["citations"]), {"citas", "cbm"}, self.output.getvalue())
+                prompt = result["messages_to_llm"][0].content
+                self.assertIn("<accepted_offer>", prompt)
+                self.assertIn("share details on the currently active colleges instead", prompt)
+                self.assertIn("<department_list_request>", prompt)
+                self.assertIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+                self.assertNotIn("OLD_CAS_CLAIM", prompt)
+                self.assertNotIn("OLD_CAS_PROGRAM", prompt)
+                self.assertNotIn(BASE, prompt)
+                self.assertEqual(result["messages_to_llm"][-1].content, reply)
+                self.assertEqual(self.ranking.call_args.args[0], "the currently active colleges instead")
+                self.assertEqual(result["chat_history"], before)
+        self.ns["query_optimizer_model"].invoke.assert_not_called()
+        self.summary.assert_not_called()
+        hybrid.ensemble.invoke.assert_not_called()
+        self.assertEqual(history, before)
+
+    def test_accepting_a_history_offer_retrieves_history_not_the_previous_programs(self):
+        historical = document(BASE, "The school opened its doors as described in this historical account of its founding.",
+                              "history", section_heading="Historical Account")
+        self.install([], baseline=[historical])
+        history = [{"role": "user", "content": "current offerings"}, {"role": "assistant", "content":
+                   "OLD_PROGRAM_CLAIM. Would you like me to explain the history of Samar College?"}]
+        result = self.chat("go ahead", history)
+        self.assertEqual(result["citations"], ["history"], self.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("<accepted_offer>", prompt)
+        self.assertIn("<institution_history_request>", prompt)
+        self.assertNotIn("OLD_PROGRAM_CLAIM", prompt)
+        self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, "go ahead")
+
+    def test_accepted_current_college_offer_does_not_make_an_old_list_current(self):
+        old = document(BASE, "College of Arts and Sciences\nOLD_COLLEGE_LIST", "old-college")
+        self.install([], baseline=[old])
+        history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
+                   "OLD_CAS_CLAIM. If you'd like, I can share details on the currently active colleges instead."}]
+        result = self.chat("yes do it", history)
+        self.assertEqual(result["citations"], [])
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("<accepted_offer>", prompt)
+        self.assertNotIn("OLD_CAS_CLAIM", prompt)
+        self.assertNotIn("OLD_COLLEGE_LIST", prompt)
+        self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+
+    def test_accepting_two_alternative_offers_asks_which_without_retrieval(self):
+        self.install([])
+        history = [{"role": "assistant", "content":
+                    "I can list currently active colleges or explain the enrollment requirements."}]
+        result = self.chat("yes do it", history)
+        self.assertEqual(result["citations"], [])
+        self.assertIn("Ask ONLY one", result["messages_to_llm"][0].content)
+        self.ranking.assert_not_called()
+        self.hybrid.ensemble.invoke.assert_not_called()
+        self.hybrid.dense.invoke.assert_not_called()
+        self.ns["query_optimizer_model"].invoke.assert_not_called()
+
     def test_missing_current_catalog_does_not_prepare_a_confirmed_2024_answer(self):
         old = document(BASE, "SCTI Training Offerings\nOLD_TRAINING_ENTRY", "training")
         self.install([], baseline=[old])

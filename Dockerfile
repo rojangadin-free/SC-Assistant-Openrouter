@@ -12,6 +12,9 @@
 # version with a cp310 manylinux wheel, so nothing needs a compiler at all.
 FROM python:3.10-slim-bookworm
 
+# Used to prune only this application's untagged, unreferenced images on EC2.
+LABEL org.opencontainers.image.title=sc-assistant
+
 # Unbuffered output, or the first crash in the container logs nothing useful.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

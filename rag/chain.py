@@ -98,13 +98,13 @@ dense_retriever = PineconeHybridSearchRetriever(
 
 retriever = EnsembleRetriever(
     retrievers=[sparse_retriever, dense_retriever],
-    weights=[0.20, 0.80],
+    weights=[0.30, 0.70],
 )
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
 RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
-FINAL_TOP_K = 25        # documents actually sent to the LLM
+FINAL_TOP_K = 20        # documents actually sent to the LLM
 
 
 # ---------------------------------------------------------------------------
@@ -1043,6 +1043,7 @@ def create_graph():
             request_budget.remaining()
             original_text = state["input"] or ""
             user_text = original_text
+            from rag.query_optimizer import resolve_offer_acceptance
             # A conservative fallback/hint, not the authority on intent. The
             # interpreter also sees the original and can reject a mistaken edit.
             corrected = correct_query(user_text)
@@ -1148,7 +1149,10 @@ def create_graph():
 
                 # Even a complete sentence of known words can contain a real-word
                 # typo. Only empty/punctuation-only input skips interpretation.
-                wants_rewrite = should_optimize(user_text, history)
+                interpretation = resolve_offer_acceptance(original_text, history)
+                if interpretation is not None:
+                    user_text = interpretation.question
+                wants_rewrite = interpretation is None and should_optimize(user_text, history)
                 if wants_rewrite and not budget.expired():
                     try:
                         timings.start("optimizer")
@@ -1174,7 +1178,6 @@ def create_graph():
                 student_context = future_student.result(timeout=request_budget.remaining(15)) if future_student else ""
                 request_budget.remaining()
 
-                interpretation = None
                 if future_query is not None:
                     timings.start("await_rewrite")
                     try:
@@ -1194,11 +1197,15 @@ def create_graph():
                     finally:
                         timings.stop("await_rewrite")
                 elif not wants_rewrite:
-                    timings.note("optimizer", "skipped")
+                    timings.note("optimizer", "offer-resolved" if interpretation else "skipped")
 
                 standalone_query = pick_search_query(
                     user_text, interpretation.search_query if interpretation else None,
                 )
+                # The user's literal assent stays intact. The accepted task,
+                # rather than 'yes do it', supplies retrieval's subject boundary.
+                resolved_request = interpretation.resolved_request if interpretation else ""
+                request_text = standalone_query if resolved_request else user_text
 
                 # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
                 #
@@ -1218,7 +1225,7 @@ def create_graph():
                     standalone_query,
                     top_k=RERANK_CANDIDATES,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
-                    user_question=user_text,
+                    user_question=request_text,
                     timings=timings,
                     progress=progress,
                     request_budget=request_budget,
@@ -1250,7 +1257,7 @@ def create_graph():
             else:
                 selection = select_documents(
                     final_docs,
-                    [user_text, standalone_query, *split_question(user_text), *language_variants(user_text)],
+                    [request_text, standalone_query, *split_question(request_text), *language_variants(request_text)],
                     dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
                 )
                 final_docs = selection.documents
@@ -1265,12 +1272,12 @@ def create_graph():
             from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries
             from rag.unit_identity import is_unit_reference
 
-            department_listing = bool(department_catalog_queries(user_text))
-            program_listing = bool(program_catalog_queries(user_text))
-            institution_history = bool(institution_history_queries(user_text) or (
-                is_unit_reference(user_text) and institution_history_queries(standalone_query)
+            department_listing = bool(department_catalog_queries(request_text))
+            program_listing = bool(program_catalog_queries(request_text))
+            institution_history = bool(institution_history_queries(request_text) or (
+                is_unit_reference(request_text) and institution_history_queries(standalone_query)
             ))
-            scoped_answer = selection.restricted or bool(selection.requested_unit)
+            scoped_answer = selection.restricted or bool(selection.requested_unit) or bool(resolved_request)
             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
@@ -1285,7 +1292,7 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a scoped document answer.
-            if department_listing or ((program_listing or institution_history) and not is_unit_reference(user_text)):
+            if resolved_request or department_listing or ((program_listing or institution_history) and not is_unit_reference(request_text)):
                 prompt_history = []
             else:
                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
@@ -1296,7 +1303,7 @@ def create_graph():
             # Matched against BOTH the question and the retrieved text, so a
             # stale name sitting in the context always arrives with its
             # correction attached instead of being repeated as fact.
-            verified_facts = authority_block(user_text, standalone_query, context_str)
+            verified_facts = authority_block(request_text, standalone_query, context_str)
             if verified_facts:
                 print(f"  Applied admin-verified facts:\n{verified_facts}")
 

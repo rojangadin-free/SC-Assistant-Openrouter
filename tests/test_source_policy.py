@@ -83,6 +83,21 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertEqual(result.documents, [current])
                 self.assertIn(BASE.lower(), result.discarded_sources)
 
+    def test_current_active_colleges_are_catalog_requests_not_proof_old_units_are_active(self):
+        old = document(text="College of Arts and Sciences\nOLD_COLLEGE_LIST")
+        current = document("Programs_Offered.docx", "College of River Studies\nBachelor of River Studies",
+                           collection_heading="Programs Offered")
+        for query in ("currently active colleges", "the currently active colleges instead",
+                      "share details on the currently active colleges instead", "list current colleges"):
+            with self.subTest(query=query):
+                self.assertEqual(len(department_catalog_queries(query)), 2)
+                result = self.select([old, current], query, uploads={"Programs_Offered.docx": UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [current])
+                self.assertTrue(result.restricted)
+                missing = self.select([old], query, uploads={})
+                self.assertEqual(missing.documents, [])
+                self.assertFalse(missing.restricted)
+
     def test_confirmed_current_offerings_cannot_fall_back_to_unverified_old_lists(self):
         old = document(text="SCTI Training Offerings\nCookery NC II\nOLD_TRAINING_ENTRY")
         for body, uploads in (("Programs Offered 2026", {"Programs_Offered.docx": UPLOADS[UPDATE]}),

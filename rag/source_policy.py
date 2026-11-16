@@ -213,7 +213,7 @@ def department_catalog_queries(query) -> list[str]:
     if not isinstance(query, str):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
-    if not re.search(r"\b(?:college|academic)\b", text) or _OTHER_LEVEL.search(text):
+    if not re.search(r"\b(?:colleges?|academic)\b", text) or _OTHER_LEVEL.search(text):
         return []
     if re.search(
         r"\b(?:support|guidance|contacts?|faculty|staff|teachers?|deans?|heads?|chairs?|chairpersons?|services?|"
@@ -225,11 +225,11 @@ def department_catalog_queries(query) -> list[str]:
         return []
     listing = re.search(
         r"\b(?:what|which|list|names?|show|give|enumerate|tell)\s+"
-        r"(?:(?:are|is|were|the|all|me|us|a|list|names|of|different|available|current|college|academic)\s+)*"
-        r"(?:departments?|units?)\b", text,
+        r"(?:(?:are|is|were|the|all|me|us|a|list|names|of|different|available|current|currently|active|college|academic)\s+)*"
+        r"(?:departments?|units?|colleges)\b", text,
     ) or re.fullmatch(
         r"(?:(?:the|all|current|available)\s+)*(?:college\s+academic|college|academic)\s+(?:departments?|units?)", text,
-    )
+    ) or re.search(r"\b(?:(?:current|currently|active|available)\s+)+colleges\b", text) or text == "colleges"
     return ["college departments programs offered", "college academic units course offerings"] if listing else []
 
 
@@ -522,7 +522,7 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         newest = max(eligible_dated.values())
         selected = {source for source, stamp in eligible_dated.items() if stamp == newest}
     if not selected:
-        if program_catalog_queries(queries[0]) and re.search(
+        if (program_catalog_queries(queries[0]) or department_catalog_queries(queries[0])) and re.search(
             r"\b(?:confirmed|current|currently|latest|active|now|today|updated)\b", queries[0], re.IGNORECASE,
         ):
             # A historical fallback cannot establish explicitly requested current

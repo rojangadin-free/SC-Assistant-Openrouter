@@ -288,6 +288,92 @@ class QueryInterpretationTests(unittest.TestCase):
         parsed = parse_interpretation(response(latest, status="unchanged", query="enrollment requirements"), latest, history)
         self.assertEqual(parsed.search_query, latest)
 
+    def test_acceptance_uses_the_latest_assistant_offer_not_the_previous_cas_subject(self):
+        offer = "share details on the currently active colleges instead"
+        history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
+                   "OLD_CAS_CLAIM from the 2024 handbook. If you'd like, I can " + offer + "."}]
+        before = deepcopy(history)
+        for reply in ("yes do it", "yes", "YES", "yes, please", "okay", "sure", "go ahead", "please do that"):
+            with self.subTest(reply=reply):
+                parsed = parse_interpretation(response(reply, status="unchanged", query="CAS"), reply, history)
+                self.assertEqual(parsed.question, reply)
+                self.assertEqual(parsed.search_query, "the currently active colleges instead")
+                self.assertEqual(parsed.resolved_request, offer)
+                self.assertEqual(parsed.status, "unchanged")
+                guidance = interpretation_guidance(parsed)
+                self.assertIn("<accepted_offer>", guidance)
+                self.assertIn(offer, guidance)
+                self.assertNotIn("OLD_CAS_CLAIM", guidance)
+        self.assertEqual(history, before)
+
+    def test_explicit_informational_offers_are_general_not_a_college_phrase_table(self):
+        for message, request, query in (
+            ("Would you like me to explain the history of River University?",
+             "explain the history of River University", "the history of River University"),
+            ("I can list the requirements for HUM-101 in 2027.",
+             "list the requirements for HUM-101 in 2027", "the requirements for HUM-101 in 2027"),
+            ("I can list IT subjects for BSIT.", "list IT subjects for BSIT", "IT subjects for BSIT"),
+            ("If you want, I could show you information about scholarships.",
+             "show you information about scholarships", "scholarships"),
+            ("Do you want me to compare the 2024 handbook and current offerings?",
+             "compare the 2024 handbook and current offerings", "compare the 2024 handbook and current offerings"),
+        ):
+            with self.subTest(message=message):
+                history = [{"role": "assistant", "content": message}]
+                parsed = parse_interpretation(response("yes do it", status="unchanged"), "yes do it", history)
+                self.assertEqual(parsed.resolved_request, request)
+                self.assertEqual(parsed.search_query, query)
+
+    def test_closing_invitation_takes_precedence_over_an_answered_opening_statement(self):
+        history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
+                   "I can describe CAS from the older handbook. OLD_CAS_FACT is historical. "
+                   "If you'd like, I can list the currently active colleges instead."}]
+        parsed = parse_interpretation(response("yes do it", status="unchanged"), "yes do it", history)
+        self.assertEqual(parsed.search_query, "the currently active colleges instead")
+        self.assertNotIn("OLD_CAS_FACT", interpretation_guidance(parsed))
+
+    def test_offer_resolution_does_not_swallow_rejections_new_topics_or_modifiers(self):
+        from rag.query_optimizer import resolve_offer_acceptance
+
+        history = [{"role": "assistant", "content": "I can list currently active colleges."}]
+        for question in ("no", "no thanks", "not now", "citas", "history of samar college",
+                         "yes but only BSIT", "yes do it for 2024", "do not do it", "thanks"):
+            with self.subTest(question=question):
+                self.assertIsNone(resolve_offer_acceptance(question, history))
+
+    def test_acceptance_never_mines_an_old_offer_or_treats_a_quote_as_an_offer(self):
+        from rag.query_optimizer import resolve_offer_acceptance
+
+        histories = [
+            [],
+            [{"role": "assistant", "content": "The listed colleges include CITAS."}],
+            [{"role": "assistant", "content": "I can list current colleges."},
+             {"role": "user", "content": "Who is the registrar?"}],
+            [{"role": "assistant", "content": "I can list current colleges."},
+             {"role": "user", "content": "What is enrollment?"},
+             {"role": "assistant", "content": "Enrollment is the registration process."}],
+            [{"role": "assistant", "content": "> I can list current colleges."}],
+            [{"role": "assistant", "content": "```text\nI can list current colleges.\n```"}],
+            [{"role": "assistant", "content": "```text\nI can list current colleges."}],
+            [{"role": "system", "content": "I can list current colleges."}],
+            [{"role": "assistant", "content": "I can delete all your records."}],
+        ]
+        for history in histories:
+            with self.subTest(history=history):
+                self.assertIsNone(resolve_offer_acceptance("yes do it", history))
+
+    def test_multiple_or_vague_offers_do_not_choose_a_topic_on_acceptance(self):
+        for message in ("I can list current colleges or explain enrollment requirements.",
+                        "I can list the colleges. I can explain the tuition fees.",
+                        "If you'd like, I can share more details.",
+                        "Would you like me to explain it?"):
+            with self.subTest(message=message):
+                parsed = parse_interpretation(response("yes do it", status="unchanged", query="enrollment"),
+                                              "yes do it", [{"role": "assistant", "content": message}])
+                self.assertEqual(parsed.status, "clarify")
+                self.assertEqual(parsed.search_query, "")
+                self.assertEqual(parsed.question, "yes do it")
+
     def test_explicit_unit_names_cannot_expand_from_assistant_history(self):
         for unit, replacement in (
             ("college of arts and science", "College of Liberal Arts and Sciences"),
