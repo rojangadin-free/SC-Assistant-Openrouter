@@ -63,6 +63,17 @@ class UIContracts(unittest.TestCase):
         self.assertNotIn("chat-floating-controls", dashboard)
         self.assertIn("<span>Dashboard</span>", dashboard)
 
+    def test_chat_image_preview_has_a_named_remove_button(self):
+        for path in ("/", "/guest-chat"):
+            with self.subTest(path=path):
+                _, dom = self.page(path)
+                tag, remove = dom.by_id("removeImageBtn")
+                self.assertEqual((tag, remove["type"]), ("button", "button"))
+                self.assertEqual(remove["aria-label"], "Remove image")
+                self.assertEqual(dom.by_id("imagePreview")[1]["alt"], "Selected image")
+                self.assertNotIn("src", dom.by_id("imagePreview")[1])
+                self.assertEqual(dom.by_id("imageInput")[1]["accept"], "image/*")
+
     def test_guest_signin_is_a_named_link_and_not_shown_to_signed_in_users(self):
         html, guest = self.page("/guest-chat")
         tag, attrs = guest.by_id("guestSignInButton")

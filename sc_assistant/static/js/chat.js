@@ -124,20 +124,27 @@ $(document).ready(function() {
     imageInput.click();
   });
 
+  function clearImagePreview() {
+    const url = previewImg.attr('src');
+    if (url) URL.revokeObjectURL(url);
+    previewImg.removeAttr('src');
+    previewContainer.hide();
+    messageInput.prop('required', true);
+  }
+
   imageInput.on('change', function() {
+    clearImagePreview();
     if (this.files && this.files[0]) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            previewImg.attr('src', e.target.result);
-            previewContainer.css('display', 'flex'); 
-        }
-        reader.readAsDataURL(this.files[0]);
+      previewImg.attr('src', URL.createObjectURL(this.files[0]));
+      previewContainer.css('display', 'inline-flex');
+      messageInput.prop('required', false);
     }
   });
 
   removeImageBtn.on('click', function() {
     imageInput.val('');
-    previewContainer.hide();
+    clearImagePreview();
+    uploadBtn.trigger('focus');
   });
 
   function refreshSuggestions() {
@@ -305,7 +312,9 @@ $(document).ready(function() {
   // tracking it in a variable would only ever know about the current session.
   function questionFor($message) {
     const $prevUser = $message.prevAll('.message.user').first();
-    return $prevUser.length ? $prevUser.find('.message-bubble').text().trim() : '';
+    const text = $prevUser.find('.message-text').text().trim();
+    const hasImage = $prevUser.find('.message-image, .message-attachment-note').length > 0;
+    return (text + (hasImage ? ' [Image Uploaded]' : '')).trim();
   }
 
   // The rendered citation badges carry filename + page in their data/href, so the
@@ -751,7 +760,7 @@ $(document).ready(function() {
   // The id has to be the one the server saved the answer under, otherwise the
   // rebuilt thumbs are keyed to a fresh random id and the vote the student cast
   // yesterday can never be found again.
-  function addMessage(content, isUser = false, autoScroll = true, hasImage = false,
+  function addMessage(content, isUser = false, autoScroll = true, imageFile = null,
                       savedMsgId = null, citations = null) {
 
     emptyChatState.hide();
@@ -760,10 +769,7 @@ $(document).ready(function() {
     let processedContent = '';
     
     if (isUser) {
-       processedContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-       if (hasImage) {
-           processedContent += ' <br><span style="font-size:0.85em; color:var(--text-secondary); display:inline-flex; align-items:center; margin-top:5px;"><i class="fas fa-paperclip" style="margin-right:4px;"></i> Image Attached</span>';
-       }
+       processedContent = content ? `<div class="message-text">${escapeHtml(content)}</div>` : '';
     } else {
        processedContent = renderCitations(content);
     }
@@ -794,7 +800,21 @@ $(document).ready(function() {
       </div>
     `;
 
-    messagesContainer.append(html);
+    const $message = $(html);
+    if (isUser && imageFile) {
+      // Give the sent image its own URL so clearing the composer cannot remove it.
+      $('<img>', {
+        class: 'message-image',
+        src: URL.createObjectURL(imageFile),
+        alt: imageFile.name || 'Attached image'
+      }).on('load', function() {
+        if (autoScroll && $message[0].isConnected) {
+          messagesContainer.stop();
+          messagesContainer[0].scrollTop = messagesContainer[0].scrollHeight;
+        }
+      }).appendTo($message.find('.message-bubble'));
+    }
+    messagesContainer.append($message);
 
     // A replayed answer keeps its provenance too, so reporting an old answer in a
     // reopened conversation still reports which file it came from.
@@ -813,8 +833,15 @@ $(document).ready(function() {
   }
 
 
+  function clearMessages() {
+    messagesContainer.find('.message-image').each(function() {
+      URL.revokeObjectURL(this.src);
+    });
+    messagesContainer.find('.message').remove();
+  }
+
   function renderChatHistory(history) {
-    messagesContainer.find('.message').remove(); 
+    clearMessages();
     
     if (!Array.isArray(history) || history.length === 0) {
       emptyChatState.show();
@@ -827,18 +854,22 @@ $(document).ready(function() {
     history.forEach(msg => {
       if (msg.role === 'system') return;
       
-      let content = msg.content;
-      const hasImageTag = content.includes('[Image Uploaded]');
-      content = content.replace(' [Image Uploaded]', '');
-      
       const isUser = msg.role === 'user';
-      addMessage(
-        content, isUser, false, hasImageTag,
+      const hasImageTag = isUser && msg.content.includes('[Image Uploaded]');
+      const content = hasImageTag ? msg.content.replace(/\s?\[Image Uploaded\]/, '') : msg.content;
+      const msgId = addMessage(
+        content, isUser, false, null,
         // Older conversations were saved before ids/citations were persisted, so
         // both are optional; reports still include the displayed question/answer.
         isUser ? null : (msg.msg_id || null),
         isUser ? null : (msg.citations || null)
       );
+      if (hasImageTag) {
+        // Saved history contains only a marker, not the original image bytes.
+        $('<span>', { class: 'message-attachment-note' })
+          .text('Image attached (preview unavailable)')
+          .appendTo($('#' + msgId).find('.message-bubble'));
+      }
     });
 
     if (messagesContainer.length > 0) {
@@ -1096,6 +1127,7 @@ $(document).ready(function() {
   // --- Submit Handler ---
   messageForm.on('submit', function(e) {
     e.preventDefault();
+    if (sendButton.prop('disabled')) return;
     const message = messageInput.val().trim();
     
     const hasImage = imageInput[0].files.length > 0;
@@ -1103,12 +1135,12 @@ $(document).ready(function() {
 
     if (!message && !hasImage) return;
 
-    addMessage(message, true, true, hasImage);
+    addMessage(message, true, true, imageFile);
     
     messageInput.val('').css('height', 'auto');
     if (hasImage) {
         imageInput.val('');
-        previewContainer.hide();
+        clearImagePreview();
     }
     
     sendButton.prop('disabled', true);
@@ -1179,7 +1211,7 @@ $(document).ready(function() {
     localStorage.setItem('activeConversationId', convId);
     applyActiveHighlight();
 
-    messagesContainer.find('.message').remove();
+    clearMessages();
     emptyChatState.hide();
     conversationLoader.show();
     sendButton.prop('disabled', true);
@@ -1232,7 +1264,7 @@ $(document).ready(function() {
 
   function startNewChat() {
     $.post('/chat/clear', function() {
-      messagesContainer.find('.message').remove();
+      clearMessages();
       emptyChatState.fadeIn(200); 
       activeConversationId = null;
       isNewConversation = true;

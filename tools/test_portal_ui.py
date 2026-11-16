@@ -3,6 +3,7 @@
 import argparse
 import json
 from html import escape
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -22,6 +23,7 @@ def main():
         if json.load(response).get("fixture") != "ui-preview":
             raise SystemExit("UI fixture marker missing; refusing to interact.")
 
+    from PIL import Image
     from playwright.sync_api import expect, sync_playwright
 
     output = Path(args.output_dir)
@@ -69,6 +71,16 @@ def main():
             expect(report).to_have_css("box-shadow", "none")
             for side in ("top", "right", "bottom", "left"):
                 expect(report).to_have_css(f"border-{side}-width", "0px")
+            if report.is_visible():
+                alignment = report.evaluate("""button => {
+                    const bubble = button.closest('.message').querySelector('.message-bubble').getBoundingClientRect();
+                    const icon = button.querySelector('i').getBoundingClientRect();
+                    const target = button.getBoundingClientRect();
+                    return {offset: Math.abs(icon.left - bubble.left), below: icon.top >= bubble.bottom,
+                            width: target.width, height: target.height};
+                }""")
+                assert alignment["offset"] < 1 and alignment["below"], alignment
+                assert alignment["width"] >= 44 and alignment["height"] >= 44, alignment
         floating = page.locator(".chat-floating-controls")
         if floating.count():
             expect(page.locator(".chat-section .header, .chat-section .header-left")).to_have_count(0)
@@ -369,6 +381,151 @@ def main():
         assert not submitted, "Guests must not file reports through the protected report API"
         page.remove_listener("request", note_report)
         page.locator("#themeToggle").click()
+
+    def exercise_image_attachments(page, width, kind):
+        photos = []
+        for name, size, color in (("landscape.png", (960, 540), "#315843"),
+                                  ("portrait.png", (540, 960), "#d9ac53")):
+            buffer = BytesIO()
+            Image.new("RGB", size, color).save(buffer, format="PNG")
+            photos.append({"name": name, "mimeType": "image/png", "buffer": buffer.getvalue()})
+
+        requests = []
+        def respond(route):
+            requests.append(route.request.post_data_buffer)
+            events = [{"type": "chunk", "text": "Photo received."},
+                      {"type": "done", "msg_id": f"photo-{len(requests)}", "citations": [],
+                       "new_conversation_created": False}]
+            route.fulfill(content_type="text/event-stream",
+                          body="".join(f"data: {json.dumps(event)}\n\n" for event in events))
+
+        page.route(base + "/chat/get", respond)
+        page.evaluate("""() => {
+            window.attachmentUrls = new Set();
+            window.originalCreateObjectURL = URL.createObjectURL;
+            window.originalRevokeObjectURL = URL.revokeObjectURL;
+            URL.createObjectURL = function(blob) {
+                const url = window.originalCreateObjectURL.call(URL, blob);
+                window.attachmentUrls.add(url);
+                return url;
+            };
+            URL.revokeObjectURL = function(url) {
+                window.attachmentUrls.delete(url);
+                window.originalRevokeObjectURL.call(URL, url);
+            };
+        }""")
+        upload = page.locator("#imageInput")
+        preview = page.locator("#imagePreview")
+        remove = page.get_by_role("button", name="Remove image", exact=True)
+        try:
+            for theme in ("light", "dark"):
+                if (page.locator("body").get_attribute("data-theme") or "light") != theme:
+                    page.locator("#themeToggle").click()
+                before = len(requests)
+                upload.set_input_files(photos[0])
+                expect(preview).to_be_visible()
+                expect(preview).to_have_js_property("naturalWidth", 960)
+                expect(remove).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+                expect(remove).to_have_css("box-shadow", "none")
+                target, thumb = remove.bounding_box(), preview.bounding_box()
+                assert target["width"] >= 44 and target["height"] >= 44
+                assert thumb["width"] == 80 and thumb["height"] == 64
+                assert target["x"] >= thumb["x"] + thumb["width"]
+                capture(page, f"photo-preview-{kind}-{width}-{theme}")
+                first_preview = preview.get_attribute("src")
+                upload.set_input_files(photos[1])
+                expect(preview).to_have_js_property("naturalHeight", 960)
+                assert preview.get_attribute("src") != first_preview
+                assert page.evaluate("() => window.attachmentUrls.size") == before + 1
+                remove.focus()
+                remove.press("Enter")
+                expect(page.locator("#imagePreviewContainer")).to_be_hidden()
+                expect(page.locator("#uploadBtn")).to_be_focused()
+                assert upload.evaluate("el => el.files.length") == 0
+                assert preview.get_attribute("src") is None
+                assert page.evaluate("() => window.attachmentUrls.size") == before
+                assert len(requests) == before, "Removing a preview must not submit the form"
+
+                for index, photo in enumerate(photos):
+                    # Submit immediately after selection, without waiting for preview decoding.
+                    upload.set_input_files(photo)
+                    caption = '' if index == 0 else 'What does "A & B" <mean>?\nKeep this line.'
+                    page.locator("#messageInput").fill(caption)
+                    page.locator("#sendButton").click()
+                    expect(page.locator("#sendButton")).to_be_enabled(timeout=15000)
+                    assert len(requests) == before + index + 1
+                    assert f'filename="{photo["name"]}"'.encode() in requests[-1]
+                    assert b'name="image"' in requests[-1]
+                    assert photo["buffer"] in requests[-1]
+                    message = page.locator(".message.user").last
+                    image = message.locator(".message-image")
+                    expect(image).to_be_visible()
+                    expect(image).to_have_css("width", "80px")
+                    expect(image).to_have_css("height", "64px")
+                    expect(image).to_have_attribute("alt", photo["name"])
+                    expect(image).to_have_js_property("naturalWidth", 960 if index == 0 else 540)
+                    expect(message).not_to_contain_text("Image Attached")
+                    expect(message.locator("mean")).to_have_count(0)
+                    if caption:
+                        expect(message.locator(".message-text")).to_have_text(caption, use_inner_text=True)
+                    else:
+                        expect(message.locator(".message-text")).to_have_count(0)
+                        report = page.locator(".message.assistant").last.locator(".report-btn")
+                        report.click()
+                        offer = page.locator(".message.assistant").last.locator(".escalate-offer")
+                        expect(offer).to_be_visible()
+                        assert offer.evaluate("el => jQuery(el).data('question')") == "[Image Uploaded]"
+                        report.click()
+                    bounds, bubble = image.bounding_box(), message.locator(".message-bubble").bounding_box()
+                    assert abs(bounds["width"] - thumb["width"]) < 1 and abs(bounds["height"] - thumb["height"]) < 1, (bounds, thumb)
+                    assert bounds["x"] >= bubble["x"] and bounds["x"] + bounds["width"] <= bubble["x"] + bubble["width"]
+                    expect(image).to_have_css("object-fit", "contain")
+                    expect(page.locator("#imagePreviewContainer")).to_be_hidden()
+                    assert preview.get_attribute("src") is None
+                    assert upload.evaluate("el => el.files.length") == 0
+                    assert page.locator("#messageInput").evaluate("el => el.required")
+                expect(page.locator(".message-image")).to_have_count(len(requests))
+                assert page.evaluate("() => window.attachmentUrls.size") == len(requests)
+                capture(page, f"photos-sent-{kind}-{width}-{theme}")
+
+            if kind == "account":
+                history_url = base + "/chat/conversation/c2"
+                page.route(history_url, lambda route: route.fulfill(json={"messages": [
+                    {"role": "user", "content": "Saved photo [Image Uploaded]"},
+                    {"role": "assistant", "content": "A previously saved answer.", "msg_id": "photo-history"},
+                ]}))
+                if width <= 768:
+                    page.locator("#hamburgerMenu").click()
+                page.locator('.conversation-item[data-id="c2"]').click()
+                expect(page.locator(".message-attachment-note")).to_have_text("Image attached (preview unavailable)")
+                expect(page.locator(".message-image")).to_have_count(0)
+                assert page.evaluate("() => window.attachmentUrls.size") == 0
+                if width <= 768:
+                    page.keyboard.press("Escape")
+                report = page.locator(".message.assistant .report-btn")
+                report.click()
+                offer = page.locator(".escalate-offer")
+                expect(offer).to_be_visible()
+                assert offer.evaluate("el => jQuery(el).data('question')") == "Saved photo [Image Uploaded]"
+                report.click()
+                capture(page, f"photo-history-{width}")
+                page.unroute(history_url)
+
+            if width <= 768:
+                page.locator("#hamburgerMenu").click()
+            page.locator(".new-chat-btn").click()
+            expect(page.locator("#emptyChatState")).to_be_visible()
+            if width <= 768:
+                page.keyboard.press("Escape")
+            expect(page.locator(".message-image")).to_have_count(0)
+            assert page.evaluate("() => window.attachmentUrls.size") == 0
+            page.locator("#themeToggle").click()
+        finally:
+            page.unroute(base + "/chat/get", respond)
+            page.evaluate("""() => {
+                URL.createObjectURL = window.originalCreateObjectURL;
+                URL.revokeObjectURL = window.originalRevokeObjectURL;
+            }""")
 
     def exercise_poll_rate_limit(page):
         upload_url = base + "/upload"
@@ -852,6 +1009,7 @@ def main():
                 expect(page.locator("#sendButton")).to_be_enabled()
                 capture(page, f"chat-response-{width}")
                 exercise_reporting(page, width)
+                exercise_image_attachments(page, width, "account")
                 if width > 768:
                     page.locator("#sidebarCollapseBtn").click()
                     expect(page.locator("#sidebar")).to_have_class("sidebar collapsed")
@@ -916,6 +1074,7 @@ def main():
                 page.goto(base + "/guest-chat", wait_until="networkidle")
                 exercise_suggestions(page, width, "guest")
                 exercise_guest_reporting(page, width)
+                exercise_image_attachments(page, width, "guest")
                 if width <= 768:
                     page.locator("#hamburgerMenu").click()
                 previous_clears = len(clear_requests)

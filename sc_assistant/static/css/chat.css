@@ -142,9 +142,12 @@
    background bleeds into the strokes), so a lighter weight here would read as
    washed out rather than elegant. */
 .message.user .message-bubble { background: var(--sc-green); color: white; border-bottom-right-radius: 4px; box-shadow: 0 4px 6px rgba(13, 69, 3, 0.2); font-weight: var(--weight-normal); }
+.message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-image { margin-top: 8px; }
+.message-attachment-note { display: block; margin-top: 8px; font-size: 0.85em; color: var(--text-secondary); }
 
 /* Report Row */
-.message-report-row { display: flex; padding-left: 44px; margin-top: 4px; }
+.message-report-row { display: flex; justify-content: flex-start; padding-left: 44px; margin-top: 3px; margin-bottom: 4px; }
 
 /* --- TYPING INDICATOR (inside the assistant's own bubble) --- */
 /* This used to be a pill floating 100px above the input, absolutely positioned
@@ -259,9 +262,11 @@
 .send-button:disabled { background: var(--bg-surface); color: var(--text-tertiary); cursor: not-allowed; }
 
 /* --- IMAGE PREVIEW --- */
-.image-preview-container { padding: 10px; margin-bottom: 10px; display: inline-flex; position: relative; background: var(--bg-surface); border-radius: 12px; border: 1px solid var(--border); max-width: 100%; }
-.preview-thumb { height: 60px; border-radius: 8px; border: 1px solid var(--border); max-width: 100%; object-fit: contain; }
-.remove-image { position: absolute; top: -5px; right: -5px; background: white; border-radius: 50%; color: var(--ui-danger-ink); cursor: pointer; font-size: 1.2rem; box-shadow: var(--shadow-sm); }
+.image-preview-container { display: none; align-items: center; gap: 8px; padding: 8px; margin-bottom: 10px; background: var(--bg-surface); border-radius: 12px; border: 1px solid var(--border); max-width: 100%; }
+.preview-thumb, .message-image { display: block; width: 80px; height: 64px; border-radius: 8px; border: 1px solid var(--border); object-fit: contain; }
+.remove-image { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; height: 44px; padding: 0; background: transparent; border: 0; border-radius: 8px; color: var(--ui-danger-ink); cursor: pointer; font-size: 1rem; box-shadow: none; }
+.remove-image:hover { color: var(--text-primary); }
+.remove-image:focus-visible { outline: 2px solid var(--sc-green); outline-offset: 2px; }
 
 /* --- GUEST BANNER --- */
 .guest-banner { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: rgba(251, 188, 5, 0.1); border-bottom: 1px solid rgba(251, 188, 5, 0.2); font-size: 0.9rem; color: var(--text-primary); }

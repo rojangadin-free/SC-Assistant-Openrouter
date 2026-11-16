@@ -9,24 +9,6 @@
         type="text/css"
         href="{{ url_for('static', filename='css/chat.css') }}"/>
   <style>
-    /* ── Image preview ──────────────────────────────── */
-    .image-preview-container {
-      display: none;
-      padding: 10px 15px;
-      background: var(--light-bg);
-      border-top: 1px solid var(--border);
-    }
-    .preview-thumb {
-      height: 60px;
-      border-radius: 5px;
-      border: 1px solid var(--border);
-    }
-    .remove-image {
-      color: var(--ui-danger-ink);
-      cursor: pointer;
-      margin-left: 10px;
-      font-size: 1.2rem;
-    }
     .upload-btn {
       background: none;
       border: none;
@@ -68,15 +50,6 @@
     .message.user .message-row  { justify-content: flex-end; }
     .message.assistant .message-row { justify-content: flex-start; }
     .message-row .message-bubble { max-width: 90%; }
-
-    /* Report action, aligned with its answer. */
-    .message-report-row {
-      display: flex;
-      justify-content: flex-start;
-      padding-left: 52px;
-      margin-top: 3px;
-      margin-bottom: 4px;
-    }
 
     /* ── "Ask a human" offer ─────────────────────────── */
     .escalate-offer {
@@ -594,10 +567,11 @@
 
     <div class="chat-input-area">
       <div id="imagePreviewContainer" class="image-preview-container">
-        <div style="display: flex; align-items: center;">
-          <img id="imagePreview" src="" class="preview-thumb">
-          <i class="fas fa-times-circle remove-image" id="removeImageBtn"></i>
-        </div>
+        <img id="imagePreview" class="preview-thumb" alt="Selected image">
+        <button type="button" class="remove-image" id="removeImageBtn"
+                title="Remove image" aria-label="Remove image">
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
       </div>
 
       <form id="messageForm" class="message-form" enctype="multipart/form-data">
