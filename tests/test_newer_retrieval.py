@@ -12,7 +12,6 @@ import concurrent.futures
 import datetime
 import importlib.util
 import io
-import json
 import os
 import re
 import sys
@@ -137,7 +136,7 @@ class NewerRetrievalTests(unittest.TestCase):
             "RETRIEVAL_TIMEOUT_SECONDS": "30",
         }))
 
-        self.denied_imports = []
+        self.denied_imports, self.env_reads = [], []
         original_import = builtins.__import__
         forbidden = {
             "app", "config", "dotenv", "aws", "src", "store_index", "sc_assistant",
@@ -156,6 +155,17 @@ class NewerRetrievalTests(unittest.TestCase):
 
         self.stack.enter_context(patch.dict(sys.modules, dict.fromkeys(forbidden)))
         self.stack.enter_context(patch("builtins.__import__", new=offline_import))
+
+        def offline_open(opener):
+            def guarded(path, *args, **kwargs):
+                if isinstance(path, (str, os.PathLike)) and Path(path).name.startswith(".env"):
+                    self.env_reads.append(os.fspath(path))
+                    raise AssertionError("No .env reads")
+                return opener(path, *args, **kwargs)
+            return guarded
+
+        self.stack.enter_context(patch("builtins.open", new=offline_open(builtins.open)))
+        self.stack.enter_context(patch("io.open", new=offline_open(io.open)))
         self.sockets = [self.stack.enter_context(patch(target, side_effect=AssertionError("No network")))
                         for target in ("socket.create_connection", "socket.socket.connect",
                                        "socket.socket.connect_ex", "socket.getaddrinfo")]
@@ -178,6 +188,7 @@ class NewerRetrievalTests(unittest.TestCase):
         language, dictation = self.module("language"), self.module("dictation")
         latency, self.runtime = self.module("latency"), self.module("runtime")
         self.reranker, self.policy = self.module("reranker"), self.module("source_policy")
+        self.spelling, self.optimizer = spelling, optimizer
 
         class Today(datetime.date):
             @classmethod
@@ -198,11 +209,8 @@ class NewerRetrievalTests(unittest.TestCase):
         self.summary = Mock(return_value="STALE_SUMMARY_FACT")
 
         def optimize(messages):
-            question = json.loads(messages[-1]["content"])["original_question"]
-            return SimpleNamespace(content=json.dumps({
-                "status": "unchanged", "question": question,
-                "search_query": question, "clarification": "",
-            }))
+            question = messages[-1]["content"].split("\n\nLatest Question: ", 1)[1]
+            return SimpleNamespace(content=question.split("\nLIKELY MISSPELLINGS", 1)[0])
 
         self.ns = {
             "os": os, "re": re, "concurrent": concurrent, "datetime": datetime.datetime,
@@ -210,8 +218,7 @@ class NewerRetrievalTests(unittest.TestCase):
             "HumanMessage": SimpleNamespace, "SystemMessage": SimpleNamespace,
             "correct_query": spelling.correct_query, "spelling_variants": spelling.spelling_variants,
             "dictation_variants": dictation.dictation_variants, "language_variants": language.language_variants,
-            "optimizer_messages": optimizer.optimizer_messages, "parse_interpretation": optimizer.parse_interpretation,
-            "interpretation_guidance": optimizer.interpretation_guidance,
+            "optimize_query": optimizer.optimize_query,
             "should_optimize": latency.should_optimize, "pick_search_query": latency.pick_search_query,
             "Deadline": latency.Deadline, "Timings": latency.Timings,
             "CapacityError": self.runtime.CapacityError, "RequestBudget": self.runtime.RequestBudget,
@@ -236,6 +243,8 @@ class NewerRetrievalTests(unittest.TestCase):
             "_content_terms", "expand_queries", "split_question", "multi_query_retrieve",
             "retrieve_documents", "docs_to_context", "safe_prompt", "create_graph",
         }, self.ns)
+        self.retrieval = Mock(wraps=self.ns["retrieve_documents"])
+        self.ns["retrieve_documents"] = self.retrieval
         self.install([])
         self.output = io.StringIO()
         self.stack.enter_context(redirect_stdout(self.output))
@@ -250,6 +259,7 @@ class NewerRetrievalTests(unittest.TestCase):
 
     def assert_offline(self):
         self.assertEqual(self.denied_imports, [])
+        self.assertEqual(self.env_reads, [])
         for connection in self.sockets:
             connection.assert_not_called()
         self.freshness.get_doc_dates.assert_not_called()
@@ -265,12 +275,230 @@ class NewerRetrievalTests(unittest.TestCase):
         kwargs.setdefault("allow_spelling", False)
         return self.ns["retrieve_documents"](question, **kwargs)
 
-    def chat(self, question=QUESTION, history=None):
-        state = {"input": question, "chat_history": history or [], "role": "student"}
+    def chat(self, question=QUESTION, history=None, **state_fields):
+        state = {"input": question, "chat_history": history or [], "role": "student", **state_fields}
         before = deepcopy(state)
         result = self.ns["create_graph"]()(state)
         self.assertEqual(state, before)
         return result
+
+    def test_query_only_output_is_not_waited_for_until_retrieval_enters(self):
+        current = document("Enrollment_Update.docx", "Enrollment requires CURRENT_FORM and application documents.", "current")
+        self.install([current])
+        typed, natural = "enrollmnet requirements", "enrollment requirements"
+        keywords = "enrollment application registration form requirements"
+        history = [{"role": "user", "content": "How do I enroll?"}]
+        correction = Mock(wraps=self.spelling.correct_query)
+        model = self.ns["query_optimizer_model"].invoke
+        model.side_effect = None
+        model.return_value = SimpleNamespace(content=f"\n {keywords} \n")
+        future = concurrent.futures.Future()
+        future.result = Mock(wraps=future.result)
+
+        def submit(task):
+            future.set_result(task())
+            return future
+
+        def retrieve(query, **kwargs):
+            self.assertEqual(query, natural)
+            self.assertEqual(kwargs["user_question"], natural)
+            self.assertIs(kwargs.get("allow_spelling", True), True)
+            future.result.assert_not_called()
+            companion = kwargs["late_query"]()
+            self.assertEqual(companion, keywords)
+            selection = self.policy.select_documents(
+                [current], [query, companion], dates=kwargs["dates"], uploads=kwargs["uploads"],
+            )
+            kwargs["on_selection"](selection)
+            return selection.documents
+
+        retrieval = Mock(side_effect=retrieve)
+        with patch.dict(self.ns, {
+            "correct_query": correction, "retrieve_documents": retrieval,
+            "optimizer_pool": SimpleNamespace(submit=Mock(side_effect=submit)),
+        }):
+            result = self.chat(typed, history)
+        correction.assert_called_once_with(typed)
+        model.assert_called_once_with(self.optimizer.optimizer_messages(natural, history))
+        retrieval.assert_called_once()
+        future.result.assert_called_once()
+        self.assertEqual(result["messages_to_llm"][-1].content, natural)
+        self.assertEqual(result["citations"], ["current"])
+        self.assertEqual(result["chat_history"], history)
+        self.ns["authority_block"].assert_called_once()
+        self.assertEqual(self.ns["authority_block"].call_args.args[:2], (natural, natural))
+
+    def test_late_companion_retrieves_keyword_only_hit_without_becoming_primary(self):
+        question, companion = "enrollment requirements", "application registration form checklist"
+        current = document("Enrollment_Update.docx", "Enrollment requirements use CURRENT_FORM and its application checklist.", "current")
+        hybrid = self.install([current])
+        hybrid.filtered = lambda query, filters: [current] if query == companion else []
+        self.ns["query_optimizer_model"].invoke.side_effect = None
+        self.ns["query_optimizer_model"].invoke.return_value = SimpleNamespace(content=companion)
+        result = self.chat(question)
+        self.assertEqual(result["citations"], ["current"])
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(self.retrieval.call_args.args[0], question)
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
+        self.assertTrue(callable(self.retrieval.call_args.kwargs["late_query"]))
+        self.assertIs(self.retrieval.call_args.kwargs.get("allow_spelling", True), True)
+        self.assertEqual(self.ranking.call_args.args[0], question)
+        self.assertEqual(self.ranking.call_args.kwargs["queries"], [companion])
+        self.assertEqual({query for leaf, query, filters in hybrid.calls}, {question, companion})
+        for call in self.selections.call_args_list:
+            self.assertEqual(call.args[1][0], question)
+        self.assertIn("CURRENT_FORM", result["messages_to_llm"][0].content)
+        hybrid.ensemble.invoke.assert_not_called()
+
+    def test_optimizer_error_blank_and_echo_fall_back_without_forced_clarification(self):
+        question = "enrollment requirements"
+        current = document("Enrollment_Update.docx", "Enrollment requires CURRENT_FORM only.", "current")
+        history = [{"role": "assistant", "content": "STALE_ENROLLMENT_FACT"}]
+        model = self.ns["query_optimizer_model"].invoke
+        for output in (RuntimeError("optimizer unavailable"), "", "   ", question, question.upper()):
+            with self.subTest(output=repr(output)):
+                self.install([current])
+                model.reset_mock()
+                model.side_effect = output if isinstance(output, Exception) else None
+                model.return_value = SimpleNamespace(content=output)
+                result = self.chat(question, history)
+                model.assert_called_once_with(self.optimizer.optimizer_messages(question, history))
+                self.assertEqual(result["citations"], ["current"])
+                self.assertEqual(result["messages_to_llm"][-1].content, question)
+                self.assertEqual(self.retrieval.call_args.args[0], question)
+                self.assertEqual(self.ranking.call_args.args[0], question)
+                self.assertEqual(self.ranking.call_args.kwargs["queries"], [])
+                self.assertEqual({query for leaf, query, filters in self.hybrid.calls}, {question})
+                prompt = result["messages_to_llm"][0].content
+                for marker in ("<query_interpretation>", "<accepted_offer>", "Ask ONLY one", "STALE_ENROLLMENT_FACT"):
+                    self.assertNotIn(marker, prompt)
+
+    def test_pending_or_failed_optimizer_future_uses_natural_retrieval(self):
+        question = "enrollment requirements"
+        current = document("Enrollment_Update.docx", "Enrollment requires CURRENT_FORM only.", "current")
+        for mode in ("pending", "failed"):
+            with self.subTest(mode=mode):
+                self.install([current])
+                future = concurrent.futures.Future()
+                if mode == "pending":
+                    future.set_running_or_notify_cancel()
+                else:
+                    future.set_exception(RuntimeError("worker failed"))
+                with patch.dict(self.ns, {
+                    "optimizer_pool": SimpleNamespace(submit=Mock(return_value=future)),
+                    "Deadline": lambda: SimpleNamespace(remaining=lambda: 0),
+                }):
+                    result = self.chat(question)
+                if mode == "pending":
+                    future.set_result("LATE_QUERY_MUST_NOT_JOIN")
+                self.assertEqual(result["citations"], ["current"])
+                self.assertEqual(result["messages_to_llm"][-1].content, question)
+                self.assertEqual(self.ranking.call_args.args[0], question)
+                self.assertEqual(self.ranking.call_args.kwargs["queries"], [])
+                self.assertNotIn("LATE_QUERY_MUST_NOT_JOIN", {query for leaf, query, filters in self.hybrid.calls})
+                self.assertNotIn("<query_interpretation>", result["messages_to_llm"][0].content)
+        self.ns["query_optimizer_model"].invoke.assert_not_called()
+
+    def test_optimizer_capacity_refusal_preserves_context_without_understanding_phase(self):
+        question = "enrollment requirements"
+        current = document("Enrollment_Update.docx", "Enrollment requires CURRENT_FORM only.", "current")
+        self.install([current])
+        with patch.dict(self.ns, {
+            "optimizer_pool": SimpleNamespace(submit=Mock(side_effect=self.runtime.CapacityError("busy"))),
+        }):
+            result = self.chat(question)
+        self.assertEqual(result["citations"], ["current"])
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(self.ranking.call_args.kwargs["queries"], [])
+        self.assertNotIn("understanding", [call.args[1] for call in self.ns["emit_phase"].call_args_list])
+        self.assertNotIn("<query_interpretation>", result["messages_to_llm"][0].content)
+        self.ns["query_optimizer_model"].invoke.assert_not_called()
+
+    def test_complete_clean_question_skips_optimizer_without_dropping_retrieval(self):
+        question = "graduate scholarship application eligibility requirements"
+        current = document("Scholarship_Update.docx", "Graduate scholarship application eligibility requirements use CURRENT_FORM.", "current")
+        self.install([current])
+        result = self.chat(question, [{"role": "user", "content": "enrollment"}])
+        self.ns["query_optimizer_model"].invoke.assert_not_called()
+        self.assertEqual(result["citations"], ["current"])
+        self.assertEqual(self.retrieval.call_args.args[0], question)
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(self.ranking.call_args.kwargs["queries"], [])
+
+    def test_context_followup_rewrite_uses_history_only_for_a_late_probe(self):
+        question, companion = "How much?", "transcript request fee schedule"
+        current = document("Transcript_Fees.docx", "Transcript request fee schedule: CURRENT_FEE_RECORD.", "current")
+        self.install([current])
+        history = [{"role": "user", "content": "What student documents are available?"},
+                   {"role": "assistant", "content": "The registrar handles transcript requests. STALE_PRICE_500."},
+                   {"role": "user", "content": "How long?"},
+                   {"role": "assistant", "content": "STALE_PROCESSING_TIME"}]
+        model = self.ns["query_optimizer_model"].invoke
+        model.side_effect = None
+        model.return_value = SimpleNamespace(content=companion)
+        result = self.chat(question, history)
+        model.assert_called_once_with(self.optimizer.optimizer_messages(question, history))
+        self.assertEqual(self.retrieval.call_args.args[0], question)
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
+        self.assertEqual(self.ranking.call_args.args[0], question)
+        self.assertIn(companion, self.ranking.call_args.kwargs["queries"])
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(result["citations"], ["current"])
+        self.assertEqual(result["chat_history"], history)
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("What student documents are available?", prompt)
+        for marker in ("STALE_PRICE_500", "STALE_PROCESSING_TIME", "<query_interpretation>", "<accepted_offer>"):
+            self.assertNotIn(marker, prompt)
+
+    def test_image_analysis_and_query_rewrite_keep_separate_handoffs(self):
+        current = document("Enrollment_Update.docx", "Enrollment requires CURRENT_FORM.", "current")
+        self.install([current])
+        question, natural, image = "enrollmnet", "enrollment", "offline-image-data"
+        companion, description = "enrollment application form", "OCR_ENROLLMENT_FORM"
+        model = self.ns["query_optimizer_model"].invoke
+        model.side_effect = None
+        model.return_value = SimpleNamespace(content=companion)
+        vision = Mock(return_value=SimpleNamespace(content=description))
+        with patch.dict(self.ns, {"summarizer": SimpleNamespace(invoke=vision)}):
+            result = self.chat(question, image_data=image)
+        model.assert_called_once_with(self.optimizer.optimizer_messages(natural))
+        vision.assert_called_once()
+        image_url = f"data:image/jpeg;base64,{image}"
+        self.assertEqual(vision.call_args.args[0][0].content[1]["image_url"]["url"], image_url)
+        content = result["messages_to_llm"][-1].content
+        self.assertEqual(content[0]["text"], f"{natural}\n\n[System Note - Image Analysis Provided]: {description}")
+        self.assertEqual(content[1]["image_url"]["url"], image_url)
+        self.assertEqual(self.retrieval.call_args.args[0], natural)
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], natural)
+        self.assertIn(companion, self.ranking.call_args.kwargs["queries"])
+        self.assertEqual(result["citations"], ["current"])
+
+    def test_numbered_followup_uses_model_history_and_keeps_the_literal_reply(self):
+        current = document("Institution_History.docx", "History of Samar College growth and milestones:\n"
+                           "The college opened its doors and expanded as recorded in CURRENT_HISTORY_ACCOUNT.",
+                           "history", section_heading="Historical Account")
+        self.install([current])
+        history = [{"role": "user", "content": "enrollment requirements"},
+                   {"role": "assistant", "content": "3. Pay OLD_ENROLLMENT_PAYMENT."},
+                   {"role": "user", "content": "history of Samar College"},
+                   {"role": "assistant", "content": "History of Samar College:\n1. Founding\n2. Leadership\n3. Growth and milestones\nChoose a number."}]
+        companion = "history of Samar College growth and milestones"
+        model = self.ns["query_optimizer_model"].invoke
+        model.side_effect = None
+        model.return_value = SimpleNamespace(content=companion)
+        result = self.chat("3", history)
+        model.assert_called_once_with(self.optimizer.optimizer_messages("3", history))
+        self.assertEqual(self.retrieval.call_args.args[0], "3")
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], "3")
+        self.assertEqual(self.ranking.call_args.args[0], "3")
+        self.assertIn(companion, self.ranking.call_args.kwargs["queries"])
+        self.assertEqual(result["messages_to_llm"][-1].content, "3")
+        self.assertEqual(result["citations"], ["history"])
+        self.assertEqual(result["chat_history"], history)
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("CURRENT_HISTORY_ACCOUNT", prompt)
+        for marker in ("<accepted_offer>", "<query_interpretation>", "Ask ONLY one", "OLD_ENROLLMENT_PAYMENT"):
+            self.assertNotIn(marker, prompt)
 
     def test_programs_offered_requires_exact_raw_case_source_job(self):
         curriculum = document("Current_Curriculum.docx", "College of River Studies: Bachelor of River Studies.",
@@ -560,9 +788,7 @@ class NewerRetrievalTests(unittest.TestCase):
         history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
                    "OLD_CAS_REPLY reflects the 2024 edition only and is not confirmed current offerings."}]
         question = "confirmed current offerings"
-        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=json.dumps({
-            "status": "unchanged", "question": question, "search_query": question + " CAS", "clarification": "",
-        }))
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=question + " CAS")
         result = self.chat(question, history)
         self.assertEqual(set(result["citations"]), {"bsit", "communication"}, self.output.getvalue())
         prompt = result["messages_to_llm"][0].content
@@ -578,7 +804,7 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs["filter"] == exact for call in hybrid.dense.invoke.call_args_list))
         hybrid.ensemble.invoke.assert_not_called()
 
-    def test_accepting_the_active_college_offer_uses_its_task_but_not_its_old_facts(self):
+    def test_affirmative_followup_uses_model_companion_without_offer_guidance_or_old_facts(self):
         current = [document(PROGRAMS, unit + "\n" + degree, key, section_heading=unit,
                             collection_heading="Programs Offered") for unit, degree, key in (
             ("College of Information Technology and Allied Sciences", "Bachelor of Science in Information Technology", "citas"),
@@ -590,66 +816,90 @@ class NewerRetrievalTests(unittest.TestCase):
         history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
                    "OLD_CAS_CLAIM is from 2024. If you'd like, I can share details on the currently active colleges instead."}]
         before = deepcopy(history)
-        self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+        companion = "currently active colleges"
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=companion)
         for reply in ("yes do it", "yes, please", "YES"):
             with self.subTest(reply=reply):
+                self.ns["query_optimizer_model"].invoke.reset_mock()
                 result = self.chat(reply, history)
                 self.assertEqual(set(result["citations"]), {"citas", "cbm"}, self.output.getvalue())
                 prompt = result["messages_to_llm"][0].content
-                self.assertIn("<accepted_offer>", prompt)
-                self.assertIn("share details on the currently active colleges instead", prompt)
-                self.assertIn("<department_list_request>", prompt)
+                self.assertNotIn("<accepted_offer>", prompt)
+                self.assertNotIn("<query_interpretation>", prompt)
+                self.assertNotIn("<department_list_request>", prompt)
                 self.assertIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
                 self.assertNotIn("OLD_CAS_CLAIM", prompt)
                 self.assertNotIn("OLD_CAS_PROGRAM", prompt)
                 self.assertNotIn(BASE, prompt)
                 self.assertEqual(result["messages_to_llm"][-1].content, reply)
-                self.assertEqual(self.ranking.call_args.args[0], "the currently active colleges instead")
+                self.assertEqual(self.retrieval.call_args.args[0], reply)
+                self.assertEqual(self.retrieval.call_args.kwargs["user_question"], reply)
+                self.assertEqual(self.ranking.call_args.args[0], reply)
+                self.assertIn(companion, self.ranking.call_args.kwargs["queries"])
+                self.assertEqual(self.selections.call_args.args[1][0], reply)
+                self.ns["query_optimizer_model"].invoke.assert_called_once_with(
+                    self.optimizer.optimizer_messages(reply, history),
+                )
                 self.assertEqual(result["chat_history"], before)
-        self.ns["query_optimizer_model"].invoke.assert_not_called()
         self.summary.assert_not_called()
         hybrid.ensemble.invoke.assert_not_called()
         self.assertEqual(history, before)
 
-    def test_accepting_a_history_offer_retrieves_history_not_the_previous_programs(self):
+    def test_explicit_history_reply_retrieves_history_not_the_previous_programs(self):
         historical = document(BASE, "The school opened its doors as described in this historical account of its founding.",
                               "history", section_heading="Historical Account")
         self.install([], baseline=[historical])
         history = [{"role": "user", "content": "current offerings"}, {"role": "assistant", "content":
                    "OLD_PROGRAM_CLAIM. Would you like me to explain the history of Samar College?"}]
-        result = self.chat("go ahead", history)
+        question = "explain the history of Samar College"
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content="Samar College historical account")
+        result = self.chat(question, history)
         self.assertEqual(result["citations"], ["history"], self.output.getvalue())
         prompt = result["messages_to_llm"][0].content
-        self.assertIn("<accepted_offer>", prompt)
+        self.assertNotIn("<accepted_offer>", prompt)
         self.assertIn("<institution_history_request>", prompt)
         self.assertNotIn("OLD_PROGRAM_CLAIM", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
-        self.assertEqual(result["messages_to_llm"][-1].content, "go ahead")
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(self.ranking.call_args.args[0], question)
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
 
-    def test_accepted_current_college_offer_does_not_make_an_old_list_current(self):
+    def test_explicit_current_college_reply_does_not_make_an_old_list_current(self):
         old = document(BASE, "College of Arts and Sciences\nOLD_COLLEGE_LIST", "old-college")
         self.install([], baseline=[old])
         history = [{"role": "user", "content": "cas"}, {"role": "assistant", "content":
                    "OLD_CAS_CLAIM. If you'd like, I can share details on the currently active colleges instead."}]
-        result = self.chat("yes do it", history)
+        question = "list the currently active colleges"
+        result = self.chat(question, history)
         self.assertEqual(result["citations"], [])
         prompt = result["messages_to_llm"][0].content
-        self.assertIn("<accepted_offer>", prompt)
+        self.assertNotIn("<accepted_offer>", prompt)
+        self.assertIn("<department_list_request>", prompt)
         self.assertNotIn("OLD_CAS_CLAIM", prompt)
         self.assertNotIn("OLD_COLLEGE_LIST", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
 
-    def test_accepting_two_alternative_offers_asks_which_without_retrieval(self):
+    def test_ambiguous_offer_echo_uses_natural_retrieval_without_forced_clarification(self):
         self.install([])
         history = [{"role": "assistant", "content":
                     "I can list currently active colleges or explain the enrollment requirements."}]
         result = self.chat("yes do it", history)
-        self.assertEqual(result["citations"], [])
-        self.assertIn("Ask ONLY one", result["messages_to_llm"][0].content)
-        self.ranking.assert_not_called()
-        self.hybrid.ensemble.invoke.assert_not_called()
+        self.assertEqual(result["citations"], [doc.metadata["chunk_id"] for doc in self.old[:self.ns["FINAL_TOP_K"]]])
+        prompt = result["messages_to_llm"][0].content
+        self.assertNotIn("Ask ONLY one", prompt)
+        self.assertNotIn("<accepted_offer>", prompt)
+        self.assertNotIn("<department_list_request>", prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, "yes do it")
+        self.assertEqual(self.ranking.call_args.args[0], "yes do it")
+        self.assertEqual(self.ranking.call_args.kwargs["queries"], [])
+        self.assertTrue(self.hybrid.ensemble.invoke.called)
+        self.assertEqual({call.args[0] for call in self.hybrid.ensemble.invoke.call_args_list},
+                         set(self.ns["expand_queries"]("yes do it")))
         self.hybrid.dense.invoke.assert_not_called()
-        self.ns["query_optimizer_model"].invoke.assert_not_called()
+        self.ns["query_optimizer_model"].invoke.assert_called_once_with(
+            self.optimizer.optimizer_messages("yes do it", history),
+        )
 
     def test_missing_current_catalog_does_not_prepare_a_confirmed_2024_answer(self):
         old = document(BASE, "SCTI Training Offerings\nOLD_TRAINING_ENTRY", "training")
@@ -681,10 +931,7 @@ class NewerRetrievalTests(unittest.TestCase):
         question = "history of samar college"
         past = [{"role": "user", "content": "confirmed current offerings"},
                 {"role": "assistant", "content": "ONLY_CURRENT_PROGRAMS_CLAIM: CITAS and CBM curricula."}] * 6
-        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=json.dumps({
-            "status": "unchanged", "question": question,
-            "search_query": question + " current offerings CITAS", "clarification": "",
-        }))
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=question + " current offerings CITAS")
         result = self.chat(question, past)
         self.assertEqual(result["citations"], ["history"], self.output.getvalue())
         prompt = result["messages_to_llm"][0].content
@@ -712,23 +959,33 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertNotIn("Readings in Philippine History", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
 
-    def test_resolved_institution_history_reference_gets_the_same_evidence_boundary(self):
+    def test_history_followup_companion_does_not_replace_natural_request_text(self):
         history_doc = document(BASE, "The college was established as documented in this historical account of its founding.",
                                "founding", section_heading="Historical Account")
         self.install([history_doc], baseline=[history_doc])
         question = "when was it founded?"
-        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=json.dumps({
-            "status": "unchanged", "question": question,
-            "search_query": "when was Samar College founded?", "clarification": "",
-        }))
+        companion = "when was Samar College founded?"
+        self.ns["query_optimizer_model"].invoke.side_effect = lambda messages: SimpleNamespace(content=companion)
         past = [{"role": "user", "content": "tell me about Samar College"},
                 {"role": "assistant", "content": "OLD_NO_HISTORY_CLAIM"}]
         result = self.chat(question, past)
         self.assertEqual(result["citations"], ["founding"], self.output.getvalue())
         prompt = result["messages_to_llm"][0].content
-        self.assertIn("<institution_history_request>", prompt)
-        self.assertIn("tell me about Samar College", prompt)
-        self.assertNotIn("OLD_NO_HISTORY_CLAIM", prompt)
+        self.assertEqual(self.retrieval.call_args.args[0], question)
+        self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
+        self.assertEqual(self.ranking.call_args.args[0], question)
+        self.assertIn(companion, self.ranking.call_args.kwargs["queries"])
+        self.assertIn(question, self.selections.call_args.args[1])
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.ns["query_optimizer_model"].invoke.assert_called_once_with(
+            self.optimizer.optimizer_messages(question, past),
+        )
+        with self.subTest(boundary="natural request text"):
+            self.assertEqual(self.ns["authority_block"].call_args.args[:2], (question, question))
+        with self.subTest(boundary="user antecedent"):
+            self.assertIn("tell me about Samar College", prompt)
+        with self.subTest(boundary="stale assistant facts"):
+            self.assertNotIn("OLD_NO_HISTORY_CLAIM", prompt)
 
     def test_failed_reference_search_cannot_claim_that_history_is_missing(self):
         self.install([])
@@ -854,7 +1111,7 @@ class NewerRetrievalTests(unittest.TestCase):
                 self.assertFalse(chosen.call_args.args[0].restricted)
                 self.assertTrue(self.hybrid.ensemble.invoke.called)
 
-    def test_selection_receives_accepted_phrasings_aspects_and_language(self):
+    def test_selection_receives_natural_phrasings_late_companion_aspects_and_language(self):
         current = document("Enrollment_Update.docx", "Enrollment application requires CURRENT_FORM and fees.", "current")
         self.install([current])
         original = "Pila an bayad sa enrollment and what are the enrollment requirements?"

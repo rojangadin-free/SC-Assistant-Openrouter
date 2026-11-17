@@ -4,11 +4,10 @@ Document indexing updates spell_vocab.json; new terms do not require Python
 changes. Workers notice changes to that file without restarting. Seed terms
 provide a small fallback when the deployment has no vocabulary yet.
 
-Local edits are deliberately limited. Valid words, names, short words and
-uncertain spellings need sentence-level interpretation, not a growing table of
-typo pairs or academic phrases. rag.query_optimizer handles that on every text
-question, using the original wording plus these non-authoritative candidates.
-Only the working question changes; displayed input and history remain intact.
+Local edits combine corpus-derived repairs with the reference's guarded request-
+opening confusions. Other valid words, names and uncertain spellings stay intact.
+The optional query optimizer sees the working question and accepted spelling
+hints. Displayed input and stored history never change.
 """
 
 from __future__ import annotations
@@ -87,9 +86,28 @@ MIN_TARGET_FREQ = 3
 # term reaches (so the corpus always wins a tie).
 SEED_FREQ = MIN_TARGET_FREQ
 
-# Limit unreviewed local edits. The contextual optimizer can repair more words
-# together; it is not subject to this conservative fallback's limit.
+# Limit local repairs; an optional model rewrite is only an additional search.
 MAX_CORRECTIONS = 3
+
+
+# Generic request-word slips from the reference, not school-topic substitutions.
+_REAL_WORD_CONFUSIONS: Dict[str, str] = {
+    "lost": "list", "lsit": "list", "liat": "list",
+    "gice": "give", "gove": "give",
+    "mich": "much", "muxh": "much",
+    "want": "what", "waht": "what", "hwat": "what",
+    "si": "is", "wgo": "who", "hwo": "who",
+    "whne": "when", "wehn": "when",
+}
+_CONTEXT_AFTER: Dict[str, Tuple[str, ...]] = {
+    "list": ("the", "all", "every", "down", "of"),
+    "give": ("me", "us", "the", "a"),
+    "much": ("is", "are", "does", "do", "the", "for"),
+    "what": ("is", "are", "was", "were", "do", "does", "the", "a", "an"),
+    "is": ("the", "a", "an"),
+    "who": ("is", "are", "was", "were", "the"),
+    "when": ("is", "are", "does", "do", "will", "the"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -590,17 +608,47 @@ def spelling_candidates(text: str) -> Dict[str, List[str]]:
     return hints
 
 
+def _plural_ish(word: str) -> bool:
+    word = (word or "").lower().strip("?.,!")
+    return len(word) > 3 and word.endswith("s") and not word.endswith("ss")
+
+
+def _real_word_repair(token: str, following: List[str], preceding: List[str]) -> Optional[str]:
+    typed = (token or "").lower()
+    meant = _REAL_WORD_CONFUSIONS.get(typed)
+    if not meant or meant == typed:
+        return None
+    if typed not in _COMMON_ENGLISH:
+        return meant
+    # An actual loss or preference inside a sentence is not a request-word typo.
+    if any(word not in ("please", "kindly") for word in preceding):
+        return None
+    expected = _CONTEXT_AFTER.get(meant)
+    next_word = following[0].strip("?.,!") if following else ""
+    if not expected or next_word not in expected:
+        return None
+    if meant == "list":
+        if any(word in ("my", "our", "your", "his", "her", "their") for word in following[:2]):
+            return None
+        if not any(_plural_ish(word) for word in following):
+            return None
+    return meant
+
+
 def _repairs(text: str) -> List[Tuple[re.Match, str]]:
-    """Find conservative lexical repairs and their exact original spans."""
+    """Find contextual/lexical repairs against the original words and spans."""
     text = text or ""
     vocab = _vocabulary()
 
+    matches = list(_word_matches(text))
+    lowered = [match.group(0).lower() for match in matches]
     found: List[Tuple[re.Match, str]] = []
-    for match in _word_matches(text):
+    for index, match in enumerate(matches):
         token = match.group(0)
-        if token != token.lower():
-            continue
-        fixed = _suggest(token, vocab)
+        # Neighbors must be original words; one edit cannot justify the next.
+        fixed = _real_word_repair(token, lowered[index + 1:], lowered[:index])
+        if not fixed and token == token.lower():
+            fixed = _suggest(token, vocab)
 
         if fixed and fixed != token.lower():
             found.append((match, fixed))
@@ -648,9 +696,8 @@ def spelling_variants(text: str) -> List[str]:
     """
     The retrieval probes to ADD for a possibly-misspelled question.
 
-    An empty result means no confident local repair. Direct/unreviewed callers
-    keep the input as their primary query. Validated interpretations must skip
-    these variants so rejected local guesses cannot re-enter retrieval.
+    An empty result means no confident local repair. Callers keep their natural
+    question as primary and add any repair as another retrieval phrasing.
     """
     corrected = correct_query(text)
     return [corrected] if corrected else []

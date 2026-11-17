@@ -14,8 +14,8 @@ by reading the source instead, which is the same trade tests/test_pwa.py makes.
 
 What is actually being defended
 -------------------------------
-1. Every textual question gets contextual interpretation, including apparently
-   complete questions and real-word typos that a dictionary cannot detect.
+1. Self-contained questions skip an unnecessary model call; thin questions and
+   corpus-supported misspellings retain the reference optimizer opportunity.
 2. Follow-ups retain access to their preceding conversation.
 3. A late rewrite must be dropped, not waited for, and never crash the answer.
 4. The literal question must survive. If a bug here demoted the student's own
@@ -26,11 +26,15 @@ What is actually being defended
 # tests/ but every import and relative path below assumes the repo root.
 import _bootstrap  # noqa: F401
 
+import ast
 import concurrent.futures
+import os
 import re
+from pathlib import Path
+from unittest.mock import patch
 
 from rag.latency import (
-    should_optimize, pick_search_query, Deadline, Timings,
+    should_optimize, pick_search_query, Deadline, Timings, OPTIMIZER_BUDGET_SECONDS,
 )
 
 _passed = 0
@@ -56,7 +60,7 @@ HISTORY = [
 ]
 
 
-print("\n=== 1. Complete questions still get contextual interpretation ===")
+print("\n=== 1. Complete questions skip the optional optimizer =========")
 
 for q in (
     "who is the dean of the college of education",
@@ -64,17 +68,17 @@ for q in (
     "how much is the tuition fee for BSIT",
     "who is the principal of the elementary department",
 ):
-    check(f"first turn, self-contained -> interpret: {q[:44]!r}",
-          should_optimize(q, []) is True)
+    check(f"first turn, self-contained -> skip: {q[:44]!r}",
+          should_optimize(q, []) is False)
 
 # Same question, ninth turn. "who is the dean of education" means the same thing
 # on turn 1 and turn 9, so mid-conversation is not by itself a reason to wait.
-check("mid-conversation and self-contained -> still interpreted",
-      should_optimize("who is the dean of the college of education", HISTORY) is True)
+check("mid-conversation and self-contained -> still skipped",
+      should_optimize("who is the dean of the college of education", HISTORY) is False)
 
 # `None` is what a brand-new session actually passes, not [].
 check("history=None behaves like no history",
-      should_optimize("who is the dean of the college of education", None) is True)
+      should_optimize("who is the dean of the college of education", None) is False)
 
 
 print("\n=== 2. A follow-up still waits for the rewrite ================")
@@ -109,24 +113,32 @@ check("empty question -> no optimizer call", should_optimize("", HISTORY) is Fal
 check("whitespace question -> no optimizer call", should_optimize("   ", []) is False)
 
 
-print("\n=== 2b. Unresolved words are not valid search anchors =========")
-for q in ("latin hnit requirements", "latin hnir requirements",
-          "latin hzzzz graduation requirements"):
+print("\n=== 2b. Corpus-supported misspellings still request a rewrite ==")
+for q in ("latin honir requirements", "enrolmnet admission requirements"):
     check(f"unresolved term, first turn -> waits: {q!r}",
           should_optimize(q, []) is True)
     check(f"unresolved term, with history -> waits: {q!r}",
           should_optimize(q, HISTORY) is True)
-check("a repaired honors question gets the same contextual validation",
-      should_optimize("latin honor requirements", []) is True)
-check("a known academic acronym does not bypass interpretation",
-      should_optimize("BSIT admission requirements", []) is True)
+check("a repaired three-term honors question skips the extra round trip",
+      should_optimize("latin honor requirements", []) is False)
+check("a known acronym with sufficient content skips the extra round trip",
+      should_optimize("BSIT admission requirements", []) is False)
+with patch("rag.latency.has_misspelling", return_value=True):
+    check("the misspelling signal precedes first-turn thinness",
+          should_optimize("four otherwise searchable content terms", []) is True)
 
 
-print("\n=== 3. Known words and unfamiliar languages use the same path ===")
-for text in ("sign the internship contact", "who is the internship contact",
-             "tuition fee", "dean college education", "Pila an bayad?", "\u8bfe\u7a0b\u8981\u6c42"):
-    check(f"no dictionary/thinness shortcut: {text!r}", should_optimize(text, []) is True)
-check("punctuation alone has no text to interpret", should_optimize("?!", []) is False)
+print("\n=== 3. Reference thinness and context heuristics are retained ==")
+with patch("rag.latency.has_misspelling", return_value=False):
+    for text, expected in (("tuition fee", True), ("dean college education", False),
+                           ("Pila an bayad?", True), ("\u8bfe\u7a0b\u8981\u6c42", True), ("?!", True)):
+        check(f"reference term-count decision: {text!r}", should_optimize(text, []) is expected)
+    for text in ("yes do the programs offered", "sure what are the fees", "no tell me the requirements"):
+        check(f"a reply with history requests context: {text!r}", should_optimize(text, HISTORY) is True)
+    check("pronouns without history do not force a complete question rewrite",
+          should_optimize("are they open during the semestral break", []) is False)
+    check("whole-word anaphora does not match substrings",
+          should_optimize("thatch roofing scholarship requirements", HISTORY) is False)
 
 
 
@@ -157,6 +169,22 @@ print("\n=== 5. A late rewrite is dropped, not waited for ==============")
 
 # A fake clock, so the test asserts on the arithmetic rather than on sleeping.
 now = [1000.0]
+tree = ast.parse(Path("rag/latency.py").read_text(encoding="utf-8"))
+assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == "OPTIMIZER_BUDGET_SECONDS"
+                          for target in node.targets))
+namespace = {"os": os}
+compiled = compile(ast.Module(body=[assignment], type_ignores=[]), "rag/latency.py", "exec")
+with patch.dict(os.environ, {}, clear=True):
+    exec(compiled, namespace)
+    check("the default optimizer wait matches the reference 2.5 seconds",
+          namespace["OPTIMIZER_BUDGET_SECONDS"] == 2.5)
+with patch.dict(os.environ, {"SC_OPTIMIZER_BUDGET_SECONDS": "0.75"}):
+    exec(compiled, namespace)
+    check("the deployment can override the optimizer wait",
+          namespace["OPTIMIZER_BUDGET_SECONDS"] == 0.75)
+check("Deadline uses the configured optimizer budget",
+      Deadline.__init__.__defaults__[0] == OPTIMIZER_BUDGET_SECONDS)
 budget = Deadline(seconds=2.5, clock=lambda: now[0])
 check("fresh deadline has its full budget", abs(budget.remaining() - 2.5) < 1e-9)
 check("fresh deadline is not expired", budget.expired() is False)
@@ -200,6 +228,17 @@ check("a rewrite slower than its budget times out", timed_out is True)
 check("and the wait is bounded by the budget, not the rewrite", waited < 0.25)
 check("the caller falls back to the literal question",
       pick_search_query("who is the dean", got) == "who is the dean")
+completed = concurrent.futures.Future()
+completed.set_result("a rewrite already available")
+check("a completed rewrite can be read at zero remaining wait, as in the reference",
+      completed.result(timeout=0) == "a rewrite already available")
+pending = concurrent.futures.Future()
+try:
+    pending.result(timeout=0)
+    timed_out = False
+except concurrent.futures.TimeoutError:
+    timed_out = True
+check("a pending rewrite is not waited for after the budget expires", timed_out)
 
 
 print("\n=== 6. Timing instrumentation cannot break an answer =========")
@@ -263,11 +302,11 @@ check("the rewrite is only ever collected with a timeout",
       "future_query.result(" in chain_src
       and "future_query.result()" not in chain_src)
 
-check("interpretation is validated before it changes the working question",
-      "parse_interpretation(response.content, original_text, history)" in chain_src
-      and "user_text = interpretation.question" in chain_src)
-check("retrieval and generation share the interpreted question",
-      "user_question=user_text" in chain_src and "late_query=late_rewrite" not in chain_src)
+check("the reference plain-text optimizer does not replace the working question",
+      "optimize_query(query_optimizer_model, user_text, history)" in chain_src
+      and "user_text = interpretation.question" not in chain_src)
+check("retrieval retains the natural question and optional companion rewrite",
+      "user_question=user_text" in chain_src and "late_query=late_rewrite" in chain_src)
 check("a missed budget is handled, not raised",
       "concurrent.futures.TimeoutError" in chain_src)
 check("the timing line is emitted", "timings.render()" in chain_src)

@@ -1,9 +1,4 @@
-"""Bound contextual interpretation without confusing known words with correct intent.
-
-Every text question gets an interpretation opportunity, including real-word
-typos. The optimizer overlaps other preparation, but accepted wording is
-collected before retrieval. Late results never mutate an answer in progress.
-"""
+"""Select and bound optional query rewrites without changing retrieval scoring."""
 
 from __future__ import annotations
 
@@ -12,22 +7,76 @@ import re
 import time
 from typing import Dict, List, Optional
 
+from rag.spelling import has_misspelling
+
+
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "am", "do",
+    "does", "did", "what", "which", "who", "whom", "whose", "when", "where",
+    "why", "how", "and", "or", "but", "if", "then", "than", "of", "in", "on",
+    "at", "to", "for", "with", "by", "from", "about", "as", "that", "this",
+    "these", "those", "there", "here", "it", "its", "can", "could", "should",
+    "would", "will", "shall", "may", "might", "must", "have", "has", "had",
+    "you", "your", "me", "my", "i", "we", "our", "us", "they", "them", "their",
+    "please", "tell", "give", "show", "list", "all", "any", "some", "also",
+}
+THIN_QUERY_TERMS = 3
+_FOLLOWUP_MARKERS = (
+    "what about", "how about", "and for", "what if", "same for", "the same",
+    "that one", "those ones", "it instead", "instead of that",
+)
+_AFFIRMATION_STARTERS = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "fine",
+    "no", "nope", "nah", "got", "great",
+})
+_ANAPHORA = (
+    "it", "its", "this", "that", "these", "those", "they", "them", "their",
+    "he", "she", "him", "her", "his", "hers", "one", "ones", "there",
+)
+
+
+def _content_terms(query: str) -> List[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z0-9\-']+", (query or "").lower())
+    return [word for word in words if word not in _STOPWORDS and len(word) > 2]
+
+
+def _has_anaphora(query: str) -> bool:
+    words = re.findall(r"[a-z']+", (query or "").lower())
+    return any(word in _ANAPHORA for word in words)
+
+
 def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> bool:
-    """Known words can still express a typo; skip only inputs without text."""
-    return bool(re.search(r"\w", question or "", re.UNICODE))
+    """Match the reference gate: misspellings, thin questions, and follow-ups."""
+    query = (question or "").strip()
+    if not query:
+        return False
+    terms = _content_terms(query)
+    if has_misspelling(query):
+        return True
+    if not history:
+        return len(terms) < THIN_QUERY_TERMS
+    lowered = query.lower()
+    first_word = re.split(r"[\s,!.?]+", lowered)[0] if lowered else ""
+    if first_word in _AFFIRMATION_STARTERS:
+        return True
+    if any(marker in lowered for marker in _FOLLOWUP_MARKERS):
+        return True
+    if _has_anaphora(query):
+        return True
+    return len(terms) < THIN_QUERY_TERMS
 
 
-# One bounded interpretation call, never an unbounded second round trip.
-OPTIMIZER_BUDGET_SECONDS = float(os.getenv("SC_OPTIMIZER_BUDGET_SECONDS", "8.0"))
+# Bound the optional wait, not the lifetime of a running provider call.
+OPTIMIZER_BUDGET_SECONDS = float(os.getenv("SC_OPTIMIZER_BUDGET_SECONDS", "2.5"))
 
 
 class Deadline:
     """
     A shrinking time budget.
 
-    Bounds how long preparation waits for interpretation before safe fallback.
-    Running work cannot always be cancelled, so late results are ignored; the
-    model client's separate timeout also bounds occupied worker slots.
+    The natural question remains searchable if the rewrite misses this budget.
+    Running provider calls keep their pool slot until completion; this bounds
+    the wait in retrieval rather than pretending cancellation stops that work.
     """
 
     def __init__(self, seconds: float = OPTIMIZER_BUDGET_SECONDS,

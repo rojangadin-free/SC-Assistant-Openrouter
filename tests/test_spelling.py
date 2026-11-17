@@ -13,17 +13,18 @@ at zero (no document contains it) and the search silently collapsed to
 requirements equally badly. The student got a confident, wrong-ish answer and the
 content-gap report filed the question as a missing document.
 
-What is checked here is therefore not "is the spelling nice". It is the five
-things that can each break a question on their own:
+What is checked here is therefore not "is the spelling nice". It is the spelling
+and query-rewrite contracts that can each break a question on their own:
 
 * a typo of a word the CORPUS uses is repaired to that word;
-* a REAL word that is the wrong word here is repaired using the sentence as
-  evidence ("lost the dens" -> "list the deans"), and only then;
+* request-opening real-word repairs use sentence context, while genuine losses
+  and preferences remain unchanged;
 * a correctly spelled question is left completely alone — including Waray,
   dictation and acronyms, which must never be "corrected";
 * a repair only ever produces a word the documents actually contain;
-* a misspelled question is no longer treated as searchable-as-typed, so the
-  rewrite it needs is not skipped.
+* local repairs lead retrieval and generation without changing stored input;
+* optional rewrites join retrieval late and cannot force clarification or change
+  the natural question, including when the optimizer fails or echoes its input.
 
 
 No network, no model, no index: vocabulary and edit distance are tested directly,
@@ -34,21 +35,61 @@ and the real chat/retrieval code is executed with fake external dependencies.
 import _bootstrap  # noqa: F401
 
 import ast           # noqa: E402
+import builtins      # noqa: E402
 import concurrent.futures  # noqa: E402
+import io            # noqa: E402
 import json          # noqa: E402
 import os            # noqa: E402
 import re            # noqa: E402
 import tempfile      # noqa: E402
+from contextlib import ExitStack  # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from typing import Optional  # noqa: E402
 from unittest.mock import Mock, patch  # noqa: E402
 
+_offline = ExitStack()
+_denied_imports, _env_reads = [], []
+_original_import = builtins.__import__
+_forbidden_imports = (
+    "config", "dotenv", "aws", "app", "store_index", "sc_assistant",
+    "boto3", "botocore", "pinecone", "pinecone_text", "langchain",
+    "langchain_core", "langchain_classic", "langchain_community", "langgraph",
+    "langchain_openai", "langchain_huggingface", "sentence_transformers",
+    "torch", "transformers", "openai", "rag.chain", "rag.openrouter_reranker",
+    "src.helper",
+)
+
+
+def offline_import(name, *args, **kwargs):
+    if any(name == prefix or name.startswith(prefix + ".") for prefix in _forbidden_imports):
+        _denied_imports.append(name)
+        raise AssertionError(f"Live dependency forbidden: {name}")
+    return _original_import(name, *args, **kwargs)
+
+
+def offline_open(opener):
+    def guarded(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and os.path.basename(path).startswith(".env"):
+            _env_reads.append(os.fspath(path))
+            raise AssertionError("No .env reads")
+        return opener(path, *args, **kwargs)
+    return guarded
+
+
+_offline.enter_context(patch("builtins.__import__", new=offline_import))
+_offline.enter_context(patch("builtins.open", new=offline_open(builtins.open)))
+_offline.enter_context(patch("io.open", new=offline_open(io.open)))
+_connections = [_offline.enter_context(patch(target, side_effect=AssertionError("No network")))
+                for target in ("socket.create_connection", "socket.socket.connect",
+                               "socket.socket.connect_ex", "socket.getaddrinfo")]
+
 # A temp vocabulary, set BEFORE rag.spelling is imported: the module reads the
 # path at import time, and the real spell_vocab.json is a build artefact whose
 # contents depend on which PDFs happen to be in data/. A suite that asserted
 # against it would pass or fail on someone else's corpus.
-_VOCAB = os.path.join(tempfile.gettempdir(), ".test_spell_vocab.json")
+_temporary = _offline.enter_context(tempfile.TemporaryDirectory(prefix="spelling-test-"))
+_VOCAB = os.path.join(_temporary, "vocabulary.json")
 
 # Word counts, not just words: rag/spelling.py refuses to suggest a term it has
 # only seen once or twice, because OCR invents words. These are the terms the
@@ -90,7 +131,7 @@ from rag.dictation import dictation_variants  # noqa: E402
 from rag.language import language_variants  # noqa: E402
 from rag import reranker  # noqa: E402
 from rag.query_optimizer import (  # noqa: E402
-    optimizer_messages, parse_interpretation, interpretation_guidance, QueryInterpretation,
+    OPTIMIZER_PROMPT, optimizer_messages, optimize_query,
 )
 
 reload_vocabulary()
@@ -133,7 +174,7 @@ check("the repair is exposed as a (typed, meant) pair",
 
 
 # ============================================================
-section("1b. Difficult spellings require full-query interpretation")
+section("1b. Difficult spellings must not be guessed by local repair")
 # ============================================================
 PHRASE_TYPOS = [
     ("latin hnit requirements", "latin honor requirements"),
@@ -151,7 +192,8 @@ PHRASE_TYPOS = [
     ("honir- requirements", "honor- requirements"),
 ]
 for typed, meant in PHRASE_TYPOS:
-    check(f"contextual review is not skipped: {typed!r}", should_optimize(typed, []))
+    check(f"a contextual follow-up can request a query rewrite: {typed!r}",
+          should_optimize(f"what about {typed}", [{"role": "user", "content": "requirements"}]))
 for typed, meant in PHRASE_TYPOS[-2:]:
     check(f"local repair preserves punctuation: {typed!r}", correct_query(typed) == meant)
 
@@ -171,7 +213,7 @@ for question in (
 ):
     check(f"no unsupported phrase guess: {question!r}",
           correct_query(question) == "", correct_query(question))
-check("short typos requiring consonant changes still need contextual interpretation",
+check("short typos requiring consonant changes are not repaired locally",
       suggest("hnit") is None)
 check("an unambiguous missing/mistyped vowel combination is repaired locally",
       suggest("hnir") == "honor" and correct_query("latn hnir") == "latin honor")
@@ -309,7 +351,10 @@ REAL_WORD = [
 ]
 
 for typed, meant in REAL_WORD:
-    check(f"real-word interpretation is requested: {typed!r}", should_optimize(typed, []))
+    check(f"request-opening repair uses sentence evidence: {typed!r}",
+          correct_query(typed) == meant, correct_query(typed))
+    check(f"thin real-word question can request a query-only rewrite: {typed!r}",
+          should_optimize(typed, []))
 
 # And the half that makes it safe. "lost" is a real word students really use,
 # and every one of these is a genuine question about a lost thing. A correction
@@ -342,8 +387,8 @@ for question in KEEP_WANT:
 # The evidence is read from the ORIGINAL words, never from an already-corrected
 # copy — otherwise one repair manufactures the context for the next and a
 # single typo cascades into a rewritten question.
-check("a repair does not create the context for another",
-      misspellings("lost the dens") == [("dens", "deans")],
+check("request and noun repairs use the original sentence evidence",
+      misspellings("lost the dens") == [("lost", "list"), ("dens", "deans")],
       misspellings("lost the dens"))
 
 # Short real words sit one substitution from unrelated corpus words, which is
@@ -377,31 +422,25 @@ check("no more than 3 repairs are applied",
 # ============================================================
 section("7. The latency decision")
 # ============================================================
-# The second half of the fix. Retrieval probes the corrected text locally, but
-# the LLM rewrite is what can use the CONVERSATION to disambiguate — and it was
-# being skipped precisely on the questions that needed it.
-check("a misspelled first-turn question now waits for the rewrite",
+# Local spelling repairs do not require a model. Thin questions and actual
+# follow-ups can still request a companion rewrite without replacing the input.
+check("a misspelled first-turn question can request a rewrite",
       should_optimize("latin honir requirements", []) is True)
 
 check("and mid-conversation too",
       should_optimize("latin honir requirements",
                       [{"role": "user", "content": "hi"}]) is True)
 
-# The skip path must survive: that is the latency work this must not undo.
-# Both of these carry three content words, which is what makes them searchable
-# as typed — "requirements for enrollment" has only two, so it is thin and would
-# wait for its own (pre-existing) reason.
-check("known words still receive sentence-level validation",
-      should_optimize("who is the dean of the college of education", []) is True)
-check("a complete question is interpreted mid-conversation as well",
-      should_optimize("who is the dean of the college of education",
-                      [{"role": "user", "content": "hi"}]) is True)
-# Not "how much is the tuition for THIS semester": `this` is a deictic, so that
-# question waits for a pre-existing reason of its own (rag/latency.py rule 2b)
-# and would prove nothing about spelling either way.
-check("a fee question still receives contextual validation",
-      should_optimize("how much is the tuition fee for bsit",
-                      [{"role": "user", "content": "hi"}]) is True)
+complete_question = "graduate scholarship application eligibility requirements"
+check("a complete clean question skips the optional model call",
+      should_optimize(complete_question, []) is False)
+check("a complete fresh topic also skips mid-conversation",
+      should_optimize(complete_question, [{"role": "user", "content": "hi"}]) is False)
+check("a thin clean question remains eligible for a rewrite",
+      should_optimize("enrollment requirements", []) is True)
+check("a reference still requests context even with many content terms",
+      should_optimize("what about their graduate scholarship application eligibility requirements",
+                      [{"role": "user", "content": "transferees"}]) is True)
 
 
 
@@ -439,7 +478,7 @@ check("no .tmp file is left behind", not os.path.exists(f"{_VOCAB}.tmp"))
 # A missing vocabulary must degrade to the baked-in seed terms, never to an
 # exception in the answer path.
 os.environ["SC_SPELL_VOCAB"] = os.path.join(
-    tempfile.gettempdir(), ".test_spell_vocab_absent.json"
+    _temporary, "missing-vocabulary.json"
 )
 import importlib          # noqa: E402
 import rag.spelling as _spelling  # noqa: E402
@@ -452,8 +491,9 @@ check("and the headline repair still works from seeds alone",
 check("both reported typos are repaired from seeds without a model",
       _spelling.correct_query("latn hnir") == "latin honor")
 for typo in ("hnit", "hnir"):
-    check(f"missing vocabulary still requests contextual interpretation: {typo}",
-          should_optimize(f"latin {typo} requirements", []))
+    check(f"missing vocabulary still allows a contextual follow-up rewrite: {typo}",
+          should_optimize(f"what about latin {typo} requirements",
+                          [{"role": "user", "content": "honors"}]))
 check("missing vocabulary is not a reason to guess at a valid word",
       _spelling.correct_query("latin hint requirements") == "")
 check("a seed-only repair cannot erase the fee-waiver meaning",
@@ -461,8 +501,9 @@ check("a seed-only repair cannot erase the fee-waiver meaning",
 for typo in ("hnit", "hnir"):
     noisy_vocab = _spelling._Vocabulary({**_spelling._vocabulary().freq, typo: 1})
     with patch.object(_spelling, "_vocab", noisy_vocab):
-        check(f"one OCR occurrence cannot disable interpretation: {typo}",
-              should_optimize(f"latin {typo} requirements", []))
+        check(f"one OCR occurrence cannot disable a follow-up rewrite: {typo}",
+              should_optimize(f"what about latin {typo} requirements",
+                              [{"role": "user", "content": "honors"}]))
 
 
 # ============================================================
@@ -478,15 +519,19 @@ check("chain.py adds the corrected phrasing as a retrieval probe",
       "spelling_variants(query)" in chain_src)
 check("the expansion helper keeps its input as the first query",
       "queries = [query]" in chain_src)
-check("the optimizer receives original wording and local hints separately",
-      "optimizer_messages(original_text, user_text, history)" in chain_src)
-check("interpretations are validated before use",
-      "parse_interpretation(response.content, original_text, history)" in chain_src)
+check("the graph delegates the query-only model call to the shared optimizer",
+      "optimize_query(query_optimizer_model, user_text, history)" in chain_src)
+check("the optional rewrite is collected through the retrieval callback",
+      "late_query=late_rewrite" in chain_src and "user_question=user_text" in chain_src)
+check("the graph no longer imports JSON interpretation or offer-resolution APIs",
+      all(name not in chain_src for name in (
+          "parse_interpretation", "interpretation_guidance", "resolve_offer_acceptance",
+      )))
 
 with open("rag/latency.py", encoding="utf-8") as fh:
     latency_src = fh.read()
-check("dictionary membership no longer gates contextual review",
-      "has_misspelling(q)" not in latency_src)
+check("latency gating is separate from the query-only optimizer payload",
+      "parse_interpretation" not in latency_src and "optimizer_messages" not in latency_src)
 
 with open("store_index.py", encoding="utf-8") as fh:
     index_src = fh.read()
@@ -557,6 +602,7 @@ admission = SimpleNamespace(
     metadata={"source": "handbook.txt", "page": 45, "chunk_id": "admission"},
 )
 probes, optimizer_prompts, scored_queries = [], [], []
+directory_query = "graduate studies deans directory"
 
 
 def fetch(query):
@@ -582,13 +628,13 @@ def filtered_fetch(query, *, filter):
 def optimize(messages):
     if isinstance(messages[-1], dict):
         optimizer_prompts.append(messages)
-        latest = json.loads(messages[-1]["content"])["original_question"]
+        latest = messages[-1]["content"].split("\n\nLatest Question: ", 1)[1]
+        latest = latest.split("\nLIKELY MISSPELLINGS", 1)[0]
         # This is a deterministic model double, not production correction logic.
         question = dict(PHRASE_TYPOS + REAL_WORD).get(latest, correct_query(latest) or latest)
-        return SimpleNamespace(content=json.dumps({
-            "status": "unchanged" if question == latest else "corrected",
-            "question": question, "search_query": question, "clarification": "",
-        }))
+        if latest == "list the deans":
+            question = directory_query
+        return SimpleNamespace(content=question)
     return SimpleNamespace(content="Transcribed image text.")
 
 
@@ -614,15 +660,14 @@ namespace = {
     "StateGraph": _Graph, "END": None, "InMemorySaver": lambda: None,
     "HumanMessage": SimpleNamespace, "SystemMessage": SimpleNamespace,
     "correct_query": correct_query,
-    "optimizer_messages": optimizer_messages, "parse_interpretation": parse_interpretation,
-    "interpretation_guidance": interpretation_guidance,
+    "optimize_query": optimize_query,
     "spelling_variants": spelling_variants, "dictation_variants": dictation_variants,
     "language_variants": language_variants, "should_optimize": should_optimize,
     "pick_search_query": pick_search_query, "Deadline": Deadline, "Timings": Timings,
     "retriever": _Retriever(invoke=fetch),
     "sparse_retriever": SimpleNamespace(invoke=filtered_fetch),
     "dense_retriever": SimpleNamespace(invoke=filtered_fetch),
-    "rerank": reranker.rerank, "rerank_multi": reranker.rerank_multi,
+    "rerank": Mock(wraps=reranker.rerank), "rerank_multi": Mock(wraps=reranker.rerank_multi),
     "summarizer": SimpleNamespace(invoke=optimize),
     "query_optimizer_model": SimpleNamespace(invoke=optimize),
     "source_priority": lambda *args, **kwargs: {}, "doc_key": lambda source: source,
@@ -644,6 +689,8 @@ for name in ("CapacityError", "RequestBudget", "env_int", "retrieval_pool",
              "preparation_pool", "optimizer_pool"):
     namespace[name] = getattr(runtime, name)
 exec(compile(ast.Module(body=selected, type_ignores=[]), "rag/chain.py", "exec"), namespace)
+retrieval_spy = Mock(wraps=namespace["retrieve_documents"])
+namespace["retrieve_documents"] = retrieval_spy
 # A single answer slot makes primary-query contamination impossible to hide
 # behind a large context window; production uses the same selection logic.
 namespace["FINAL_TOP_K"] = 1
@@ -654,6 +701,9 @@ def chat_snapshot(question, history=None, image=None, role="student"):
     probes.clear()
     optimizer_prompts.clear()
     scored_queries.clear()
+    retrieval_spy.reset_mock()
+    namespace["rerank"].reset_mock()
+    namespace["rerank_multi"].reset_mock()
     state = {"input": question, "chat_history": history or [], "image_data": image,
              "role": role}
     result = node(state)
@@ -661,12 +711,15 @@ def chat_snapshot(question, history=None, image=None, role="student"):
         "messages": [message.content for message in result["messages_to_llm"]],
         "citations": result["citations"], "probes": sorted(probes),
         "optimizer": list(optimizer_prompts), "scores": sorted(set(scored_queries)),
+        "primary": retrieval_spy.call_args.args[0],
+        "user_question": retrieval_spy.call_args.kwargs["user_question"],
+        "ranking_primary": namespace["rerank"].call_args.args[0] if namespace["rerank"].called else None,
     }, state
 
 
 def answer_path(snapshot):
-    # The optimizer must see each original input; everything AFTER interpretation
-    # should match the correctly worded question's answer path.
+    # A local repair should have the clean question's answer path, independently
+    # of whether an optional model call was necessary.
     return {key: value for key, value in snapshot.items() if key != "optimizer"}
 
 
@@ -675,32 +728,39 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
     with patch.object(reranker, "_load_model", return_value=model):
         clean, _ = chat_snapshot("list the deans", history)
         typo, state = chat_snapshot("lost the dens", history)
-        check(f"reranker {label}: answer model sees 'list the deans'",
-              typo["messages"][-1] == "list the deans", typo["messages"][-1])
-        check(f"reranker {label}: identical retrieval probes",
-              typo["probes"] == clean["probes"], typo["probes"])
-        check(f"reranker {label}: optimizer can inspect the unaltered input",
-              json.loads(typo["optimizer"][0][-1]["content"])["original_question"] == "lost the dens")
-        check(f"reranker {label}: identical ranking queries",
-              typo["scores"] == clean["scores"], typo["scores"])
-        check(f"reranker {label}: identical context and selected evidence",
-              typo["messages"][0] == clean["messages"][0]
-              and typo["citations"] == clean["citations"] == ["current"])
+        natural = "list the deans"
+        check(f"reranker {label}: generation keeps the conservative local repair",
+              typo["messages"][-1] == natural, typo["messages"][-1])
+        check(f"reranker {label}: the natural question remains retrieval primary",
+              typo["primary"] == typo["user_question"] == typo["ranking_primary"] == natural)
+        check(f"reranker {label}: the model's keyword rewrite joins as a companion",
+              directory_query in typo["probes"] and natural in typo["probes"])
+        check(f"reranker {label}: optimizer receives reference-style natural question/history",
+              typo["optimizer"] == [optimizer_messages(natural, history)]
+              and typo["optimizer"][0][0]["content"] == OPTIMIZER_PROMPT)
+        check(f"reranker {label}: the companion also participates in ranking",
+              directory_query in namespace["rerank"].call_args.kwargs["queries"])
+        check(f"reranker {label}: clean retrieval still selects the directory evidence",
+              clean["citations"] == ["current"] and "CURRENT DIRECTORY" in clean["messages"][0])
+        check(f"reranker {label}: local repair has the clean query's retrieval/context/citations",
+              answer_path(typo) == answer_path(clean))
         check(f"reranker {label}: original input and history are preserved",
               state["input"] == "lost the dens" and state["chat_history"] == history)
 
 with patch.object(reranker, "_load_model", return_value=None):
     clean, _ = chat_snapshot("list the deans")
     typo, _ = chat_snapshot("lost the dens")
-    check("a first-turn text chat takes the identical repaired answer path", answer_path(typo) == answer_path(clean))
+    check("a first-turn model rewrite cannot become the generation question",
+          typo["messages"][-1] == "list the deans" and directory_query in typo["probes"])
     with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=unavailable_optimizer)}):
-        typo, _ = chat_snapshot("latin honir requirements")
-        check("optimizer failure retains conservative local repair and signals uncertainty",
-              typo["messages"][-1] == "latin honor requirements"
+        typo, _ = chat_snapshot("what about latin honir requirements", history)
+        check("optimizer failure retains local repair without an internal clarification prompt",
+              typo["messages"][-1] == "what about latin honor requirements"
               and typo["citations"] == ["honors"]
-              and "interpretation was unavailable" in typo["messages"][0])
+              and "<query_interpretation>" not in typo["messages"][0]
+              and namespace["rerank"].call_args.kwargs["queries"] == [])
         for question, expected in (("latn hnir", "latin honor"),
-                                   ("latin hnir requirements", "latin honor requirements")):
+                                   ("latin hnir", "latin honor")):
             typo, state = chat_snapshot(question)
             check(f"complete local repair survives optimizer failure: {question!r}",
                   typo["messages"][-1] == expected and typo["citations"] == ["honors"]
@@ -709,33 +769,38 @@ with patch.object(reranker, "_load_model", return_value=None):
                   and state["input"] == question)
     clean, _ = chat_snapshot("latin honor requirements")
     typo, _ = chat_snapshot("latin honir requirements")
-    check("a complete question is interpreted and uses the same answer path",
-          answer_path(typo) == answer_path(clean) and len(typo["optimizer"]) == 1)
-    clean, _ = chat_snapshot("list the deans", image="test-image")
-    typo, state = chat_snapshot("lost the dens", image="test-image")
-    check("an image question also sends the repaired wording without changing the image",
+    check("a local repair has the same natural retrieval and answer path as clean wording",
+          answer_path(typo) == answer_path(clean))
+    clean, _ = chat_snapshot("latin honor requirements", image="test-image")
+    typo, state = chat_snapshot("latin honir requirements", image="test-image")
+    check("an image question keeps the local repair, OCR handoff and original image",
           answer_path(typo) == answer_path(clean) and state["image_data"] == "test-image")
     for question in (*KEEP_LOST, *KEEP_WANT, "Pila an bayad sa enrollment?", "what is b s i t"):
         unchanged, _ = chat_snapshot(question)
         check(f"chat keeps non-typos unchanged: {question!r}",
               unchanged["messages"][-1] == question)
 
-    def reject_bad_hint(messages):
-        question = json.loads(messages[-1]["content"])["original_question"]
-        return SimpleNamespace(content=json.dumps({
-            "status": "unchanged", "question": question, "search_query": question,
-            "clarification": "",
-        }))
-
+    correction_spy = Mock(wraps=correct_query)
+    spelling_spy = Mock(wraps=spelling_variants)
+    keywords = "latin honor eligibility academic average"
     with patch.dict(namespace, {
-        "correct_query": lambda text: text.replace("meal", "medal"),
-        "spelling_variants": lambda text: [text.replace("meal", "medal")],
-        "query_optimizer_model": SimpleNamespace(invoke=reject_bad_hint),
+        "correct_query": correction_spy,
+        "spelling_variants": spelling_spy,
+        "query_optimizer_model": SimpleNamespace(invoke=Mock(return_value=SimpleNamespace(content=keywords))),
     }):
-        snapshot, _ = chat_snapshot("what is a good meal before exams")
-        check("retrieval cannot reapply a spelling hint rejected by the interpreter",
-              snapshot["messages"][-1] == "what is a good meal before exams"
-              and all("medal" not in query for query in snapshot["probes"] + snapshot["scores"]))
+        snapshot, state = chat_snapshot("latn hnir", history)
+        check("the graph applies correct_query once, before the query-only model call",
+              correction_spy.call_count == 1
+              and correction_spy.call_args.args == ("latn hnir",))
+        check("keyword-only output supplements retrieval without mutating the natural question",
+              snapshot["primary"] == snapshot["user_question"] == snapshot["messages"][-1]
+              == "latin honor" and keywords in snapshot["probes"]
+              and state["input"] == "latn hnir")
+        check("spelling expansion stays enabled when the optimizer succeeds",
+              spelling_spy.called and retrieval_spy.call_args.kwargs.get("allow_spelling", True) is True)
+        check("the optimizer prompt carries the corrected question, not a JSON payload",
+              namespace["query_optimizer_model"].invoke.call_args.args[0]
+              == optimizer_messages("latin honor", history))
 
 
 unit_docs = [
@@ -755,9 +820,7 @@ def fetch_units(query):
 
 def shorten_to_previous_unit(messages):
     # Reproduce the erroneous model output, not the intended correction logic.
-    return SimpleNamespace(content=json.dumps({
-        "status": "corrected", "question": "cas", "search_query": "cas", "clarification": "",
-    }))
+    return SimpleNamespace(content="cas")
 
 
 cas_history = [{"role": "user", "content": "cas"},
@@ -769,20 +832,22 @@ with patch.object(reranker, "_load_model", return_value=None), patch.dict(namesp
     for question in ("cas", "citas", "Citas"):
         snapshot, state = chat_snapshot(question, cas_history)
         code = question.lower()
-        check(f"a wrong interpretation cannot rename the unit: {question!r}",
+        check(f"a wrong companion query cannot rename the natural unit: {question!r}",
               snapshot["messages"][-1] == question and snapshot["citations"] == [code])
         other = "citas" if code == "cas" else "cas"
-        check(f"retrieval and answer context stay within the requested unit: {question!r}",
+        check(f"source selection and answer context stay within the requested unit: {question!r}",
               f"{code.upper()}_ONLY_RECORD" in snapshot["messages"][0]
               and f"{other.upper()}_ONLY_RECORD" not in snapshot["messages"][0]
-              and all(not re.search(rf"\b{other}\b", probe, re.IGNORECASE) for probe in snapshot["probes"]))
+              and snapshot["primary"] == snapshot["user_question"] == snapshot["ranking_primary"] == question)
+        check(f"model output can only add a probe, even when it names a previous unit: {question!r}",
+              "cas" in snapshot["probes"])
         check(f"the topic switch preserves stored input and history: {question!r}",
               state["input"] == question and state["chat_history"] == cas_history
               and "CAS_OLD_REPLY" not in snapshot["messages"][0])
 
 
-# The exact reported failures must reach honors evidence, including for a guest
-# whose previous conversation was about admission. These execute the real node.
+# Local repairs lead directly to honors. A severe typo can gain honors recall
+# through a late query, but the model must never overwrite the user's wording.
 from rag import roles  # noqa: E402
 admission_history = [
     {"role": "user", "content": "freshman admission requirements"},
@@ -795,61 +860,79 @@ with patch.dict(namespace, {
     for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
         with patch.object(reranker, "_load_model", return_value=model):
             clean, _ = chat_snapshot("latin honor requirements", admission_history, role="guest")
-            for word in ("hnit", "hnir", "honir"):
+            for word in ("hnir", "honir"):
                 question = f"latin {word} requirements"
                 typo, state = chat_snapshot(question, admission_history, role="guest")
-                check(f"reranker {label}: {word} takes the clean honors answer path",
+                check(f"reranker {label}: local {word} repair takes the clean honors answer path",
                       answer_path(typo) == answer_path(clean) and typo["citations"] == ["honors"])
-                check(f"reranker {label}: {word} never reaches retrieval or generation",
+                check(f"reranker {label}: locally repaired {word} does not reach retrieval or generation",
                       all(word not in q.split() for q in typo["probes"] + typo["scores"])
                       and typo["messages"][-1] == "latin honor requirements")
                 check(f"reranker {label}: {word} preserves stored input and guest role",
                       state["input"] == question and state["role"] == "guest"
                       and state["chat_history"] == admission_history)
+            with patch.dict(namespace, {
+                "FINAL_TOP_K": 2,
+                "query_optimizer_model": SimpleNamespace(invoke=lambda messages: SimpleNamespace(content="latin honor requirements")),
+            }):
+                question = "what about latin hnit requirements"
+                typo, state = chat_snapshot(question, admission_history, role="guest")
+                check(f"reranker {label}: a severe follow-up typo gains honors recall via a companion",
+                      "latin honor requirements" in typo["probes"]
+                      and "honors" in typo["citations"] and honors.page_content in typo["messages"][0])
+                check(f"reranker {label}: query-only spelling output leaves natural wording in control",
+                      typo["primary"] == typo["user_question"] == typo["messages"][-1] == question
+                      and state["input"] == question and state["chat_history"] == admission_history)
 
     with patch.object(reranker, "_load_model", return_value=None):
         with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=unavailable_optimizer)}):
             snapshot, _ = chat_snapshot("what about latin hnit requirements", admission_history)
-            check("unresolved wording is not silently assigned a replacement topic on failure",
+            check("a failed follow-up rewrite uses natural retrieval with no forced clarification",
                   snapshot["messages"][-1] == "what about latin hnit requirements"
-                  and "clarification" in snapshot["messages"][0])
+                  and snapshot["primary"] in snapshot["probes"]
+                  and "<query_interpretation>" not in snapshot["messages"][0]
+                  and "Ask ONLY one" not in snapshot["messages"][0])
         late = concurrent.futures.Future()
         late.set_running_or_notify_cancel()
         with patch.dict(namespace, {"Deadline": lambda: SimpleNamespace(expired=lambda: False, remaining=lambda: 0)}):
             with patch.object(namespace["optimizer_pool"], "submit",
                               return_value=late):
                 snapshot, _ = chat_snapshot("what about latin hnir requirements", admission_history)
-                late.set_result(QueryInterpretation("corrected", "latin honor requirements", "latin honor requirements"))
+                late.set_result("LATE_RESULT_MUST_NOT_JOIN")
                 check("a late result cannot mutate a response already being prepared",
                       snapshot["messages"][-1] == "what about latin honor requirements"
-                      and "interpretation was unavailable" in snapshot["messages"][0])
+                      and "LATE_RESULT_MUST_NOT_JOIN" not in snapshot["probes"]
+                      and namespace["rerank"].call_args.kwargs["queries"] == []
+                      and "<query_interpretation>" not in snapshot["messages"][0])
         phases = []
         with patch.object(namespace["optimizer_pool"], "submit", side_effect=runtime.CapacityError("busy")):
             with patch.dict(namespace, {"emit_phase": lambda callback, phase, **kwargs: phases.append(phase)}):
-                snapshot, _ = chat_snapshot("latin hnit requirements")
-                check("capacity refusal uses safe wording and uncertainty guidance",
-                      snapshot["messages"][-1] == "latin hnit requirements"
-                      and "interpretation was unavailable" in snapshot["messages"][0])
+                snapshot, _ = chat_snapshot("what about latin hnit requirements", admission_history)
+                check("capacity refusal keeps natural retrieval and no internal uncertainty guidance",
+                      snapshot["messages"][-1] == "what about latin hnit requirements"
+                      and snapshot["primary"] in snapshot["probes"]
+                      and "<query_interpretation>" not in snapshot["messages"][0])
                 check("a busy optimizer never claims it is understanding the question",
                       "understanding" not in phases)
 
-        def ambiguous(messages):
-            question = json.loads(messages[-1]["content"])["original_question"]
-            return SimpleNamespace(content=json.dumps({
-                "status": "clarify", "question": question, "search_query": "",
-                "clarification": "Which policy do you mean?",
-            }))
-
-        with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=ambiguous)}):
+        with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=lambda messages: SimpleNamespace(content="requirements for that thing"))}):
             snapshot, _ = chat_snapshot("requirements for that thing")
-            check("genuine ambiguity asks for clarification without retrieving an assumed topic",
-                  snapshot["probes"] == [] and snapshot["citations"] == []
-                  and "Ask ONLY one" in snapshot["messages"][0])
+            check("an ambiguous echoed query still retrieves normally rather than forcing clarification",
+                  bool(snapshot["probes"]) and snapshot["messages"][-1] == "requirements for that thing"
+                  and namespace["rerank"].call_args.kwargs["queries"] == []
+                  and "Ask ONLY one" not in snapshot["messages"][0])
         with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=lambda messages: SimpleNamespace(content="not JSON"))}):
-            snapshot, _ = chat_snapshot("latin hnit requirements")
-            check("malformed optimizer output cannot become a search query",
-                  all("not JSON" not in query for query in snapshot["probes"])
-                  and snapshot["messages"][-1] == "latin hnit requirements")
+            snapshot, _ = chat_snapshot("what about latin hnit requirements", admission_history)
+            check("plain-text output needs no JSON schema and is only a companion",
+                  "not JSON" in snapshot["probes"]
+                  and snapshot["messages"][-1] == "what about latin hnit requirements")
+        for output in ("", "   ", "what about latin honor requirements", "WHAT ABOUT LATIN HONOR REQUIREMENTS"):
+            with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=lambda messages, text=output: SimpleNamespace(content=text))}):
+                snapshot, _ = chat_snapshot("what about latin honir requirements", admission_history)
+                check(f"blank/echo optimizer output adds no companion: {output!r}",
+                      snapshot["primary"] == snapshot["user_question"] == snapshot["messages"][-1]
+                      == "what about latin honor requirements"
+                      and namespace["rerank"].call_args.kwargs["queries"] == [])
 
 
 # ============================================================
@@ -1156,6 +1239,12 @@ with patch.dict(namespace, {
         check("valid effective dates still enforce precedence if upload metadata is unavailable",
               "CURRENT_ONLINE_FORM" in text and "OLD_HANDBOOK_RULE" not in text
               and fallback_dates["citations"] == ["current-admission"])
+
+section("14. Offline isolation")
+check("no live application/model/AWS imports were attempted", _denied_imports == [], _denied_imports)
+check("no .env file was read", _env_reads == [], _env_reads)
+check("no network connection was attempted", all(not connection.called for connection in _connections))
+_offline.close()
 
 print(f"\n{'='*60}")
 print(f"  {_passed} passed, {_failed} failed")

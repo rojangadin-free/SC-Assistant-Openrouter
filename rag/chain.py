@@ -29,7 +29,7 @@ from rag.roles import resolve_role, role_block
 from rag.language import language_variants
 from rag.dictation import dictation_variants
 from rag.spelling import correct_query, spelling_variants
-from rag.query_optimizer import optimizer_messages, parse_interpretation, interpretation_guidance
+from rag.query_optimizer import optimize_query
 from rag.query_embeddings import CachedQueryEmbeddings
 from rag.runtime import (
     CapacityError, RequestBudget, env_int, retrieval_pool, preparation_pool,
@@ -37,7 +37,7 @@ from rag.runtime import (
 )
 
 from rag.latency import (
-    should_optimize, pick_search_query, Deadline, Timings, OPTIMIZER_BUDGET_SECONDS,
+    should_optimize, pick_search_query, Deadline, Timings,
 )
 # The captions the student sees while waiting. Published from the real phase
 # boundaries below rather than on a timer in the browser, so "Searching…" is
@@ -98,13 +98,13 @@ dense_retriever = PineconeHybridSearchRetriever(
 
 retriever = EnsembleRetriever(
     retrievers=[sparse_retriever, dense_retriever],
-    weights=[0.30, 0.70],
+    weights=[0.35, 0.65],
 )
 
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
 RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
-FINAL_TOP_K = 20        # documents actually sent to the LLM
+FINAL_TOP_K = 25        # documents actually sent to the LLM
 
 
 # ---------------------------------------------------------------------------
@@ -618,10 +618,11 @@ def retrieve_documents(
     # The accepted user's question, not a history-enriched keyword rewrite,
     # decides scope. Only a genuine reference may use its resolved unit first.
     scope_question = split_source
-    if not requested_unit(split_source) and is_unit_reference(split_source) and requested_unit(primary):
-        scope_question = primary
-    if is_unit_reference(split_source) and institution_history_queries(primary):
-        scope_question = primary
+    if not requested_unit(split_source) and is_unit_reference(split_source):
+        for phrasing in (primary, late_phrasing):
+            if requested_unit(phrasing) or institution_history_queries(phrasing):
+                scope_question = phrasing
+                break
     history_queries = institution_history_queries(scope_question)
     relevance_queries = list(dict.fromkeys([
         scope_question, *phrasings, *aspects, *language_variants(split_source),
@@ -913,15 +914,15 @@ summarizer = ChatOpenAI(
     max_tokens=1024,
 )
 
-# Keep query interpretation bounded independently of image/history preparation.
+# Keep the reference optimizer's model settings independent of image/history.
 query_optimizer_model = ChatOpenAI(
     model=SUMMARIZER_MODEL_NAME,
     openai_api_key=OPENROUTER_API_KEY,
     openai_api_base="https://openrouter.ai/api/v1",
     temperature=0,
     extra_body={"reasoning": {"enabled": False}},
-    timeout=max(5, OPTIMIZER_BUDGET_SECONDS),
-    max_retries=0,
+    timeout=15,
+    max_retries=1,
     max_tokens=1024,
 )
 
@@ -1041,11 +1042,9 @@ def create_graph():
         try:
             request_budget = (config or {}).get("configurable", {}).get("budget") or RequestBudget()
             request_budget.remaining()
-            original_text = state["input"] or ""
-            user_text = original_text
-            from rag.query_optimizer import resolve_offer_acceptance
-            # A conservative fallback/hint, not the authority on intent. The
-            # interpreter also sees the original and can reject a mistaken edit.
+            user_text = state["input"] or ""
+            # Use the same locally repaired question for search and generation.
+            # The optional keyword rewrite must not replace the user's intent.
             corrected = correct_query(user_text)
             if corrected:
                 print(f"  Spelling repair: {user_text!r} -> {corrected!r}")
@@ -1124,16 +1123,10 @@ def create_graph():
 
             timings = Timings()
 
-            # Interpret the whole question while other preparation runs. The
-            # accepted wording must be collected before retrieval chooses a topic.
+            # The rewrite overlaps preparation and joins retrieval as an extra
+            # phrasing only if it arrives before its deadline.
             def task_query_optimization():
-                try:
-                    response = query_optimizer_model.invoke(
-                        optimizer_messages(original_text, user_text, history)
-                    )
-                    return parse_interpretation(response.content, original_text, history)
-                finally:
-                    timings.stop("optimizer")
+                return optimize_query(query_optimizer_model, user_text, history)
 
             # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
             #
@@ -1147,18 +1140,14 @@ def create_graph():
                 future_img = executor.submit(task_image_analysis) if image_data else None
                 future_student = executor.submit(task_student_fetch) if uid else None
 
-                # Even a complete sentence of known words can contain a real-word
-                # typo. Only empty/punctuation-only input skips interpretation.
-                interpretation = resolve_offer_acceptance(original_text, history)
-                if interpretation is not None:
-                    user_text = interpretation.question
-                wants_rewrite = interpretation is None and should_optimize(user_text, history)
-                if wants_rewrite and not budget.expired():
+                # Self-contained questions already carry enough search terms.
+                # Follow-ups and thin questions benefit from contextual rewriting.
+                wants_rewrite = should_optimize(user_text, history)
+                if wants_rewrite:
                     try:
-                        timings.start("optimizer")
                         future_query = optimizer_pool.submit(task_query_optimization)
                     except CapacityError:
-                        timings.stop("optimizer")
+                        wants_rewrite = False
                         timings.note("optimizer", "busy")
 
                 # Only claimed when the rewrite is genuinely running. On the
@@ -1178,58 +1167,52 @@ def create_graph():
                 student_context = future_student.result(timeout=request_budget.remaining(15)) if future_student else ""
                 request_budget.remaining()
 
-                if future_query is not None:
-                    timings.start("await_rewrite")
-                    try:
-                        interpretation = future_query.result(
-                            timeout=min(budget.remaining(), request_budget.remaining())
-                        )
-                        user_text = interpretation.question
-                        timings.note("optimizer", interpretation.status)
-                        print(f"  Interpreted Question: {user_text}")
-                        print(f"  Contextualized Query: {interpretation.search_query}")
-                    except concurrent.futures.TimeoutError:
-                        timings.note("optimizer", "too-late")
-                        print("  Interpretation missed its budget; using conservative fallback.")
-                    except Exception as e:
-                        timings.note("optimizer", "unavailable")
-                        print(f"  Interpretation unavailable (non-fatal): {e}")
-                    finally:
-                        timings.stop("await_rewrite")
-                elif not wants_rewrite:
-                    timings.note("optimizer", "offer-resolved" if interpretation else "skipped")
+                standalone_query = user_text
+                request_text = user_text
+                contextual_query = ""
+                if future_query is None:
+                    timings.note("optimizer", "skipped")
 
-                standalone_query = pick_search_query(
-                    user_text, interpretation.search_query if interpretation else None,
-                )
-                # The user's literal assent stays intact. The accepted task,
-                # rather than 'yes do it', supplies retrieval's subject boundary.
-                resolved_request = interpretation.resolved_request if interpretation else ""
-                request_text = standalone_query if resolved_request else user_text
+                    def late_rewrite():
+                        return ""
+                else:
+                    def late_rewrite():
+                        nonlocal contextual_query
+                        try:
+                            rewritten = future_query.result(
+                                timeout=min(budget.remaining(), request_budget.remaining())
+                            )
+                        except concurrent.futures.TimeoutError:
+                            timings.note("optimizer", "too-late")
+                            print("  Rewrite missed its budget; using the student's own wording.")
+                            return ""
+                        timings.note("optimizer", "used")
+                        picked = pick_search_query(user_text, rewritten)
+                        contextual_query = "" if picked == user_text.strip() else picked
+                        return contextual_query
 
                 # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
                 #
-                # Both queries now share the accepted intent. Never let the raw
-                # typo compete with it or reach the answer model after correction.
+                # The natural question leads both retrieval and ranking. A timely
+                # rewrite supplements it without changing the generation question.
                 timings.start("retrieval+rerank")
                 dates = get_doc_dates()
                 uploads = {}
                 source_selections = []
-                if not (interpretation and interpretation.status == "clarify"):
-                    request_budget.remaining()
-                    try:
-                        uploads = get_file_upload_dates()
-                    except Exception:
-                        print("[chain] Upload chronology unavailable; using recorded source dates.")
-                final_docs = [] if interpretation and interpretation.status == "clarify" else retrieve_documents(
+                request_budget.remaining()
+                try:
+                    uploads = get_file_upload_dates()
+                except Exception:
+                    print("[chain] Upload chronology unavailable; using recorded source dates.")
+                final_docs = retrieve_documents(
                     standalone_query,
                     top_k=RERANK_CANDIDATES,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
-                    user_question=request_text,
+                    user_question=user_text,
+                    late_query=late_rewrite,
                     timings=timings,
                     progress=progress,
                     request_budget=request_budget,
-                    allow_spelling=interpretation is None,
                     dates=dates,
                     uploads=uploads,
                     on_selection=source_selections.append,
@@ -1257,7 +1240,8 @@ def create_graph():
             else:
                 selection = select_documents(
                     final_docs,
-                    [request_text, standalone_query, *split_question(request_text), *language_variants(request_text)],
+                    [request_text, standalone_query, *([contextual_query] if contextual_query else []),
+                     *split_question(request_text), *language_variants(request_text)],
                     dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
                 )
                 final_docs = selection.documents
@@ -1275,9 +1259,9 @@ def create_graph():
             department_listing = bool(department_catalog_queries(request_text))
             program_listing = bool(program_catalog_queries(request_text))
             institution_history = bool(institution_history_queries(request_text) or (
-                is_unit_reference(request_text) and institution_history_queries(standalone_query)
+                is_unit_reference(request_text) and institution_history_queries(contextual_query)
             ))
-            scoped_answer = selection.restricted or bool(selection.requested_unit) or bool(resolved_request)
+            scoped_answer = selection.restricted or bool(selection.requested_unit)
             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
@@ -1292,7 +1276,7 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a scoped document answer.
-            if resolved_request or department_listing or ((program_listing or institution_history) and not is_unit_reference(request_text)):
+            if department_listing or ((program_listing or institution_history) and not is_unit_reference(request_text)):
                 prompt_history = []
             else:
                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
@@ -1356,9 +1340,6 @@ def create_graph():
 
             # === STEP 4: Assemble Messages for Flask Streaming ===
             request_budget.remaining()
-            final_system_prompt += interpretation_guidance(
-                interpretation, unavailable=wants_rewrite and interpretation is None,
-            )
             if selection.restricted:
                 final_system_prompt += "\n\n" + SOURCE_SELECTION_GUIDANCE
             if selection.requested_unit:
