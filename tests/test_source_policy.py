@@ -12,8 +12,11 @@ import _bootstrap  # noqa: F401
 from rag.source_policy import (
     catalog_source_names,
     department_catalog_queries,
+    enrollment_queries,
+    leadership_guidance,
     newer_source_names,
     program_catalog_queries,
+    select_program_affiliation,
     select_documents,
 )
 
@@ -22,6 +25,7 @@ UPDATE = "Samar_Colleges_Inc_Admission_Policy.docx"
 TODAY = date(2026, 11, 14)
 DATES = {BASE.lower(): {"effective_date": "2024-06-01", "date_source": "document"}}
 UPLOADS = {UPDATE: "2026-11-13T02:39:28+00:00"}
+LEADERSHIP_QUESTION = "who are the dean of citas and coed also who is the president of samar college"
 
 
 def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.", **metadata):
@@ -29,6 +33,70 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_source_filter_can_be_disabled_without_dropping_explicit_unit_scope(self):
+        old = document(text="OLD_RULE from College of Education.", section_heading="College of Education")
+        current = document(UPDATE, "CURRENT_RULE from College of Education.", section_heading="College of Education")
+        other = document("Other_Current.docx", "OTHER_COLLEGE_RULE", section_heading="College of Engineering")
+        before = deepcopy([old, current, other])
+        result = select_documents([old, current, other], ["College of Education"], dates=DATES, uploads=UPLOADS,
+                                  today=TODAY, limit=10, enforce_sources=False)
+        self.assertFalse(result.restricted)
+        self.assertEqual(result.documents, [old, current])
+        self.assertEqual(result.requested_unit, "College of Education")
+        self.assertEqual([old, current, other], before)
+        strict = select_documents([old, current, other], ["College of Education"], dates=DATES, uploads=UPLOADS,
+                                  today=TODAY, limit=10)
+        self.assertTrue(strict.restricted)
+        self.assertEqual(strict.documents, [current])
+
+    def test_current_parent_keeps_only_the_degree_declaration_from_old_alias_evidence(self):
+        old = document(text="College of Media Studies\nBachelor of Multimedia Arts (BMMA)", section_heading="Programs Offered")
+        current = document("Programs_Offered.docx", "College of Information Technology and Allied Sciences\n"
+                           "Bachelor of Multimedia Arts CMO No. 15, s. 2017", section_heading="Programs Offered")
+        mapping, restricted = select_program_affiliation("dean of BMMA.", [old, current], dates=DATES,
+                                                         uploads={current.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertTrue(restricted)
+        self.assertEqual(list(mapping), ["College of Information Technology and Allied Sciences"])
+        proofs = next(iter(mapping.values()))
+        self.assertIs(proofs[0], current)
+        self.assertEqual(proofs[1].page_content, "Bachelor of Multimedia Arts (BMMA)")
+        self.assertNotIn("College of Media Studies", str(proofs[1]))
+        self.assertEqual(old.page_content, "College of Media Studies\nBachelor of Multimedia Arts (BMMA)")
+
+    def test_program_affiliation_prefers_exact_current_catalog_evidence(self):
+        old = document(text="College of Media Studies\nBachelor of Multimedia Arts (BMMA)", section_heading="Programs Offered")
+        current = document("Programs_Offered.docx", "College of Information Technology and Allied Sciences\nBachelor of Multimedia Arts (BMMA)",
+                           section_heading="Programs Offered")
+        mapping, restricted = select_program_affiliation("dean of bmma", [old, current], dates=DATES,
+                                                         uploads={current.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertEqual(mapping, {"College of Information Technology and Allied Sciences": [current]})
+        self.assertTrue(restricted)
+
+    def test_unrelated_current_catalog_does_not_prove_program_parent(self):
+        other = document("Programs_Offered.docx", "College of Business and Management\nBachelor of Business Administration (BSBA)",
+                         section_heading="Programs Offered")
+        mapping, restricted = select_program_affiliation("dean of bmma", [other], dates=DATES,
+                                                         uploads={other.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertEqual(mapping, {})
+        self.assertFalse(restricted)
+
+    def test_program_parent_current_cohort_conflicts_are_not_guessed(self):
+        docs = [document("Media_Update.docx", "College of Media Studies\nBachelor of Multimedia Arts (BMMA)", section_heading="Programs Offered"),
+                document("Arts_Update.docx", "College of Liberal Arts and Sciences\nBachelor of Multimedia Arts (BMMA)", section_heading="Programs Offered")]
+        mapping, restricted = select_program_affiliation("dean of bmma", docs, dates=DATES,
+                                                         uploads={doc.metadata["source"]: UPLOADS[UPDATE] for doc in docs}, today=TODAY)
+        self.assertEqual(set(mapping), {"College of Media Studies", "College of Liberal Arts and Sciences"})
+        self.assertTrue(restricted)
+
+    def test_historical_program_parent_is_preserved_but_not_called_current(self):
+        old = document(text="College of Media Studies\nBachelor of Multimedia Arts (BMMA)", section_heading="Programs Offered")
+        current = document("Programs_Offered_2025.docx", "College of Information Technology and Allied Sciences\nBachelor of Multimedia Arts (BMMA)",
+                           section_heading="Programs Offered")
+        mapping, restricted = select_program_affiliation("dean of BMMA in 2024", [old, current], dates=DATES,
+                                                         uploads={current.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertEqual(mapping, {"College of Media Studies": [old]})
+        self.assertFalse(restricted)
+
     def select(self, docs, query="What do I need to enroll?", **kwargs):
         values = {"dates": DATES, "uploads": UPLOADS, "today": TODAY}
         values.update(kwargs)
@@ -209,6 +277,72 @@ class SourcePolicyTests(unittest.TestCase):
         self.assertFalse(result.restricted)
         self.assertIn(old, result.documents)
 
+    def test_bsit_enrollment_uses_shared_guidance_not_a_current_program_catalog(self):
+        current = document("Programs_Offered.docx", "College of Business and Management\nBachelor of Science in Business Administration",
+                           collection_heading="Programs Offered")
+        guide = document(text="ENROLLMENT PROCEDURE\nNew Students and Transferees\n"
+                              "Submit credentials and secure the plotting form. Present the receipt to the Registrar.",
+                         section_heading="Enrollment Procedure")
+        for query in ("how to enroll in bsit", "How to enrol in the BSIT program?", "BSIT admission requirements"):
+            with self.subTest(query=query):
+                result = self.select([current, guide], [query, "BSIT enrollment admission program requirements"],
+                                     uploads={current.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [guide])
+                self.assertFalse(result.restricted)
+                self.assertIn(current.metadata["source"].lower(), result.discarded_sources)
+                self.assertEqual(program_catalog_queries(query), [])
+
+    def test_current_enrollment_update_still_replaces_shared_old_steps(self):
+        current = document(UPDATE, "Undergraduate Level\nEnrollment now uses CURRENT_ONLINE_APPLICATION only.",
+                           section_heading="Admission Policy")
+        old = document(text="Enrollment requires OLD_CHECKLIST and OLD_FEE.", section_heading="Enrollment Procedure")
+        result = self.select([old, current], "how to enroll in bsit")
+        self.assertEqual(result.documents, [current])
+        self.assertTrue(result.restricted)
+
+    def test_shared_undergraduate_enrollment_keeps_mixed_page_but_not_other_units_or_levels(self):
+        shared = document(text="ADMISSION REQUIREMENTS\nUndergraduate Level\nStudents submit valid credentials.\n"
+                               "Graduate Level\nEducation applicants need the stated graduate-level average.",
+                          section_heading="Graduate Level")
+        shs = document("SHS_Admission.docx", "Admission requires SHS_NEW_DOCUMENTS.", section_heading="Senior High School Admission")
+        graduate = document("Graduate_Admission.docx", "Admission requires GRADUATE_DEGREE.", section_heading="Graduate Level")
+        business = document("Business_Admission.docx", "College of Business and Management\nEnrollment requires BUSINESS_ONLY_FORM.",
+                            section_heading="College of Business and Management")
+        technical = document("Diploma_Admission.docx", "Admission to diploma programs requires TESDA_ONLY_DOCUMENTS.",
+                             section_heading="UAQTEA-TES Admission")
+        result = self.select([shs, graduate, business, technical, shared], "how to enroll in bsit", uploads={
+            shs.metadata["source"]: UPLOADS[UPDATE], graduate.metadata["source"]: UPLOADS[UPDATE],
+            business.metadata["source"]: UPLOADS[UPDATE], technical.metadata["source"]: UPLOADS[UPDATE],
+        })
+        self.assertEqual(result.documents, [shared])
+        self.assertFalse(result.restricted)
+
+    def test_explicit_college_can_use_shared_enrollment_rules_without_becoming_an_alias(self):
+        guide = document(text="Enrollment procedure: submit credentials and secure the plotting form.",
+                         section_heading="General College Enrollment")
+        other = document("Other_Admission.docx", "College of Business and Management\nEnrollment uses BUSINESS_ONLY_FORM.",
+                         section_heading="College of Business and Management")
+        query = "How to enroll in College of Information Technology and Allied Sciences?"
+        result = self.select([other, guide], query, uploads={other.metadata["source"]: UPLOADS[UPDATE]})
+        self.assertEqual(result.documents, [guide])
+        self.assertEqual(result.requested_unit, "College of Information Technology and Allied Sciences")
+
+    def test_enrollment_and_offering_parts_keep_both_requested_kinds_of_evidence(self):
+        guide = document(text="Enrollment procedure: submit credentials to the registrar.", section_heading="Enrollment Procedure")
+        catalog = document(text="Programs offered: BSIT and BSBA are documented here.", collection_heading="Programs Offered")
+        result = self.select([guide, catalog], ["What programs are offered and how do I enroll?", "What programs are offered?", "How do I enroll?"],
+                             uploads={})
+        self.assertEqual(result.documents, [guide, catalog])
+
+    def test_programs_i_can_enroll_in_still_requests_offerings_not_steps(self):
+        catalog = document("Programs_Offered.docx", "Programs offered: BSIT and BSBA.", collection_heading="Programs Offered")
+        for query in ("What programs can I enroll in?", "Which courses may students enrol in?"):
+            with self.subTest(query=query):
+                self.assertEqual(enrollment_queries(query), [])
+                self.assertTrue(program_catalog_queries(query))
+                result = self.select([document(), catalog], query, uploads={catalog.metadata["source"]: UPLOADS[UPDATE]})
+                self.assertEqual(result.documents, [catalog])
+
     def test_unrelated_newer_documents_do_not_disable_fallback(self):
         for text, query in (
             ("Latin honors requirements include a qualifying grade average.", "What is the enrollment procedure?"),
@@ -220,7 +354,7 @@ class SourcePolicyTests(unittest.TestCase):
                 old = document()
                 result = self.select([old, new], query, uploads={new.metadata["source"]: UPLOADS[UPDATE]})
                 self.assertFalse(result.restricted)
-                self.assertEqual(result.documents, [old, new])
+                self.assertEqual(result.documents, [old] if enrollment_queries(query) else [old, new])
 
     def test_empty_titles_indexes_and_cross_references_are_not_replacements(self):
         for text in ("", "  ", "Enrollment procedure", "Enrollment policy update",
@@ -250,6 +384,112 @@ class SourcePolicyTests(unittest.TestCase):
         result = self.select([document(text="Dean of CITAS: Dr. Previous Person."), roster],
                              "Who is the dean of CITAS?", uploads={roster.metadata["source"]: UPLOADS[UPDATE]})
         self.assertFalse(result.restricted)
+
+    def test_current_dean_update_name_dash_unit_row_is_substantive_coed_evidence(self):
+        source = "Synthetic_Leadership_2025-2026.pdf"
+        row = "Synthetic Name \u2013 College of Education"
+        current = document(source, "DEANS UPDATE\n" + row, page=15, section_heading="DEANS UPDATE")
+        old = document(text="Dr. Synthetic Historical Official\nDean, College of Education", page=26,
+                       section_heading="College of Education")
+        before = deepcopy([old, current])
+        for query, unit in (("Who is the dean of coed?", "coed"),
+                            ("Who is the dean of College of Education?", "College of Education")):
+            with self.subTest(query=query):
+                result = self.select([old, current], query, uploads={source: UPLOADS[UPDATE]})
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.requested_unit, unit)
+                self.assertEqual(result.documents, [current])
+                self.assertIs(result.documents[0], current)
+                self.assertIn(row, result.documents[0].page_content)
+                self.assertEqual(result.documents[0].metadata["page"], 15)
+                self.assertIn(BASE.lower(), result.discarded_sources)
+        self.assertEqual([old, current], before)
+
+    def test_other_college_dean_update_rows_cannot_masquerade_as_coed(self):
+        old = document(text="Dr. Synthetic Historical Official\nDean, College of Education",
+                       section_heading="College of Education")
+        for unit in ("College of Information Technology & Allied Sciences", "College of Graduate Studies",
+                     "College of Special Education", "College of Basic Education", "College of Education and Technology"):
+            for query in ("Who is the dean of coed?", "Who is the dean of College of Education?"):
+                with self.subTest(unit=unit, query=query):
+                    source = "Synthetic_Other_Roster_2025-2026.pdf"
+                    current = document(source, f"DEANS UPDATE\nSynthetic Other Official \u2013 {unit}",
+                                       section_heading="DEANS UPDATE", page=15)
+                    before = deepcopy(current)
+                    result = self.select([current, old], query, uploads={source: UPLOADS[UPDATE]})
+                    self.assertFalse(result.restricted)
+                    self.assertEqual(result.documents, [old])
+                    self.assertIn(source.lower(), result.discarded_sources)
+                    self.assertEqual(current, before)
+
+    def test_same_current_source_preserves_named_update_and_conflicting_multi_unit_profile(self):
+        source = "Synthetic_Leadership_2025-2026.pdf"
+        update = document(source, "DEANS UPDATE\n"
+                          "Synthetic Meadow Official \u2013 College of Education\n"
+                          "Synthetic River Official \u2013 College of Information Technology & Allied Sciences\n"
+                          "Synthetic Valley Official \u2013 College of Graduate Studies",
+                          section_heading="DEANS UPDATE", page=15, chunk_id="update")
+        profile = document(source, "Dr. Synthetic Valley Official\n"
+                           "Dean, College of Graduate Studies & College of Education",
+                           section_heading="College Profile", page=26, chunk_id="profile")
+        other_row = document(source, "DEANS UPDATE\nSynthetic River Official \u2013 "
+                             "College of Information Technology & Allied Sciences", section_heading="DEANS UPDATE",
+                             page=15, chunk_id="other")
+        old = document(text="Dr. Synthetic Historical Official\nDean, College of Education",
+                       section_heading="College of Education", chunk_id="historical")
+        docs = [other_row, old, update, profile]
+        before = deepcopy(docs)
+        result = self.select(docs, "Who is the dean of coed?", uploads={source: UPLOADS[UPDATE]})
+        self.assertTrue(result.restricted)
+        self.assertEqual(result.documents, [update, profile])
+        self.assertEqual([doc.metadata["page"] for doc in result.documents], [15, 26])
+        self.assertTrue(all(doc.metadata["source"] == source for doc in result.documents))
+        self.assertIn("Synthetic Meadow Official", result.documents[0].page_content)
+        self.assertIn("Dr. Synthetic Valley Official", result.documents[1].page_content)
+        self.assertIn(BASE.lower(), result.discarded_sources)
+        self.assertEqual(docs, before)
+
+    def test_exact_compound_leadership_scope_keeps_three_current_sources_not_a_contextual_single_unit(self):
+        current = [
+            document("Synthetic_Citas_Roster_2025-2026.pdf", "DEANS UPDATE\n"
+                     "Synthetic River Official \u2013 College of Information Technology & Allied Sciences (CITAS)",
+                     section_heading="DEANS UPDATE"),
+            document("Synthetic_Education_Roster_2025-2026.pdf", "DEANS UPDATE\n"
+                     "Synthetic Meadow Official \u2013 College of Education", section_heading="DEANS UPDATE"),
+            document("Synthetic_President_Roster_2025-2026.pdf", "President of Samar College: Synthetic Harbor Official.",
+                     section_heading="School Officials"),
+        ]
+        old = document(text="Dean of CoEd: Synthetic Historical Official. President: Synthetic Previous Official.")
+        aspects = ["who are the dean of citas", "who are the dean of coed", "who is the president of samar college",
+                   "who are the dean of College of Education"]
+        uploads = {doc.metadata["source"]: UPLOADS[UPDATE] for doc in current}
+        before = deepcopy([old, *current])
+        for contextual in ([], ["Who is the dean of CITAS at Samar College?"]):
+            with self.subTest(contextual=contextual):
+                result = self.select([old, *current], [LEADERSHIP_QUESTION, *contextual, *aspects], uploads=uploads)
+                self.assertTrue(result.restricted)
+                self.assertEqual(result.requested_unit, "")
+                self.assertEqual(result.documents, current)
+                self.assertIn(BASE.lower(), result.discarded_sources)
+        self.assertEqual([old, *current], before)
+
+    def test_named_leadership_guidance_requires_conflict_disclosure_not_unavailable_or_old_substitution(self):
+        for query in (LEADERSHIP_QUESTION, "Who is the dean of coed?", "Who is the president of Samar College?",
+                      "List college dean names", "dean of BMMA", "deans of BMMA and BEED?"):
+            with self.subTest(query=query):
+                guidance = leadership_guidance(query)
+                self.assertTrue(guidance.startswith("<leadership_roster_request>"))
+                self.assertTrue(guidance.endswith("</leadership_roster_request>"))
+                normalized = " ".join(guidance.split())
+                self.assertIn("Answer each requested role and college separately", normalized)
+                self.assertIn("A dean-update heading can label name-to-college rows", normalized)
+                self.assertIn("cite and describe that conflict rather than claiming the information is unavailable", normalized)
+                self.assertIn("asserting an unverified current office holder", normalized)
+                self.assertIn("Do not use an old appointment or handbook to resolve a current-source conflict.", normalized)
+        for query in ("What does a college dean do?", "What are the president's responsibilities?",
+                      "College of Education programs offered", "dean of CoEd responsibilities", "", None):
+            with self.subTest(query=query):
+                self.assertEqual(leadership_guidance(query), "")
 
     def test_partial_update_does_not_pull_old_steps_back_in(self):
         current = document(UPDATE, "Enrollment begins by submitting the CURRENT_FORM online.")
@@ -635,6 +875,15 @@ class SourcePolicyTests(unittest.TestCase):
 
 
 class SourceDiscoveryTests(unittest.TestCase):
+    def test_enrollment_probes_are_bounded_and_distinct_from_offering_requests(self):
+        for query in ("how to enroll in bsit", "How do I register for BSIT?", "BSIT admission requirements", "enrolment procedure"):
+            with self.subTest(query=query):
+                self.assertEqual(enrollment_queries(query), ["college enrollment enrolment procedure admission requirements registration"])
+                self.assertEqual(program_catalog_queries(query), [])
+        for query in ("What programs are offered?", "Who is the BSIT coordinator?", "My enrollment history", "", None):
+            self.assertEqual(enrollment_queries(query), [])
+        self.assertTrue(enrollment_queries("How do I enroll in SHS?")[0].startswith("How do I enroll in SHS?"))
+
     def test_program_probes_preserve_qualifiers_and_do_not_reclassify_other_questions(self):
         for query in ("confirmed current offerings", "current senior high programs",
                       "current offerings for College of River Studies", "programs offered in 2024"):

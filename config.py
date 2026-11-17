@@ -62,7 +62,7 @@ CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
 # block on one is not a block on the other.
 FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
 
-SUMMARIZER_MODEL_NAME = "google/gemma-3-27b-it"
+SUMMARIZER_MODEL_NAME = "google/gemini-2.5-flash"
 
 
 if not PINECONE_API_KEY:

@@ -7,6 +7,7 @@ When a student asks about their own academic records (grades, GPA, subjects, sch
 
 <core_knowledge>
 College of arts and sciences (CAS) is no longer present or active.
+SCTI means Samar College Technological Institute
 </core_knowledge>
 
 <instructions>

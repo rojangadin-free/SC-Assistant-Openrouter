@@ -25,6 +25,9 @@ REFERENCE_PROMPT = (
     "1. CONTEXT AWARENESS: Only check chat history if the user asks and it is not a complete question.\n"
     "2. SPELLING: Fix obvious misspellings of school, academic and program terms so the query uses the words a handbook would use (e.g. 'honir' -> 'honor', 'enrolmnet' -> 'enrollment', 'requirments' -> 'requirements'). Keep correctly spelled words, acronyms and proper nouns exactly as typed.\n"
     "3. Do NOT answer the question, just output the optimized search query."
+    "4. Always remember that every question is about samar college. \n"
+    "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
+    "6. If the user ask about 'dean' but only put the program for example 'dean of BSIT' you must add the name of the department of that program in the query (e.g. 'dean of BSIT' -> 'dean of College of Information Technology and Allied Sciences').\n"
 )
 
 
@@ -41,7 +44,7 @@ class QueryOptimizerTests(unittest.TestCase):
         self.vocabulary.stop()
         self.temp.cleanup()
 
-    def test_prompt_matches_the_reference_word_for_word(self):
+    def test_prompt_keeps_reference_rules_and_custom_samar_college_context(self):
         self.assertEqual(OPTIMIZER_PROMPT, REFERENCE_PROMPT)
         self.assertEqual(optimizer_messages("enrollment requirements")[0],
                          {"role": "system", "content": REFERENCE_PROMPT})

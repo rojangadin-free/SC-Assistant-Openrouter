@@ -149,12 +149,18 @@ def _fetch_scores(query, documents, remaining):
     return scores
 
 
-def rerank_queries(queries, docs, *, top_k=None, max_pairs=40, diversify=False, request_budget=None):
+def rerank_queries(
+    queries, docs, *, top_k=None, max_pairs=40, diversify=False,
+    request_budget=None, preferred_query: str = None,
+):
     """Score bounded query/doc batches and preserve retrieval order on failure.
 
     Ordinary variants use each document's best score. Multi-part questions merge
     per-aspect rankings round-robin. All selected aspects must succeed; a partial
     API failure never silently starves one part or triggers a local/paid fallback.
+    A preferred query is included before the query cap: its score sorts ordinary
+    results first (best score breaks ties), or its group leads the round-robin.
+    Preferred-mode metadata records the score and query supplying the ranking.
     """
     _status.success, _status.reason = False, ""
     original = without_scores(list(docs))
@@ -167,7 +173,11 @@ def rerank_queries(queries, docs, *, top_k=None, max_pairs=40, diversify=False, 
     error = configuration_error()
     if error:
         return fallback(error)
-    clean = []
+    preferred_query = (
+        preferred_query.strip().encode("utf-8")[:2048].decode("utf-8", errors="ignore")
+        if isinstance(preferred_query, str) else ""
+    )
+    clean = [preferred_query] if preferred_query else []
     for query in queries or []:
         if isinstance(query, str):
             query = query.strip().encode("utf-8")[:2048].decode("utf-8", errors="ignore")
@@ -211,6 +221,7 @@ def rerank_queries(queries, docs, *, top_k=None, max_pairs=40, diversify=False, 
         _slots.release()
 
     best = [max(row[i] for row in matrix) for i in range(len(texts))]
+    primary = matrix[0] if preferred_query else best
     rankings = [sorted(range(len(texts)), key=lambda i: row[i], reverse=True) for row in matrix]
     keys = [
         ("id", str(doc.metadata["chunk_id"])) if doc.metadata.get("chunk_id") else
@@ -230,21 +241,26 @@ def rerank_queries(queries, docs, *, top_k=None, max_pairs=40, diversify=False, 
                     key = keys[owners[candidate]]
                     if key in seen:
                         continue
-                    selected.append((candidate, clean[aspect]))
+                    selected.append((candidate, aspect))
                     seen.add(key)
                     progressed = True
                     break
             if not progressed:
                 break
     else:
-        selected = [(i, None) for i in sorted(range(len(texts)), key=lambda i: best[i], reverse=True)]
+        selected = [(i, None) for i in sorted(
+            range(len(texts)), key=lambda i: (primary[i], best[i]), reverse=True,
+        )]
 
     ranked = []
     for candidate, aspect in selected:
         doc = original[owners[candidate]]
-        doc.metadata.update(rerank_score=best[candidate], rerank_backend="openrouter", rerank_model=MODEL_NAME)
+        score = matrix[aspect][candidate] if preferred_query and aspect is not None else primary[candidate]
+        doc.metadata.update(rerank_score=score, rerank_backend="openrouter", rerank_model=MODEL_NAME)
         if aspect is not None:
-            doc.metadata["rerank_aspect"] = aspect
+            doc.metadata["rerank_aspect"] = clean[aspect]
+        elif preferred_query:
+            doc.metadata["rerank_aspect"] = preferred_query
         ranked.append(doc)
     for i, doc in enumerate(original):
         if i not in owners and (not diversify or keys[i] not in seen):

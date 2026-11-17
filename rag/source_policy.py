@@ -18,6 +18,8 @@ from rag.unit_identity import (
     document_unit_names,
     requested_unit,
     same_unit,
+    program_dean_subject,
+    program_affiliations,
 )
 
 DEFAULT_FALLBACK_SOURCES = ("Samar-College-2024.pdf",)
@@ -71,6 +73,28 @@ Previous replies and conversation summaries are not historical evidence. If the
 retrieved passages omit a fact, say it was not found in the retrieved material;
 do not claim the entire knowledge base has no history document or only curricula.
 </institution_history_request>"""
+ENROLLMENT_GUIDANCE = """<enrollment_request>
+The user asks about enrollment/admission/registration, not a program catalog.
+Use the supplied enrollment guidance and describe only the steps, documents and
+dates it actually states. A shared college procedure need not repeat a degree's
+name: label it as general college guidance, not as a program-specific rule.
+Keep freshman, transferee, continuing-student and school-level conditions separate.
+Do not apply graduate, basic-education or TESDA/diploma admission criteria to a bachelor program.
+Identify an older handbook's edition; do not call its procedure confirmed current.
+Do not invent additional program-specific requirements or deadlines. If the
+provided guide omits those details, distinguish that limitation from the documented
+general procedure instead of claiming no enrollment guidance exists.
+Previous assistant replies and program lists are not enrollment-policy evidence.
+</enrollment_request>"""
+LEADERSHIP_GUIDANCE = """<leadership_roster_request>
+Answer each requested role and college separately using the provided named roster
+entries. A dean-update heading can label name-to-college rows even without repeating
+'Dean' on every row. Program catalogs and role descriptions are not named officials.
+If supplied update and profile entries disagree on a name or initials, cite and
+describe that conflict rather than claiming the information is unavailable,
+silently merging different names, or asserting an unverified current office holder.
+Do not use an old appointment or handbook to resolve a current-source conflict.
+</leadership_roster_request>"""
 
 _NOISE = frozenset([
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
@@ -111,6 +135,40 @@ _OTHER_LEVEL = re.compile(
     r"\b(?:shs|jhs|senior|junior|high\s+school|elementary|primary|secondary|basic|graduate|postgraduate|preschool|kindergarten)\b",
     re.IGNORECASE,
 )
+_ENROLLMENT_PROBE = "college enrollment enrolment procedure admission requirements registration"
+
+
+def enrollment_queries(query) -> list[str]:
+    """Bounded procedure probes, not invented program rules or program aliases."""
+    if not isinstance(query, str) or "enrollment" not in _terms(query):
+        return []
+    if re.search(r"\b(?:what|which)\s+(?:programs?|courses?|degrees?)\s+(?:can|could|may)\s+"
+                 r"(?:i|we|students?)\s+(?:enroll|enrol|register)\b", query, re.IGNORECASE):
+        return []
+    if re.search(r"\b(?:my|own|personal)\b.{0,80}\b(?:history|status|records?)\b", query, re.IGNORECASE):
+        return []
+    college_program = re.search(r"\b(?:bachelor|undergraduate|tertiary|bs[a-z]{1,6})\b", query, re.IGNORECASE)
+    if _OTHER_LEVEL.search(query) and not college_program:
+        return [f"{query.strip()} enrollment enrolment procedure admission requirements registration"]
+    return [_ENROLLMENT_PROBE]
+
+
+def _shared_enrollment(document):
+    """General college policy is shared; a different unit/level's policy is not."""
+    text = getattr(document, "page_content", "") or ""
+    metadata = getattr(document, "metadata", None) or {}
+    headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+    title = doc_key(str(metadata.get("source") or "")).replace("_", " ").replace("-", " ")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    if len(first_line.split()) <= 12 and "enrollment" in _terms(first_line):
+        headings += " " + first_line
+    undergraduate = re.search(r"\bundergraduate\s+(?:level|admissions?|enrollment|enrolment)\b", text + " " + headings,
+                              re.IGNORECASE)
+    technical = re.search(r"\b(?:tesda|uaqtea|diploma\s+(?:programs?|programmes?|courses?|training))\b",
+                          text + " " + headings + " " + title, re.IGNORECASE)
+    return ("enrollment" in (_terms(text) | _terms(headings))
+            and not document_unit_names(document)
+            and (undergraduate is not None or (not technical and not _OTHER_LEVEL.search(headings + " " + title))))
 
 
 @dataclass(frozen=True)
@@ -125,6 +183,21 @@ def unit_selection_guidance(selection, documents, today=None):
     if not selection.requested_unit:
         return ""
     guidance = UNIT_SELECTION_GUIDANCE
+    if same_unit(selection.requested_unit, "College of Liberal Arts and Sciences") and any(
+        name.casefold() == "college of liberal arts"
+        for document in documents for name in document_unit_names(document)
+    ):
+        guidance += (
+            "\n<established_unit_alias>\nCLAS means College of Liberal Arts and Sciences. "
+            "The institution's established short roster label 'College of Liberal Arts' refers to this same unit. "
+            "This is an explicit supported alias, not a guessed department or a name conflict. "
+            "Answer the requested CLAS/program dean directly from the supplied named roster; "
+            "you may note that the roster uses the shorter label. Do not claim CLAS is absent or "
+            "ask whether these established labels refer to the same college. "
+            "CAS (College of Arts and Sciences) remains a distinct historical unit. "
+            "This alias establishes no person's name or appointment; those must come from the cited roster.\n"
+            "</established_unit_alias>"
+        )
     if not selection.restricted:
         sources = {str((getattr(doc, "metadata", None) or {}).get("source") or "") for doc in documents}
         years = [stamp.year if stamp else None for stamp, _ in (date_from_filename(source) for source in sources)]
@@ -138,6 +211,16 @@ def unit_selection_guidance(selection, documents, today=None):
                 "This identifies the document edition, not an invented policy effective date.\n</dated_unit_evidence>"
             )
     return guidance
+
+
+def leadership_guidance(query):
+    named_role = re.search(r"\b(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?|officials?)\b",
+                           query or "", re.IGNORECASE)
+    terse_role = re.match(r"\s*(?:the\s+)?(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?)"
+                          r"\s+(?:of|for|at|in)\b", query or "", re.IGNORECASE)
+    if terse_role and re.search(r"\b(?:duties|responsibilities|functions)\b", query, re.IGNORECASE):
+        terse_role = None
+    return LEADERSHIP_GUIDANCE if named_role and (terse_role or re.search(r"\b(?:who|names?|list)\b", query or "", re.IGNORECASE)) else ""
 
 
 def _terms(text):
@@ -210,7 +293,7 @@ def newer_source_names(*, dates, uploads, today=None, fallback_sources=None) -> 
 
 def department_catalog_queries(query) -> list[str]:
     """Generic additive probes for college-unit lists, never for a named service or role."""
-    if not isinstance(query, str):
+    if not isinstance(query, str) or enrollment_queries(query):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
     if not re.search(r"\b(?:colleges?|academic)\b", text) or _OTHER_LEVEL.search(text):
@@ -242,7 +325,7 @@ def catalog_source_names(sources) -> list[str]:
 
 def program_catalog_queries(query) -> list[str]:
     """Find offering catalogs even when a short request omits 'programs' or 'courses'."""
-    if not isinstance(query, str):
+    if not isinstance(query, str) or enrollment_queries(query):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
     if not re.search(r"\b(?:program(?:me)?s?|courses?|degrees?|majors?|offerings?)\b", text):
@@ -409,6 +492,12 @@ def _relevant(document, queries, unit=None):
         if unit and subject and not same_unit(unit.name, subject.name):
             continue
         terms = _terms(subject.remainder if subject else query)
+        if enrollment_queries(query):
+            # Program names alone cannot establish procedural coverage.
+            if "enrollment" not in (body_terms | _terms(headings)):
+                continue
+            if query.casefold() == _ENROLLMENT_PROBE and not _shared_enrollment(document):
+                continue
         program_request = bool(program_catalog_queries(query))
         if program_request:
             # 'Offerings' is normally a stopword; here it is the actual subject.
@@ -450,7 +539,9 @@ def _relevant(document, queries, unit=None):
             if narrative or (historical_heading and not course_scope):
                 return True
             continue
-        catalog_request = program_request or re.search(r"\b(?:programs?|courses?|degrees?|majors?|offered)\b", query, re.IGNORECASE)
+        catalog_request = program_request or (
+            "enrollment" not in terms and re.search(r"\b(?:programs?|courses?|degrees?|majors?|offered)\b", query, re.IGNORECASE)
+        )
         catalog_scope = re.search(r"\b(?:programs?|courses?|degrees?)\s+(?:offered|offering|offerings|catalog|catalogue)\b",
                                   headings + " " + title + " " + text[:180], re.IGNORECASE)
         if catalog_request and catalog_scope and not terms.intersection({"tuition", "fee", "scholarship", "registrar"}):
@@ -462,17 +553,23 @@ def _relevant(document, queries, unit=None):
     return False
 
 
-def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fallback_sources=None):
-    """Select current evidence without turning upload dates into effective dates."""
+def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fallback_sources=None,
+                     enforce_sources=True):
+    """Keep explicit scope; optionally restrict sources without inventing effective dates."""
     documents = list(docs)
     limit = max(1, int(limit))
     queries = [queries] if isinstance(queries, str) else list(queries or [])
     queries = [query.strip() for query in queries if isinstance(query, str) and query.strip()]
     today = today or date.today()
     original_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
+    enrollment = bool(queries and enrollment_queries(queries[0]))
+    if enrollment:
+        # A shared-procedure probe must also contribute to relevance, not just recall.
+        queries = list(dict.fromkeys([*queries, *enrollment_queries(queries[0])]))
     unit = requested_unit(queries[0]) if queries else None
     if unit:
-        matching = [doc for doc in documents if document_matches_unit(doc, unit)]
+        matching = [doc for doc in documents if document_matches_unit(doc, unit)
+                    or (enrollment and _shared_enrollment(doc))]
         named = len(unit.name.split()) > 1
         conflicting_units = unit.explicit and any(
             document_unit_names(doc) for doc in documents
@@ -481,6 +578,8 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
             documents = matching
         else:
             unit = None
+    if enrollment and not any(program_catalog_queries(query) or department_catalog_queries(query) for query in queries):
+        documents = [doc for doc in documents if _relevant(doc, queries, unit)]
     sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
     ordinary = Selection(documents[:limit], False, tuple(sorted(original_sources - sources)),
                          unit.name if unit else "")
@@ -500,7 +599,7 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
             )]
         retained_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in historical}
         return Selection(historical[:limit], False, tuple(sorted(original_sources - retained_sources)), unit.name if unit else "")
-    if not queries or _historical(queries[0], today):
+    if not enforce_sources or not queries or _historical(queries[0], today):
         return ordinary
     baselines, eligible_uploads, eligible_dated, known_baselines = _chronology(
         sources, dates=dates, uploads=uploads, today=today, fallback_sources=fallback_sources,
@@ -538,3 +637,28 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
                 if doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) in selected
                 and (not department_list or rank)]
     return Selection(retained[:limit], True, tuple(sorted(original_sources - selected)), unit.name if unit else "")
+
+
+def select_program_affiliation(question, docs, *, dates, uploads, today=None):
+    """Chronology is applied only after an exact program-parent link is found."""
+    subject = program_dean_subject(question)
+    if not subject:
+        return {}, False
+    matches = program_affiliations(subject, docs)
+    candidates = list(dict.fromkeys(id(doc) for values in matches.values() for doc in values))
+    by_id = {id(doc): doc for values in matches.values() for doc in values}
+    candidates = [by_id[key] for key in candidates]
+    if not candidates:
+        return {}, False
+    now = today or date.today()
+    if _historical(question, now):
+        requested_years = {int(year) for year in re.findall(r"\b20\d{2}\b", question)}
+        if requested_years:
+            candidates = [doc for doc in candidates if (stamp := _effective(
+                str((getattr(doc, "metadata", None) or {}).get("source") or ""),
+                {doc_key(key): value for key, value in (dates or {}).items()},
+            )) and stamp.year in requested_years]
+        return program_affiliations(subject, candidates, alias_documents=docs, include_alias_evidence=True), False
+    selected = select_documents(candidates, [f"{subject} programs offered"], dates=dates, uploads=uploads,
+                                today=now, limit=max(1, len(candidates)))
+    return program_affiliations(subject, selected.documents, alias_documents=docs, include_alias_evidence=True), selected.restricted

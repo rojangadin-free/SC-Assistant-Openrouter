@@ -509,6 +509,8 @@ def rerank(
     max_pairs: int = MAX_PAIRS,
     queries: Optional[Sequence[str]] = None,
     request_budget=None,
+    *,
+    preferred_query: str = None,
 ) -> List:
     """
     Reorder `docs` by cross-encoder relevance to `query`.
@@ -525,7 +527,9 @@ def rerank(
     -------------------
     `queries` accepts several phrasings of the same information need (typically
     the user's natural question AND a keyword rewrite). A document's score is
-    the MAX across all phrasings.
+    the MAX across all phrasings by default. With `preferred_query`, its best
+    window score sorts first; the MAX only breaks ties. The preferred phrasing
+    is always included, and metadata records its score rather than the MAX.
 
     This exists because cross-encoder scores are not comparable across query
     styles, and the difference decides the answer. Same pool, same model,
@@ -555,6 +559,7 @@ def rerank(
         max_pairs: only score this many candidates (the rest keep their order
                    and are appended after the scored ones)
         queries:   optional additional phrasings; `query` is always included
+        preferred_query: optional phrasing whose score takes priority
     """
     if not docs:
         return []
@@ -565,12 +570,13 @@ def rerank(
             return without_scores(docs, top_k)
         return rerank_queries(
             [query, *(queries or [])], docs, top_k=top_k, max_pairs=max_pairs,
-            request_budget=request_budget,
+            request_budget=request_budget, preferred_query=preferred_query,
         )
 
     # Assemble the phrasings to score against, de-duplicated, order preserved.
+    preferred_query = (preferred_query or "").strip()
     all_queries: List[str] = []
-    for q in [query, *(queries or [])]:
+    for q in [preferred_query, query, *(queries or [])]:
         q = (q or "").strip()
         if q and q not in all_queries:
             all_queries.append(q)
@@ -602,11 +608,11 @@ def rerank(
     # The window budget is per query phrasing, so latency scales with the number
     # of phrasings — hence the small, fixed cap in the caller.
     pairs: List[tuple] = []
-    owners: List[int] = []
-    for q in all_queries:
+    owners: List[tuple] = []
+    for q_i, q in enumerate(all_queries):
         for d_i, window in plan:
             pairs.append((q, window))
-            owners.append(d_i)
+            owners.append((q_i, d_i))
 
     try:
         scores = _predict(model, pairs)
@@ -619,23 +625,28 @@ def rerank(
         return list(docs)[:top_k] if top_k else list(docs)
 
     best = [float("-inf")] * len(head)
+    primary = [float("-inf")] * len(head) if preferred_query else best
 
-    for d_i, score in zip(owners, scores):
+    for (q_i, d_i), score in zip(owners, scores):
         s = float(score)
         if s > best[d_i]:
             best[d_i] = s
+        if preferred_query and q_i == 0 and s > primary[d_i]:
+            primary[d_i] = s
 
 
-    for doc, score in zip(head, best):
+    for doc, score in zip(head, primary):
         try:
             if doc.metadata is None:
                 doc.metadata = {}
             doc.metadata["rerank_score"] = score if score != float("-inf") else 0.0
+            if preferred_query:
+                doc.metadata["rerank_aspect"] = preferred_query
         except Exception:
             pass  # metadata is optional; never fail the request over it
 
-    # Stable sort keeps the retriever's order as the tie-breaker.
-    order = sorted(range(len(head)), key=lambda i: best[i], reverse=True)
+    # Keep max-over-phrasings evidence for ties, then the retriever's order.
+    order = sorted(range(len(head)), key=lambda i: (primary[i], best[i]), reverse=True)
     ranked = [head[i] for i in order]
     ranked.extend(tail)  # unscored candidates stay last
 
@@ -648,6 +659,8 @@ def rerank_multi(
     top_k: Optional[int] = None,
     max_pairs: int = MAX_PAIRS,
     request_budget=None,
+    *,
+    preferred_query: str = None,
 ) -> List:
     """
     Rank for a question that asks about SEVERAL things at once, guaranteeing
@@ -685,6 +698,8 @@ def rerank_multi(
         docs:      retrieved LangChain Documents
         top_k:     truncate the merged list to this many docs (None = all)
         max_pairs: only score this many candidates per aspect
+        preferred_query: optional first group; all remaining aspects keep their
+                         order, and metadata uses each selected group's score
     """
     if not docs:
         return []
@@ -695,11 +710,12 @@ def rerank_multi(
             return without_scores(docs, top_k)
         return rerank_queries(
             aspects, docs, top_k=top_k, max_pairs=max_pairs, diversify=True,
-            request_budget=request_budget,
+            request_budget=request_budget, preferred_query=preferred_query,
         )
 
+    preferred_query = (preferred_query or "").strip()
     clean = []
-    for a in aspects or []:
+    for a in [preferred_query, *(aspects or [])]:
         a = (a or "").strip()
         if a and a not in clean:
             clean.append(a)
@@ -709,7 +725,10 @@ def rerank_multi(
 
     # Single aspect -> ordinary rerank (no merging needed).
     if len(clean) == 1:
-        return rerank(clean[0], docs, top_k=top_k, max_pairs=max_pairs, request_budget=request_budget)
+        return rerank(
+            clean[0], docs, top_k=top_k, max_pairs=max_pairs,
+            request_budget=request_budget, preferred_query=preferred_query or None,
+        )
 
     # ----------------------------------------------------------------------
     # One batched forward pass, not one per aspect.
@@ -770,7 +789,10 @@ def rerank_multi(
     except Exception as e:
         logger.warning("Multi-aspect rerank failed, falling back: %s", e)
         print(f"  Multi-aspect rerank failed (non-fatal): {e}")
-        return rerank(clean[0], docs, top_k=top_k, max_pairs=max_pairs)
+        return rerank(
+            clean[0], docs, top_k=top_k, max_pairs=max_pairs,
+            request_budget=request_budget, preferred_query=preferred_query or None,
+        )
 
     if scores is None:
         # Busy, not broken. Falling back to rerank() here would re-queue for a
@@ -790,7 +812,7 @@ def rerank_multi(
     per_aspect = []
     for a_i in range(n_a):
         order = sorted(range(n_d), key=lambda i: best_per_aspect[a_i][i], reverse=True)
-        per_aspect.append([head[i] for i in order])
+        per_aspect.append(order)
 
     best_score = {}
     for d_i, doc in enumerate(head):
@@ -807,7 +829,8 @@ def rerank_multi(
         progressed = False
         for a_i, ranking in enumerate(per_aspect):
             while cursors[a_i] < len(ranking):
-                doc = ranking[cursors[a_i]]
+                d_i = ranking[cursors[a_i]]
+                doc = head[d_i]
                 cursors[a_i] += 1
                 k = key_of(doc)
                 if k in seen:
@@ -816,7 +839,8 @@ def rerank_multi(
                 try:
                     if doc.metadata is None:
                         doc.metadata = {}
-                    doc.metadata["rerank_score"] = best_score.get(k, 0.0)
+                    score = best_per_aspect[a_i][d_i] if preferred_query else best_score.get(k, 0.0)
+                    doc.metadata["rerank_score"] = score if score != float("-inf") else 0.0
                     doc.metadata["rerank_aspect"] = clean[a_i]
                 except Exception:
                     pass

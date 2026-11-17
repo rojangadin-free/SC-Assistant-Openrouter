@@ -1,4 +1,4 @@
-"""Offline OpenRouter protocol, ranking, safety, and backend-selection tests."""
+"""Offline local/OpenRouter ranking, protocol, safety, and backend tests."""
 
 import ast
 import concurrent.futures
@@ -125,6 +125,35 @@ class OpenRouterTests(unittest.TestCase):
         self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["0", "1", "2", "3"])
         self.assertEqual(len(self.client.calls), 2)
 
+    def test_preferred_query_wins_over_higher_literal_only_score(self):
+        self.docs[0].page_content, self.docs[1].page_content = "LITERAL_ONLY", "CONTEXTUAL_MATCH"
+        rows = {"contextual": [2, 8, 0, 0], "natural": [100, 1, 0, 0]}
+        self.client.handler = lambda payload: Response(response_rows(rows[payload["query"]]))
+        for preferred in (None, " ", "contextual"):
+            with self.subTest(preferred=preferred):
+                ranked = reranker.rerank(
+                    "contextual", self.docs, top_k=2, queries=["natural"], preferred_query=preferred,
+                )
+                expected = ["1", "0"] if preferred == "contextual" else ["0", "1"]
+                self.assertEqual([d.metadata["chunk_id"] for d in ranked], expected)
+                self.assertEqual([d.metadata["rerank_score"] for d in ranked],
+                                 [8, 2] if preferred == "contextual" else [100, 8])
+                if preferred == "contextual":
+                    self.assertTrue(all(d.metadata["rerank_aspect"] == "contextual" for d in ranked))
+                else:
+                    self.assertTrue(all("rerank_aspect" not in d.metadata for d in ranked))
+        self.assertTrue(all("rerank_score" not in d.metadata for d in self.docs))
+
+    def test_preferred_ties_use_max_score_then_retrieval_order(self):
+        rows = {"contextual": [5, 5, 5, 4], "natural": [8, 11, 8, 100]}
+        self.client.handler = lambda payload: Response(response_rows(rows[payload["query"]]))
+        ranked = reranker.rerank(
+            "natural", self.docs, queries=["contextual", "natural"], preferred_query="contextual",
+        )
+        self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["1", "0", "2", "3"])
+        self.assertEqual([d.metadata["rerank_score"] for d in ranked], [5, 5, 5, 4])
+        self.assertEqual([call[2]["json"]["query"] for call in self.client.calls], ["contextual", "natural"])
+
     def test_docx_catalog_headings_reach_both_rerankers_without_duplicates(self):
         doc = document(0, "Bachelor of River Studies", section="College of River Studies",
                        section_heading="College of River Studies", collection_heading="Programs Offered",
@@ -156,6 +185,23 @@ class OpenRouterTests(unittest.TestCase):
         ranked = reranker.rerank_multi(["first", "second", "third"], self.docs, top_k=3)
         self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["0", "2", "3"])
         self.assertEqual([d.metadata["rerank_aspect"] for d in ranked], ["first", "second", "third"])
+
+    def test_preferred_multi_group_leads_without_replacing_natural_aspects(self):
+        rows = {"contextual": [7, 8, 2, 7], "first": [9, 100, 0, 0],
+                "second": [0, 100, 6, 0], "third": [0, 100, 0, 5]}
+        self.client.handler = lambda payload: Response(response_rows(rows[payload["query"]]))
+        aspects = ["first", "second", "contextual", "third"]
+        for preferred in (None, "contextual"):
+            with self.subTest(preferred=preferred):
+                self.client.calls.clear()
+                ranked = reranker.rerank_multi(aspects, self.docs, top_k=4, preferred_query=preferred)
+                self.assertEqual([d.metadata["chunk_id"] for d in ranked],
+                                 ["1", "0", "2", "3"] if preferred else ["1", "2", "0", "3"])
+                expected_aspects = ["contextual", "first", "second", "third"] if preferred else aspects
+                self.assertEqual([d.metadata["rerank_aspect"] for d in ranked], expected_aspects)
+                self.assertEqual([call[2]["json"]["query"] for call in self.client.calls], expected_aspects)
+                self.assertEqual([d.metadata["rerank_score"] for d in ranked],
+                                 [8, 9, 6, 5] if preferred else [100, 6, 9, 7])
 
     def test_multi_part_deduplicates_repeated_chunks(self):
         docs = [document(0), document(0), document(2), document(3)]
@@ -240,6 +286,65 @@ class OpenRouterTests(unittest.TestCase):
         self.client.responses = [Response(response_rows([1, 2, 3, 4])) for _ in range(4)]
         reranker.rerank_multi([f"q-{i}" for i in range(10)], self.docs)
         self.assertEqual(len(self.client.calls), 4)
+
+    def test_preferred_query_is_retained_before_cap_and_other_groups_keep_order(self):
+        self.client.handler = lambda payload: Response(response_rows(
+            [9, 0, 0, 0] if payload["query"] == "contextual" else [0, 9, 8, 7],
+        ))
+        for diversify in (False, True):
+            for included in (False, True):
+                with self.subTest(diversify=diversify, included=included):
+                    self.client.calls.clear()
+                    queries = ["first", "second", "third", "fourth", "catalog"]
+                    if included:
+                        queries.append("contextual")
+                    ranked = api.rerank_queries(
+                        queries, self.docs, diversify=diversify, preferred_query=" contextual ",
+                    )
+                    expected = ["contextual", "first", "second", "third"]
+                    self.assertEqual([call[2]["json"]["query"] for call in self.client.calls], expected)
+                    self.assertEqual(ranked[0].metadata["chunk_id"], "0")
+                    self.assertEqual(ranked[0].metadata["rerank_aspect"], "contextual")
+                    if diversify:
+                        self.assertEqual([d.metadata["rerank_aspect"] for d in ranked], expected)
+
+    def test_preferred_query_uses_existing_utf8_normalization_and_deduplication(self):
+        preferred = " " + chr(0x00E9) * 2000 + " "
+        normalized = preferred.strip().encode("utf-8")[:2048].decode("utf-8")
+        rows = {normalized: [2, 8, 0, 0], "natural": [100, 1, 0, 0]}
+        self.client.handler = lambda payload: Response(response_rows(rows[payload["query"]]))
+        ranked = reranker.rerank(
+            "natural", self.docs, queries=[preferred.strip(), preferred.strip() + "suffix"],
+            preferred_query=preferred,
+        )
+        self.assertEqual([call[2]["json"]["query"] for call in self.client.calls], [normalized, "natural"])
+        self.assertEqual(ranked[0].metadata["chunk_id"], "1")
+        self.assertEqual(ranked[0].metadata["rerank_score"], 8)
+        self.assertEqual(ranked[0].metadata["rerank_aspect"], normalized)
+
+    def test_preferred_calls_preserve_configuration_off_and_failure_fallbacks(self):
+        def calls():
+            return (
+                reranker.rerank("natural", self.docs, top_k=2, preferred_query="contextual"),
+                reranker.rerank_multi(["first", "second"], self.docs, top_k=2, preferred_query="contextual"),
+            )
+
+        with patch.object(reranker, "_load_model") as local:
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+                for result in calls():
+                    self.assert_fallback(result, self.docs[:2])
+            with patch.object(api, "MODEL_NAME", ""):
+                for result in calls():
+                    self.assert_fallback(result, self.docs[:2])
+            with patch.object(reranker, "RERANKER_ENABLED", False):
+                for result in calls():
+                    self.assert_fallback(result, self.docs[:2])
+            self.assertEqual(self.client.calls, [])
+            self.client.handler = Mock(side_effect=RuntimeError("fixture model unavailable"))
+            for result in calls():
+                self.assert_fallback(result, self.docs[:2])
+            self.assertEqual(len(self.client.calls), 2)
+            local.assert_not_called()
 
     def test_invalid_responses_fail_closed(self):
         bad = [None, {}, {"results": []}, {"results": [{"index": 0, "relevance_score": 1}]},
@@ -350,6 +455,137 @@ class OpenRouterTests(unittest.TestCase):
         self.assertFalse(factory.call_args.kwargs["follow_redirects"])
         limits.assert_called_once_with(max_connections=api.CONCURRENCY,
                                        max_keepalive_connections=api.CONCURRENCY)
+
+
+class LocalRerankerTests(unittest.TestCase):
+    def setUp(self):
+        self.model = Mock()
+        self.loader = Mock(return_value=self.model)
+        for p in (
+            patch.object(reranker, "RERANKER_BACKEND", "local"),
+            patch.object(reranker, "RERANKER_ENABLED", True),
+            patch.object(reranker, "_load_model", self.loader),
+            patch.object(reranker, "_slots", threading.BoundedSemaphore(1)),
+            patch.object(reranker, "MAX_TOTAL_WINDOWS", 220),
+            patch.object(reranker, "WINDOW_CHARS", 900),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        self.docs = [document(i) for i in range(4)]
+
+    def use_scores(self, rows):
+        indices = {doc.page_content: i for i, doc in enumerate(self.docs)}
+        self.model.predict.side_effect = lambda pairs, **_: [rows[q][indices[text]] for q, text in pairs]
+
+    def test_preferred_best_window_wins_over_higher_literal_only_score(self):
+        self.docs = [document(0, "LITERAL_ONLY"), document(1, "CONTEXTUAL_MATCH")]
+        rows = {("contextual", "LITERAL_ONLY:first"): 2, ("contextual", "LITERAL_ONLY:answer"): 1,
+                ("contextual", "CONTEXTUAL_MATCH:first"): -20, ("contextual", "CONTEXTUAL_MATCH:answer"): 8,
+                ("natural", "LITERAL_ONLY:first"): 100, ("natural", "LITERAL_ONLY:answer"): 99,
+                ("natural", "CONTEXTUAL_MATCH:first"): 5, ("natural", "CONTEXTUAL_MATCH:answer"): 4}
+        self.model.predict.side_effect = lambda pairs, **_: [rows[pair] for pair in pairs]
+        with patch.object(reranker, "_windows_of", side_effect=lambda doc: [
+            doc.page_content + ":first", doc.page_content + ":answer",
+        ]):
+            for preferred in (None, " ", "contextual"):
+                with self.subTest(preferred=preferred):
+                    ranked = reranker.rerank(
+                        "contextual", self.docs, top_k=2, queries=["natural"], preferred_query=preferred,
+                    )
+                    self.assertEqual([d.metadata["chunk_id"] for d in ranked],
+                                     ["1", "0"] if preferred == "contextual" else ["0", "1"])
+                    self.assertEqual([d.metadata["rerank_score"] for d in ranked],
+                                     [8, 2] if preferred == "contextual" else [100, 8])
+                    if preferred == "contextual":
+                        self.assertTrue(all(d.metadata["rerank_aspect"] == "contextual" for d in ranked))
+                    self.assertEqual(len(self.model.predict.call_args.args[0]), 8)
+
+    def test_preferred_ties_use_max_score_then_retrieval_order(self):
+        self.use_scores({"contextual": [5, 5, 5, 4], "natural": [8, 11, 8, 100]})
+        ranked = reranker.rerank(
+            "natural", self.docs, queries=["contextual", "natural"], preferred_query="contextual",
+        )
+        self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["1", "0", "2", "3"])
+        self.assertEqual([d.metadata["rerank_score"] for d in ranked], [5, 5, 5, 4])
+        self.assertEqual(list(dict.fromkeys(q for q, _ in self.model.predict.call_args.args[0])),
+                         ["contextual", "natural"])
+
+    def test_preferred_multi_group_leads_without_replacing_natural_aspects(self):
+        self.use_scores({"contextual": [7, 8, 2, 7], "first": [9, 100, 0, 0],
+                         "second": [0, 100, 6, 0], "third": [0, 100, 0, 5]})
+        aspects = ["first", "second", "contextual", "third"]
+        for preferred in (None, "contextual"):
+            with self.subTest(preferred=preferred):
+                self.model.predict.reset_mock()
+                ranked = reranker.rerank_multi(aspects, self.docs, top_k=4, preferred_query=preferred)
+                self.assertEqual([d.metadata["chunk_id"] for d in ranked],
+                                 ["1", "0", "2", "3"] if preferred else ["1", "2", "0", "3"])
+                expected_aspects = ["contextual", "first", "second", "third"] if preferred else aspects
+                self.assertEqual([d.metadata["rerank_aspect"] for d in ranked], expected_aspects)
+                self.assertEqual([d.metadata["rerank_score"] for d in ranked],
+                                 [8, 9, 6, 5] if preferred else [100, 6, 9, 7])
+                self.assertEqual(list(dict.fromkeys(q for q, _ in self.model.predict.call_args.args[0])),
+                                 expected_aspects)
+                self.model.predict.assert_called_once()
+
+    def test_missing_preferred_query_is_added_without_losing_multi_aspects(self):
+        self.docs.append(document(4))
+        aspects = ["first", "second", "third", "fourth"]
+        rows = {aspect: [9 if i == a_i else 0 for i in range(5)] for a_i, aspect in enumerate(aspects)}
+        rows["contextual"] = [0, 0, 0, 0, 8]
+        self.use_scores(rows)
+        ranked = reranker.rerank("first", self.docs, queries=["second"], preferred_query="contextual")
+        self.assertEqual(ranked[0].metadata["chunk_id"], "4")
+        self.model.predict.reset_mock()
+        ranked = reranker.rerank_multi(aspects, self.docs, top_k=5, preferred_query="contextual")
+        self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["4", "0", "1", "2", "3"])
+        self.assertEqual([d.metadata["rerank_aspect"] for d in ranked], ["contextual", *aspects])
+        self.assertEqual(list(dict.fromkeys(q for q, _ in self.model.predict.call_args.args[0])),
+                         ["contextual", *aspects])
+        self.model.predict.assert_called_once()
+
+    def test_single_preferred_aspect_propagates_to_ordinary_rerank(self):
+        self.use_scores({"contextual": [1, 8, 0, 0]})
+        ranked = reranker.rerank_multi(
+            ["contextual", " contextual ", " "], self.docs, preferred_query=" contextual ",
+        )
+        self.assertEqual(ranked[0].metadata["chunk_id"], "1")
+        self.assertEqual(ranked[0].metadata["rerank_score"], 8)
+        self.assertEqual(ranked[0].metadata["rerank_aspect"], "contextual")
+        self.assertEqual(len(self.model.predict.call_args.args[0]), len(self.docs))
+
+    def test_preferred_calls_keep_retrieval_order_when_model_is_unavailable(self):
+        self.loader.return_value = None
+        for result in (
+            reranker.rerank("natural", self.docs, top_k=2, preferred_query="contextual"),
+            reranker.rerank_multi(["first", "second"], self.docs, top_k=2, preferred_query="contextual"),
+        ):
+            self.assertEqual([d.metadata["chunk_id"] for d in result], ["0", "1"])
+            self.assertTrue(all("rerank_score" not in d.metadata for d in result))
+        self.model.predict.assert_not_called()
+
+    def test_preferred_calls_keep_failure_and_busy_fallbacks(self):
+        budget = object()
+        for failure in (RuntimeError("fixture scoring failure"), None):
+            with self.subTest(failure=failure), patch.object(
+                reranker, "_predict", side_effect=failure, return_value=None,
+            ), patch.object(reranker, "rerank", wraps=reranker.rerank) as ordinary:
+                ranked = ordinary("natural", self.docs, top_k=2, preferred_query="contextual")
+                self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["0", "1"])
+                ordinary.reset_mock()
+                ranked = reranker.rerank_multi(
+                    ["first", "second"], self.docs, top_k=2,
+                    request_budget=budget, preferred_query="contextual",
+                )
+                self.assertEqual([d.metadata["chunk_id"] for d in ranked], ["0", "1"])
+                self.assertTrue(all("rerank_score" not in d.metadata for d in ranked))
+                if failure is not None:
+                    ordinary.assert_called_once_with(
+                        "contextual", self.docs, top_k=2, max_pairs=reranker.MAX_PAIRS,
+                        request_budget=budget, preferred_query="contextual",
+                    )
+                else:
+                    ordinary.assert_not_called()
 
 
 if __name__ == "__main__":

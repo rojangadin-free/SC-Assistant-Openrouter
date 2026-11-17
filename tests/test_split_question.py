@@ -83,6 +83,19 @@ class QuestionSplitTests(unittest.TestCase):
             "who is the president of samar college", "who is the dean of citas", "who is the principal of highschool",
         ])
 
+    def test_reported_coed_citas_president_question_has_three_independent_roles(self):
+        question = "who are the dean of citas and coed also who is the president of samar college"
+        self.assertEqual(split_question(question), [
+            "who are the dean of citas", "who are the dean of coed", "who is the president of samar college",
+        ])
+
+    def test_also_only_splits_a_new_request_not_a_name_or_descriptive_phrase(self):
+        for question in ("Office of Research also Development", "The program also includes laboratory activities"):
+            self.assertEqual(split_question(question), [])
+        self.assertEqual(split_question("Who is the dean of College of Education also who is the president?"), [
+            "Who is the dean of College of Education", "who is the president",
+        ])
+
     def test_independent_commands_and_named_units_still_split(self):
         self.assertEqual(split_question("College of Arts and Sciences and College of Business and Management"),
                          ["College of Arts and Sciences", "College of Business and Management"])

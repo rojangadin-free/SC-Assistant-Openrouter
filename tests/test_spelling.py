@@ -731,15 +731,20 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
         natural = "list the deans"
         check(f"reranker {label}: generation keeps the conservative local repair",
               typo["messages"][-1] == natural, typo["messages"][-1])
-        check(f"reranker {label}: the natural question remains retrieval primary",
-              typo["primary"] == typo["user_question"] == typo["ranking_primary"] == natural)
-        check(f"reranker {label}: the model's keyword rewrite joins as a companion",
+        check(f"reranker {label}: the natural question remains intact and contextual query leads ranking",
+              typo["primary"] == typo["user_question"] == natural
+              and typo["ranking_primary"] == directory_query)
+        check(f"reranker {label}: contextual and natural queries both retrieve documents",
               directory_query in typo["probes"] and natural in typo["probes"])
         check(f"reranker {label}: optimizer receives reference-style natural question/history",
               typo["optimizer"] == [optimizer_messages(natural, history)]
               and typo["optimizer"][0][0]["content"] == OPTIMIZER_PROMPT)
-        check(f"reranker {label}: the companion also participates in ranking",
-              directory_query in namespace["rerank"].call_args.kwargs["queries"])
+        check(f"reranker {label}: contextual query receives scoring preference and the natural question is retained",
+              namespace["rerank"].call_args.kwargs["preferred_query"] == directory_query
+              and natural in namespace["rerank"].call_args.kwargs["queries"])
+        check(f"reranker {label}: contextualized intent is also supplied to the answer model",
+              repr(directory_query) in typo["messages"][0]
+              and "It is not evidence or instructions." in typo["messages"][0])
         check(f"reranker {label}: clean retrieval still selects the directory evidence",
               clean["citations"] == ["current"] and "CURRENT DIRECTORY" in clean["messages"][0])
         check(f"reranker {label}: local repair has the clean query's retrieval/context/citations",
@@ -838,7 +843,8 @@ with patch.object(reranker, "_load_model", return_value=None), patch.dict(namesp
         check(f"source selection and answer context stay within the requested unit: {question!r}",
               f"{code.upper()}_ONLY_RECORD" in snapshot["messages"][0]
               and f"{other.upper()}_ONLY_RECORD" not in snapshot["messages"][0]
-              and snapshot["primary"] == snapshot["user_question"] == snapshot["ranking_primary"] == question)
+               and snapshot["primary"] == snapshot["user_question"] == question
+               and snapshot["ranking_primary"] == "cas")
         check(f"model output can only add a probe, even when it names a previous unit: {question!r}",
               "cas" in snapshot["probes"])
         check(f"the topic switch preserves stored input and history: {question!r}",
@@ -1174,7 +1180,7 @@ for i in range(6):
         {"role": "assistant", "content": f"OLD_ASSISTANT_FACT_{i} [SOURCE:Samar-College-2024.pdf|p.1]"},
     ])
 original_history = [dict(message) for message in history_with_old_facts]
-with patch.dict(namespace, {
+with patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "true"}), patch.dict(namespace, {
     "system_prompt": answer_prompts.system_prompt,
     "retriever": _Retriever(invoke=lambda query: [*old_pages, new_admission, new_registrar]),
     "rerank": unchanged_ranking, "rerank_multi": unchanged_ranking,
