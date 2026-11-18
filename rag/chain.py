@@ -563,10 +563,12 @@ def retrieve_documents(
     from rag.source_policy import (
         catalog_source_names, department_catalog_queries, history_source_names,
         enrollment_queries, institution_history_queries, newer_source_names, program_catalog_queries,
-        select_program_affiliation, _historical,
+        select_program_affiliation, leadership_roster_queries, roster_source_names, _historical,
+        program_offering_scope, offering_catalog_documents,
     )
     from rag.unit_identity import (
         is_unit_reference, requested_unit, unit_query_variants, program_dean_subject, program_overview_subject,
+        document_unit_names,
     )
 
     # Collect the rewrite before assembling the phrasings, but AFTER this
@@ -600,6 +602,10 @@ def retrieve_documents(
         return []
 
     primary = phrasings[0]
+    offering_scope = program_offering_scope(user_question or primary)
+    # The broader candidate-pool experiment must not resurrect an old catalog
+    # when a relevant current offering source is available.
+    source_filter_enabled = source_filter_enabled or bool(offering_scope)
     preferred_query = primary if primary != (user_question or query or "").strip() else None
 
     # One chronology snapshot is shared by acquisition, selection and generation.
@@ -611,6 +617,8 @@ def retrieve_documents(
             print("[retrieval] Upload chronology unavailable; using recorded source dates.")
             uploads = {}
     current_sources = newer_source_names(dates=dates, uploads=uploads)
+    roster_queries = leadership_roster_queries(user_question or primary)
+    roster_sources = roster_source_names(current_sources) if roster_queries else []
     catalog_queries = list(dict.fromkeys(
         probe for phrasing in phrasings
         for probe in (department_catalog_queries(phrasing) or program_catalog_queries(phrasing))
@@ -750,7 +758,7 @@ def retrieve_documents(
             allow_spelling=allow_spelling,
         )
     elif current_sources:
-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries]))
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = [(probe, source_filter) for probe in probes]
         catalogs = catalog_source_names(current_sources) if catalog_queries else []
@@ -762,6 +770,8 @@ def retrieve_documents(
                 (catalog_queries[0], {"source": {"$eq": source}})
                 for source in catalogs
             ] + jobs
+        if roster_sources:
+            jobs = [(roster_queries[0], {"source": {"$eq": source}}) for source in roster_sources] + jobs
         preferred_docs = multi_query_retrieve(
             primary, filtered_queries=jobs,
             timeout=request_budget.remaining(30) if request_budget else None,
@@ -784,7 +794,7 @@ def retrieve_documents(
         else:
             initial_docs = multi_query_retrieve(
                 primary,
-                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries,
+                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries,
                 timeout=request_budget.remaining(30) if request_budget else None,
                 allow_spelling=allow_spelling,
             )
@@ -814,8 +824,12 @@ def retrieve_documents(
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
 
+    catalog_evidence = offering_catalog_documents(initial_docs, scope_question)
     if on_selection is not None:
         on_selection(selection)
+    roster_evidence = [doc for doc in initial_docs if (doc.metadata or {}).get("source") in roster_sources
+                       and re.search(r"\b(?:oic\s+)?dean\s*(?:,|of\b)\s*\w", doc.page_content, re.IGNORECASE)]
+    roster_evidence.sort(key=lambda doc: len(set(document_unit_names(doc))), reverse=True)
     if selection.restricted or catalog_queries or history_queries or not source_filter_enabled:
         # Reserve space for each source and catalog/history section
         # before the reranker's fixed scoring budget, not after it has cut them.
@@ -896,6 +910,16 @@ def retrieve_documents(
             snippet = doc.page_content.replace("\n", " ")[:70]
             print(f"  [{i+1}] score={score_s} | {src} (Pg {pg}){aspect_s}: {snippet}...")
 
+    if roster_evidence or catalog_evidence:
+        seen = set()
+        ordered = []
+        for doc in [*roster_evidence, *catalog_evidence, *final_docs]:
+            metadata = doc.metadata or {}
+            key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
+            if key not in seen:
+                seen.add(key)
+                ordered.append(doc)
+        final_docs = ordered[:top_k]
     if program_evidence and top_k > 1:
         seen = set()
         for doc in final_docs:
@@ -1480,9 +1504,9 @@ def create_graph():
 
                 final_system_prompt += "\n\n" + DEPARTMENT_LIST_GUIDANCE
             if program_listing:
-                from rag.source_policy import PROGRAM_LIST_GUIDANCE
+                from rag.source_policy import program_list_guidance, program_offering_scope, offering_catalog_documents
 
-                final_system_prompt += "\n\n" + PROGRAM_LIST_GUIDANCE
+                final_system_prompt += "\n\n" + program_list_guidance(request_text)
             if institution_history:
                 from rag.source_policy import INSTITUTION_HISTORY_GUIDANCE
 
@@ -1534,10 +1558,16 @@ def create_graph():
             # place that still knows which documents were selected — once the
             # context has been flattened into a prompt string, the file/page
             # provenance is unrecoverable without re-running retrieval.
+            citations = build_citations(final_docs)
+            if program_listing and program_offering_scope(request_text) == "all":
+                catalog_sources = {doc_key((doc.metadata or {}).get("source", ""))
+                                   for doc in offering_catalog_documents(final_docs, request_text)}
+                if len(catalog_sources) > 4:
+                    citations = build_citations(final_docs, max_sources=len(catalog_sources))
             return {
                 "messages_to_llm": messages,
                 "chat_history": history,
-                "citations": build_citations(final_docs),
+                "citations": citations,
             }
 
         except Exception:

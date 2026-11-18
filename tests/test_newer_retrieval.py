@@ -243,7 +243,7 @@ class NewerRetrievalTests(unittest.TestCase):
             "resolve_role": lambda *args, **kwargs: "student", "role_block": lambda role: "",
             "emit_phase": Mock(), "response_language_prompt": "Use the latest question's language.",
             "system_prompt": "Documents:\n{retrieved_docs}\nHistory:\n{chat_history}\n{document_dates}",
-            "build_citations": Mock(side_effect=lambda docs: [d.metadata["chunk_id"] for d in docs]),
+            "build_citations": Mock(side_effect=lambda docs, **kwargs: [d.metadata["chunk_id"] for d in docs]),
         }
         definitions("rag/chain.py", {
             "_STOPWORDS", "THIN_QUERY_TERMS", "_QUESTION_WORDS", "_DETERMINERS",
@@ -1625,6 +1625,120 @@ class NewerRetrievalTests(unittest.TestCase):
                     self.assertNotIn(BASE, prompt)
                 self.assertEqual(roster.page_content, text)
                 self.assertEqual(result["messages_to_llm"][-1].content, query)
+
+    def test_general_dean_list_pins_complete_roster_even_when_profiles_rank_higher(self):
+        source = "Samar_Colleges_Inc_Organizational_Structure_v2_2026.docx"
+        roster = document(source, "Colleges & Academic Units\n"
+                          "\u2022 NIMFA T. TORREMORO, Ph.D. - Dean, Graduate School\n"
+                          "\u2022 JAQUELYN G. MONTALES - Dean, College of Education\n"
+                          "\u2022 MARY-ANN D. ABAIGAR - OIC Dean, College of Criminal Justice Education\n"
+                          "\u2022 NATALIA B. UY - Dean, College of Business and Management\n"
+                          "\u2022 MELDRITO B. VALLES, Ph.D. - Dean, College of Liberal Arts\n"
+                          "\u2022 ROBERT R. FLORA - Dean, College of Information Technology & Allied Sciences",
+                          "whole-roster", section="PREFECT OF DISCIPLINE", section_heading="")
+        profiles = [document(f"Profile_{index}_2026.docx", "INCOMPLETE_PROFILE_LIST\nDr. Synthetic Official\n"
+                             "Dean, College of Education", f"profile-{index}", section_heading="Academic Council")
+                    for index in range(10)]
+        for mode in ("true", "false"):
+            with self.subTest(source_filter=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
+                hybrid = self.install([roster, *profiles])
+                hybrid.filtered = lambda query, metadata_filter: [roster] if metadata_filter.get("source") == {"$eq": source} else profiles
+                hybrid.ensemble.invoke.return_value = profiles
+                model = SimpleNamespace(predict=Mock(side_effect=lambda pairs, **kwargs: [
+                    .01 if "MELDRITO" in text else 99.0 for _, text in pairs
+                ]))
+                self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                with patch.object(self.reranker, "_load_model", return_value=model), patch.dict(self.ns, {"FINAL_TOP_K": 4}):
+                    result = self.chat("who are the deans?")
+                docs = self.ns["build_citations"].call_args.args[0]
+                self.assertEqual(docs[0].metadata["source"], source)
+                self.assertAlmostEqual(docs[0].metadata["rerank_score"], .01)
+                self.assertIn("whole-roster", result["citations"], self.output.getvalue())
+                self.assertIn("MELDRITO B. VALLES", result["messages_to_llm"][0].content)
+                self.assertIn("<dean_list_request>", result["messages_to_llm"][0].content)
+                self.assertLessEqual(len(docs), 4)
+
+    def test_scti_programs_retrieve_and_link_the_real_split_qualification_table(self):
+        caption = document("SCTI_Program.docx", "[TABLE context: ]\n| | SCTI PROGRAM OFFERED SAMAR COLLEGES, INC. |",
+                           "scti-caption", section="General College Information", section_heading="")
+        table = document("SCTI_Program.docx", "[SECTION: REGISTERED ASSESSMENT CENTER]\n"
+                         "| Qualification Title | Accreditation Number | Training Hours | Assessment Fee |\n"
+                         "| Computer Systems Servicing NC III | AC-CSS | 280 HRS | PHP 1,049.00 |\n"
+                         "| Visual Graphic Design NC III | AC-VGD | 501 HRS | PHP 500.00 |\n"
+                         "| 2D Animation NC III | AC-2DA | 968 HRS | PHP 500.00 |\n"
+                         "| Bookkeeping NC III | AC-BKP | 292 HRS | PHP 841.00 |\n"
+                         "| Cookery NC II | AC-COK | 316 HRS | PHP 1,300.00 |",
+                         "scti-table", section="REGISTERED ASSESSMENT CENTER", section_heading="")
+        unrelated = document("Programs_Offered.docx", "College of Business and Management\nBachelor of Business Administration",
+                             "other-college", section_heading="Programs Offered")
+        for mode in ("true", "false"):
+            with self.subTest(source_filter=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
+                hybrid = self.install([caption, table, unrelated])
+                hybrid.filtered = lambda query, metadata_filter: [caption, table] if metadata_filter.get("source") == {"$eq": "SCTI_Program.docx"} else [unrelated]
+                hybrid.ensemble.invoke.return_value = []
+                self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                result = self.chat("What training programs does SCTI offer?")
+                prompt = result["messages_to_llm"][0].content
+                for title in ("Computer Systems Servicing NC III", "Visual Graphic Design NC III", "2D Animation NC III",
+                              "Bookkeeping NC III", "Cookery NC II"):
+                    self.assertIn(title, prompt, self.output.getvalue())
+                self.assertIn("SCTI PROGRAM OFFERED", prompt)
+                self.assertIn("scti-table", result["citations"])
+                self.assertNotIn("Bachelor of Business Administration", prompt)
+                self.assertNotIn("collection_heading", table.metadata)
+
+    def test_short_scti_program_query_uses_current_qualifications_even_with_general_filter_disabled(self):
+        title = document("SCTI_Program.docx", "SCTI PROGRAM OFFERED SAMAR COLLEGES, INC.", "title")
+        table = document("SCTI_Program.docx", "| Qualification Title | Training Hours | Assessment Fee |\n"
+                         "| Computer Systems Servicing NC III | 280 HRS | PHP 1,049.00 |\n"
+                         "| Visual Graphic Design NC III | 501 HRS | PHP 500.00 |", "table")
+        old = document(BASE, "SCTI Training Offerings\nCookery NC II\nComputer System Servicing NC II\n"
+                       "3-Year Diploma in Information Technology\nLEGACY_OFFERING", "old", section_heading="SCTI Training Offerings")
+        with patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "false"}):
+            self.install([title, table], baseline=[old])
+            self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+            result = self.chat("scti programs")
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("Computer Systems Servicing NC III", prompt)
+        self.assertIn("Visual Graphic Design NC III", prompt)
+        self.assertNotIn("LEGACY_OFFERING", prompt)
+        self.assertNotIn("Computer System Servicing NC II", prompt)
+        self.assertIn("table", result["citations"])
+        self.assertTrue(self.selections.call_args.kwargs["enforce_sources"])
+
+    def test_broad_program_list_keeps_every_level_and_college_scope_excludes_other_levels(self):
+        college = document("Programs_Offered.docx", "College of Education\nBachelor of Elementary Education\n"
+                           "Graduate School\nMaster of Arts in Education", "college", section_heading="Programs Offered")
+        title = document("SCTI_Program.docx", "SCTI PROGRAM OFFERED SAMAR COLLEGES, INC.", "title")
+        technical = document("SCTI_Program.docx", "| Qualification Title | Training Hours | Assessment Fee |\n"
+                             "| Visual Graphic Design NC III | 501 HRS | PHP 500.00 |", "technical")
+        elementary = document("samar_colleges_elementary_program_2026.docx", "Basic Education\nProgram Level | Grades\n"
+                              "Nursery Program | Nursery\nKindergarten Program | Kindergarten\nPrimary Education | Grades 1-3",
+                              "elementary", section_heading="Academic Programs Summary")
+        junior = document("samar_colleges_junior_high_school_program_2026.docx", "Basic Education\nJunior High School\n"
+                          "Educational Service Contracting (ESC) | Grade 7-Grade 10", "junior", section_heading="Programs Offered & Certifications")
+        senior = document("samar_colleges_senior_high_school_program_2026.docx", "Basic Education\nSenior High School\n"
+                          "STEM\nAbout the Cluster: Science.\nASSH\nB&E\nH&T\nICT", "senior", section_heading="Programs Offered Academic & TVL Clusters")
+        current = [college, title, technical, elementary, junior, senior]
+        old = document(BASE, "OLD_DIPLOMA_AND_SHS_STRANDS\nSCTI Training Offerings\nComputer System Servicing NC II", "old")
+        for query in ("programs offered", "What programs does Samar College offer?", "What programs does Samar Colleges, Inc. offer?",
+                      "Programs that Samar College offers"):
+            with self.subTest(query=query), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "false"}):
+                self.install(current, baseline=[old])
+                result = self.chat(query)
+                prompt = result["messages_to_llm"][0].content
+                for marker in ("Bachelor of Elementary Education", "Master of Arts in Education", "Nursery Program", "Junior High School",
+                               "Senior High School", "Visual Graphic Design NC III", "ASSH"):
+                    self.assertIn(marker, prompt, self.output.getvalue())
+                self.assertIn("<institution_wide_offerings>", prompt)
+                self.assertNotIn("OLD_DIPLOMA_AND_SHS_STRANDS", prompt)
+                self.assertGreaterEqual(self.ns["build_citations"].call_args.kwargs["max_sources"], 5)
+        self.install(current, baseline=[old])
+        result = self.chat("undergraduate programs offered")
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("<offerings_level_scope>", prompt)
+        for marker in ("Nursery Program", "Visual Graphic Design NC III", "Junior High School", "Senior High School"):
+            self.assertNotIn(marker, prompt, self.output.getvalue())
 
     def test_bare_sociology_overview_searches_catalog_and_parent_dean_in_either_source_mode(self):
         parent = "College of Liberal Arts and Sciences"

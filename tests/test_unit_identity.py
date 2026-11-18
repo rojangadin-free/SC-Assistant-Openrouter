@@ -19,6 +19,31 @@ def document(name, source="Handbook-2024.pdf", text="Bachelor of Community Studi
 
 
 class UnitIdentityTests(unittest.TestCase):
+    def test_short_unit_offerings_are_scoped_without_capturing_generic_level_queries(self):
+        for query in ("scti programs", "SCTI courses", "scti training", "SCTI qualifications", "scti programmes offered"):
+            with self.subTest(query=query):
+                unit = requested_unit(query)
+                self.assertEqual(unit.name.casefold(), "scti")
+                self.assertTrue(unit.protected)
+                self.assertTrue(unit_query_variants(query))
+        for query in ("programs offered", "college programs", "undergraduate programs", "basic education programs"):
+            self.assertIsNone(requested_unit(query))
+
+    def test_scti_catalog_table_caption_establishes_the_unit_not_incidental_mentions(self):
+        caption = document("General College Information", source="SCTI_Program.docx", text=(
+            "[TABLE context: ]\n| | SCTI PROGRAM OFFERED SAMAR COLLEGES, INC. Mabini Avenue |\n| --- | --- |"
+        ))
+        for query in ("What training programs does SCTI offer?", "What qualification titles does SCTI offer?",
+                      "What programs does Samar College Technological Institute offer?"):
+            with self.subTest(query=query):
+                unit = requested_unit(query)
+                self.assertIsNotNone(unit)
+                self.assertTrue(document_matches_unit(caption, unit))
+        self.assertTrue(same_unit("SCTI", "Samar College Technological Institute"))
+        self.assertFalse(same_unit("SCTI", "College of Information Technology and Allied Sciences"))
+        mention = document("Event Report", text="Students discussed SCTI programs in a classroom activity.")
+        self.assertFalse(document_matches_unit(mention, requested_unit("What programs does SCTI offer?")))
+
     def test_bare_program_overviews_do_not_capture_questions_or_ordinary_topics(self):
         for question in ("BA sociology", "BMMA", "BSIT", "BSBA", "MAED", "Bachelor of Arts in Sociology"):
             with self.subTest(question=question):

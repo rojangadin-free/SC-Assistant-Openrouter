@@ -9,7 +9,7 @@ from rag.spelling import is_known_acronym
 
 _HEAD = re.compile(
     r"\b(?:college|school|department|faculty|institute|office|center|centre|university)\s+(?:of|for)\s+|"
-    r"\bgraduate\s+school\b",
+    r"\bgraduate\s+school\b|\bsamar\s+colleges?\s+technological\s+institute\b",
     re.IGNORECASE,
 )
 _TAIL = re.compile(
@@ -30,6 +30,7 @@ _UNIT_ALIASES = {
     "coed": "College of Education",
     "clas": "College of Liberal Arts and Sciences",
     "college of liberal arts": "College of Liberal Arts and Sciences",
+    "scti": "Samar College Technological Institute",
 }
 _ROLE_PREFIX = (
     r"(?:the\s+)?(?:(?:oic|acting|interim|assistant|associate)[\s-]+)*"
@@ -123,6 +124,10 @@ def requested_unit(question):
             return UnitRequest(name, remainder)
     if names:
         return None
+    listing = re.fullmatch(r"([a-z]{2,8})\s+(?:program(?:me)?s?|courses?|training(?:\s+programs?)?|"
+                           r"qualifications?(?:\s+titles?)?)(?:\s+(?:offered|offerings?|list))?[?.!]*", question, re.IGNORECASE)
+    if listing and listing[1].casefold() in _UNIT_ALIASES:
+        return UnitRequest(listing[1], question[listing.end(1):])
     # Bare short identifiers are tentative until the retrieved units establish
     # an actual initialism. This does not turn ordinary words into departments.
     bare = re.fullmatch(r"\s*(?:(?:i mean|tell me about|what is|what about|about)\s+)?([a-z]{2,8})[?.!]*", question, re.IGNORECASE)
@@ -131,7 +136,7 @@ def requested_unit(question):
     for pattern, subject in (
         (r"\b(?:deans?|heads?|chairs?)\s+(?:of|for|at)\s+([a-z]{2,8})\b", True),
         (r"\b(?:departments?|colleges?|units?)\s+([a-z]{2,8})\b", False),
-        (r"\b(?:programs?|courses?)\s+(?:does|do)\s+([a-z]{2,8})\s+(?:offer|have)\b", True),
+        (r"\b(?:programs?|courses?|training|qualifications?(?:\s+titles?)?)\s+(?:does|do)\s+([a-z]{2,8})\s+(?:offer|have)\b", True),
     ):
         match = re.search(pattern, question, re.IGNORECASE)
         if match and match[1].casefold() not in _GENERIC:
@@ -166,7 +171,9 @@ def _sections(document):
         rows.extend(affiliations)
     # Roster designations commonly use "Dean, College of ...", not "Dean of ...".
     # Retain the original document so the adjoining name stays paired with its role.
-    rows = [line for line in rows if _HEAD.match(line) or re.match(_ROLE_PREFIX, line, re.IGNORECASE)]
+    rows = [line for line in rows if _HEAD.match(line) or re.match(_ROLE_PREFIX, line, re.IGNORECASE)
+            or any(re.match(rf"^{re.escape(code)}\s+(?:programs?|courses?|training|qualifications?)\b", line, re.IGNORECASE)
+                   for code in _UNIT_ALIASES if " " not in code)]
     return [*headings, *rows]
 
 
@@ -176,7 +183,7 @@ def document_unit_names(document):
         names.extend(name for name, _, _ in _names(value))
         for code, name in _UNIT_ALIASES.items():
             if re.match(rf"^(?:{_ROLE_PREFIX})?{re.escape(code)}"
-                        r"(?:\s*$|\s*[:(]|\s+(?:department|college|program|staff|faculty|curriculum)\b)",
+                        r"(?:\s*$|\s*[:(]|\s+(?:department|college|programs?|courses?|training|qualifications?|staff|faculty|curriculum)\b)",
                         value.strip(), re.IGNORECASE):
                 names.append(name)
     return tuple(names)

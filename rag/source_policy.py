@@ -9,6 +9,7 @@ the answer model must still admit when selected documents omit a requested detai
 from __future__ import annotations
 
 import re
+from copy import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
@@ -20,6 +21,7 @@ from rag.unit_identity import (
     same_unit,
     program_dean_subject,
     program_affiliations,
+    unit_query_variants,
 )
 
 DEFAULT_FALLBACK_SOURCES = ("Samar-College-2024.pdf",)
@@ -110,7 +112,7 @@ _NOISE = frozenset([
     "details", "regarding", "concerning", "school", "college", "colleges", "university", "samar",
     "academic", "student", "students", "document", "documents", "handbook", "policy", "policies",
     "requirements", "requirement", "procedure", "procedures", "process", "processes", "steps", "step",
-    "offered", "offering", "offerings", "available", "po", "ba", "ang", "mga", "ng", "sa", "para",
+    "offer", "offers", "offered", "offering", "offerings", "available", "po", "ba", "ang", "mga", "ng", "sa", "para",
     "ano", "sino", "paano", "paonan", "o", "mag",
 ])
 _ALIASES = {
@@ -220,7 +222,37 @@ def leadership_guidance(query):
                           r"\s+(?:of|for|at|in)\b", query or "", re.IGNORECASE)
     if terse_role and re.search(r"\b(?:duties|responsibilities|functions)\b", query, re.IGNORECASE):
         terse_role = None
-    return LEADERSHIP_GUIDANCE if named_role and (terse_role or re.search(r"\b(?:who|names?|list)\b", query or "", re.IGNORECASE)) else ""
+    if not named_role or not (terse_role or re.search(r"\b(?:who|names?|list)\b", query or "", re.IGNORECASE)):
+        return ""
+    guidance = LEADERSHIP_GUIDANCE
+    if leadership_roster_queries(query):
+        guidance += (
+            "\n<dean_list_request>\nList every explicitly named dean/OIC dean in the supplied organizational roster, "
+            "not only the colleges discussed earlier or names from an editorial staff list. "
+            "The institution's established roster label 'College of Liberal Arts' is CLAS "
+            "(College of Liberal Arts and Sciences); include its named dean, preserving the source label. "
+            "Do not omit that row because the catalog uses the longer name. "
+            "Unnamed subordinate program-head bullets do not assign those roles to the preceding dean.\n"
+            "</dean_list_request>"
+        )
+    return guidance
+
+
+def leadership_roster_queries(query):
+    """Acquire the full roster only for an unscoped dean-list request."""
+    words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
+    allowed = {"who", "what", "are", "is", "the", "all", "our", "current", "currently", "list", "names", "name",
+               "show", "give", "tell", "me", "us", "please", "deans", "college", "colleges", "academic", "departments",
+               "school", "officials", "and", "of", "at", "in", "samar", "inc"}
+    if "deans" not in words or not words <= allowed or requested_unit(query):
+        return []
+    return ["college deans named roster organizational structure Colleges Academic Units"]
+
+
+def roster_source_names(sources):
+    """File titles are discovery hints; retained chunks must contain dean entries."""
+    return [source for source in sources if re.search(r"\borganizational\s+structure\b",
+                                                     doc_key(source).replace("_", " ").replace("-", " "), re.IGNORECASE)]
 
 
 def _terms(text):
@@ -320,7 +352,10 @@ def catalog_source_names(sources) -> list[str]:
     """Preserve raw names; a catalog-like basename is only an acquisition hint."""
     sources = [sources] if isinstance(sources, str) else (sources or [])
     return list(dict.fromkeys(source for source in sources if isinstance(source, str)
-                              and _CATALOG.search(doc_key(source).replace("_", " ").replace("-", " "))))
+                              and (_CATALOG.search(doc_key(source).replace("_", " ").replace("-", " "))
+                                   or re.match(r"^[a-z]{2,8}[_ -]+(?:programs?|training|qualifications?)(?:[_ .-]|$)", doc_key(source))
+                                   or re.search(r"\b(?:elementary|junior high school|senior high school|basic education) programs?\b",
+                                                doc_key(source).replace("_", " ").replace("-", " ")))))
 
 
 def program_catalog_queries(query) -> list[str]:
@@ -328,7 +363,7 @@ def program_catalog_queries(query) -> list[str]:
     if not isinstance(query, str) or enrollment_queries(query):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
-    if not re.search(r"\b(?:program(?:me)?s?|courses?|degrees?|majors?|offerings?)\b", text):
+    if not re.search(r"\b(?:program(?:me)?s?|courses?|degrees?|majors?|offerings?|qualifications?)\b", text):
         return []
     if re.search(
         r"\b(?:fees?|tuition|scholarships?|requirements?|prerequisites?|enrollment|admissions?|"
@@ -338,6 +373,76 @@ def program_catalog_queries(query) -> list[str]:
     ) or re.search(r"\bwhat is (?:a|an) (?:course|degree|program)\b", text):
         return []
     return [f"{query.strip()} programs offered", f"{query.strip()} degree course offerings"]
+
+
+def program_offering_scope(query):
+    if not program_catalog_queries(query):
+        return ""
+    if requested_unit(query):
+        return "unit"
+    text = re.sub(r"\bsamar\s+colleges?(?:\s*,?\s*inc\.?)?\b", "", query, flags=re.IGNORECASE)
+    if re.search(r"\b(?:undergraduate|undergrad|bachelor)\b", text, re.IGNORECASE):
+        return "undergraduate"
+    if re.search(r"\b(?:college|tertiary|degrees?)\b", text, re.IGNORECASE):
+        return "college"
+    if re.search(r"\b(?:graduate|postgraduate)\b", text, re.IGNORECASE):
+        return "graduate"
+    if re.search(r"\b(?:basic|elementary|primary|nursery|kindergarten|preschool|jhs|shs|high school)\b", text, re.IGNORECASE):
+        return "basic"
+    if re.search(r"\b(?:technical|vocational|tesda)\b", text, re.IGNORECASE):
+        return "technical"
+    return "all"
+
+
+def program_list_guidance(query):
+    scope = program_offering_scope(query)
+    guidance = PROGRAM_LIST_GUIDANCE
+    if scope and _historical(query, date.today()):
+        return guidance + ("\n<historical_offerings_scope>Use the explicitly requested historical edition and scope. "
+                           "Do not apply current all-level coverage requirements or describe its offerings as active today.</historical_offerings_scope>")
+    if scope == "all":
+        guidance += (
+            "\n<institution_wide_offerings>\nThis is an institution-wide offerings request, not just a college-degree request. "
+            "Include the supplied current basic-education offerings, undergraduate and graduate degrees, and SCTI qualifications "
+            "in separate source-supported groups. Preserve each group's actual name and current cluster/qualification labels. "
+            "Write the full degree titles and majors from the catalog: do not replace Bachelor of Science with BS, "
+            "or Master of Arts in Education with MAEd, even in a long overview. "
+            "Do not omit basic education or SCTI merely because the central college catalog lists degrees only. "
+            "Scholarships, ESC subsidies, and PEAC certifications are support/certification information, not additional degree programs. "
+            "Still include Junior High School as an educational level when its supplied document explicitly describes JHS "
+            "and grade coverage, even if its offerings section focuses on ESC subsidies or PEAC certification. "
+            "Do not resurrect old SHS strands or SCTI diplomas from the handbook.\n</institution_wide_offerings>"
+        )
+    elif scope in {"college", "undergraduate", "graduate", "basic", "technical"}:
+        guidance += f"\n<offerings_level_scope>List only the explicitly requested {scope} level. Do not append other educational levels.</offerings_level_scope>"
+    elif scope == "unit":
+        guidance += ("\n<unit_offerings>List the requested unit's documented current programs/qualifications. "
+                     "Do not volunteer an unrequested missing degree/diploma inventory or complete it from the old handbook.</unit_offerings>")
+    return guidance
+
+
+def offering_catalog_documents(documents, query):
+    """Retain substantive current catalog sections, not staff biographies or file-title guesses."""
+    if not program_offering_scope(query) or _historical(query, date.today()):
+        return []
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "")
+        metadata = getattr(document, "metadata", None) or {}
+        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        if re.search(r"\b(?:faculty|staff|roster|biography|scholarships?)\b", headings, re.IGNORECASE):
+            continue
+        college_catalog = _department_rank(text, metadata) == 2
+        qualification_table = (re.search(r"\bqualification\s+title\b", text, re.IGNORECASE)
+                               and re.search(r"\b(?:training\s+hours|assessment\s+fee)\b", text, re.IGNORECASE)
+                               and _CATALOG.search(headings))
+        basic_scope = re.search(r"\b(?:basic education|elementary|junior high school|senior high school)\b",
+                                headings + " " + doc_key(metadata.get("source", "")).replace("_", " ") + " " + text[:200], re.IGNORECASE)
+        basic_items = re.search(r"\b(?:nursery program|kindergarten program|primary education|intermediate education|"
+                                r"about the cluster|educational service contracting)\b", text, re.IGNORECASE)
+        if college_catalog or qualification_table or (basic_scope and basic_items):
+            selected.append(document)
+    return selected
 
 
 def institution_history_queries(query) -> list[str]:
@@ -466,6 +571,12 @@ def _relevant(document, queries, unit=None):
     body_terms = _terms(text)
     heading_terms = _terms(headings) | _terms(title)
     evidence = body_terms | heading_terms
+    level = program_offering_scope(queries[0]) if queries else ""
+    if level in {"college", "undergraduate"}:
+        basic_or_technical = re.search(r"\b(?:basic education|elementary program|junior high school|senior high school|"
+                                       r"scti|tesda|registered assessment center)\b", headings + " " + title, re.IGNORECASE)
+        if basic_or_technical or (level == "undergraduate" and re.search(r"\b(?:graduate school|master of|doctor of)\b", headings + " " + title, re.IGNORECASE)):
+            return False
     words = re.findall(r"\w+", text)
     if len(words) < 2 and not re.search(r"[:=|]\s*\S", text):
         return False
@@ -567,10 +678,33 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         # A shared-procedure probe must also contribute to relevance, not just recall.
         queries = list(dict.fromkeys([*queries, *enrollment_queries(queries[0])]))
     unit = requested_unit(queries[0]) if queries else None
+    # Keep proven unit captions on qualifications tables for broad listings too.
+    catalog_headings = {}
+    for document in documents:
+        source = doc_key((getattr(document, "metadata", None) or {}).get("source", ""))
+        owned = re.match(r"^([a-z]{2,8})[_ -]+(?:programs?|training|qualifications?)(?:[_ .-]|$)", source)
+        subject = unit or (requested_unit(owned[1]) if owned else None)
+        if owned and subject and document_matches_unit(document, subject):
+            heading = re.search(rf"\b{re.escape(owned[1])}\s+(?:programs?|training|qualifications?)\s+(?:offered|offerings?)\b",
+                                getattr(document, "page_content", ""), re.IGNORECASE)
+            if heading:
+                catalog_headings[source] = heading[0]
+    linked = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        heading = catalog_headings.get(doc_key(metadata.get("source", "")))
+        text = getattr(document, "page_content", "")
+        if (heading and not document_unit_names(document)
+                and re.search(r"\bqualification\s+title\b", text, re.IGNORECASE)
+                and re.search(r"\b(?:training\s+hours|assessment\s+fee)\b", text, re.IGNORECASE)):
+            document = copy(document)
+            document.metadata = {**metadata, "collection_heading": heading}
+        linked.append(document)
+    documents = linked
     if unit:
         matching = [doc for doc in documents if document_matches_unit(doc, unit)
                     or (enrollment and _shared_enrollment(doc))]
-        named = len(unit.name.split()) > 1
+        named = len(unit.name.split()) > 1 or bool(unit_query_variants(queries[0]))
         conflicting_units = unit.explicit and any(
             document_unit_names(doc) for doc in documents
         )

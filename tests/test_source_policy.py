@@ -33,6 +33,71 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_institution_offerings_include_other_levels_but_named_scope_does_not_expand(self):
+        from rag.source_policy import program_offering_scope, program_list_guidance, offering_catalog_documents
+        for query, scope in (("programs offered", "all"), ("What programs does Samar College offer?", "all"),
+                             ("undergraduate programs offered", "undergraduate"), ("college programs", "college"),
+                             ("basic education programs", "basic"), ("scti programs", "unit")):
+            with self.subTest(query=query):
+                self.assertEqual(program_offering_scope(query), scope)
+        self.assertIn("<institution_wide_offerings>", program_list_guidance("programs offered"))
+        self.assertIn("Still include Junior High School", program_list_guidance("programs offered"))
+        self.assertNotIn("<institution_wide_offerings>", program_list_guidance("scti programs"))
+        self.assertNotIn("<institution_wide_offerings>", program_list_guidance("undergraduate programs offered"))
+        historical = program_list_guidance("SCTI programs in the 2024 handbook")
+        self.assertIn("<historical_offerings_scope>", historical)
+        self.assertNotIn("<institution_wide_offerings>", historical)
+        title = document("SCTI_Program.docx", "SCTI PROGRAM OFFERED SAMAR COLLEGES, INC.")
+        table = document("SCTI_Program.docx", "| Qualification Title | Training Hours | Assessment Fee |\n"
+                         "| Computer Systems Servicing NC III | 280 HRS | PHP 1,049.00 |")
+        before = deepcopy([title, table])
+        selected = select_documents([title, table], ["programs offered"], dates=DATES,
+                                    uploads={"SCTI_Program.docx": UPLOADS[UPDATE]}, today=TODAY)
+        self.assertIn(table.page_content, [doc.page_content for doc in selected.documents])
+        self.assertTrue(offering_catalog_documents(selected.documents, "programs offered"))
+        self.assertEqual([title, table], before)
+        for source in ("samar_colleges_elementary_program_2026.docx", "samar_colleges_junior_high_school_program_2026.docx",
+                       "samar_colleges_senior_high_school_program_2026.docx"):
+            self.assertIn(source, catalog_source_names([source]))
+
+    def test_scti_qualifications_inherit_only_the_same_files_explicit_program_caption(self):
+        title = document("SCTI_Program.docx", "[TABLE context: ]\n| | SCTI PROGRAM OFFERED SAMAR COLLEGES, INC. |",
+                         section="General College Information")
+        table = document("SCTI_Program.docx", "[SECTION: REGISTERED ASSESSMENT CENTER]\n"
+                         "| Qualification Title | Accreditation Number | Training Hours | Assessment Fee |\n"
+                         "| Computer Systems Servicing NC III | AC-CSS | 280 HRS | PHP 1,049.00 |\n"
+                         "| Cookery NC II | AC-COK | 316 HRS | PHP 1,300.00 |", section="REGISTERED ASSESSMENT CENTER")
+        other = document("Other_Program.docx", table.page_content, section="General College Information")
+        another_unit = document("SCTI_Program.docx", "College of Engineering\n" + table.page_content,
+                                section_heading="College of Engineering")
+        docs = [title, table, other, another_unit]
+        before = deepcopy(docs)
+        for enforce in (True, False):
+            with self.subTest(enforce_sources=enforce):
+                selected = select_documents(docs, ["What training programs does SCTI offer?"], dates=DATES,
+                                            uploads={"SCTI_Program.docx": UPLOADS[UPDATE]}, today=TODAY, limit=10,
+                                            enforce_sources=enforce)
+                self.assertEqual([doc.page_content for doc in selected.documents], [title.page_content, table.page_content])
+                self.assertEqual(selected.documents[1].metadata["collection_heading"], "SCTI PROGRAM OFFERED")
+                self.assertEqual(docs, before)
+        unproven = select_documents([table], ["What programs does SCTI offer?"], dates=DATES, uploads={},
+                                    today=TODAY, enforce_sources=False)
+        self.assertEqual(unproven.documents, [])
+
+    def test_generic_dean_lists_get_roster_probes_not_other_role_or_named_unit_questions(self):
+        from rag.source_policy import leadership_guidance, leadership_roster_queries, roster_source_names
+        for query in ("who are the deans?", "List all college deans", "Who are the college deans and school officials?"):
+            with self.subTest(query=query):
+                self.assertTrue(leadership_roster_queries(query))
+                self.assertIn("<dean_list_request>", leadership_guidance(query))
+                self.assertIn("College of Liberal Arts", leadership_guidance(query))
+        for query in ("Who is the dean of CLAS?", "Who are the deans of BMMA and BEED?", "Who is the president?",
+                      "What programs does SCTI offer?", "Who were the deans in 2024?"):
+            self.assertEqual(leadership_roster_queries(query), [])
+        self.assertEqual(roster_source_names(["Organizational_Structure_2026.docx", "Programs.docx"]),
+                         ["Organizational_Structure_2026.docx"])
+        self.assertIn("SCTI_Program.docx", catalog_source_names(["SCTI_Program.docx"]))
+
     def test_source_filter_can_be_disabled_without_dropping_explicit_unit_scope(self):
         old = document(text="OLD_RULE from College of Education.", section_heading="College of Education")
         current = document(UPDATE, "CURRENT_RULE from College of Education.", section_heading="College of Education")
