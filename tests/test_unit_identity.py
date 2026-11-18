@@ -116,6 +116,89 @@ class UnitIdentityTests(unittest.TestCase):
             with self.subTest(subject=subject):
                 self.assertEqual(program_affiliations(subject, [catalog, continuation, welcome]), {parent: [catalog]})
 
+    def test_conversational_edges_preserve_program_identity_across_subjects(self):
+        for subject in ("bscrim", "BMMA", "BSIT", "BEED", "BA Sociology", "MAED",
+                        "Bachelor of Multimedia Arts", "Bachelor of Science in Business Administration Major in Marketing Management"):
+            for template in ("dean of {}", "dean of {} pls who?", "dean of {} please, who?",
+                             "pls, who is the dean of {}?", "dean of {} plz", "dean of {} thanks!",
+                             "please tell me the dean of {}", "who is {} dean pls?", "{}'s dean please?"):
+                question = template.format(subject)
+                with self.subTest(question=question):
+                    self.assertEqual(program_dean_subject(question), subject)
+
+    def test_repaired_typos_and_incomplete_identity_tails_preserve_subject(self):
+        from rag.spelling import correct_query
+        from rag.unit_identity import request_text
+
+        for subject in ("bscrim", "BMMA", "BA Sociology"):
+            for tail in ("who si?", "pls who si?", "who is?", "who are?", "who was?", "who were?",
+                         "who is pls?", "please, who is?", "who is it?", "who are they?"):
+                question = f"dean of {subject} {tail}"
+                repaired = correct_query(question) or question
+                with self.subTest(question=question):
+                    self.assertEqual(program_dean_subject(repaired), subject)
+                    self.assertEqual(request_text(repaired), f"dean of {subject}")
+            question = f"dean of {subject} in 2024 pls who si?"
+            repaired = correct_query(question) or question
+            self.assertEqual(program_dean_subject(repaired), subject)
+            self.assertIn("2024", request_text(repaired))
+        for question in ("dean of BSCRIM Aviation who is?", "dean of BUNKNOWN who is?"):
+            self.assertEqual(program_dean_subject(question), question.removeprefix("dean of ").removesuffix(" who is?"))
+        for question in ("dean of BSCRIM who is president?", "dean of BSCRIM who is the registrar?"):
+            self.assertIn("who is", request_text(question))
+
+    def test_conversational_unit_names_and_reverse_role_order_keep_exact_unit(self):
+        for name in ("College of Education", "College of Liberal Arts and Sciences", "CITAS", "CLAS"):
+            for question in (f"dean of {name} pls who?", f"please, dean of {name}, thanks!",
+                             f"who is {name} dean please?", f"{name}'s dean plz?"):
+                with self.subTest(question=question):
+                    self.assertEqual(requested_unit(question).name, name)
+                    self.assertIsNone(program_dean_subject(question))
+
+    def test_courtesy_parsing_does_not_drop_substantive_subject_qualifiers(self):
+        for question, subject in (("dean of BSCRIM Aviation pls?", "BSCRIM Aviation"),
+                                  ("dean of BA Sociology in 2024 pls who?", "BA Sociology"),
+                                  ("dean of Bachelor of Arts in Political Science please", "Bachelor of Arts in Political Science")):
+            self.assertEqual(program_dean_subject(question), subject)
+        for question in ("deans of BMMA and BSIT pls who?", "deans of BMMA or BSIT please",
+                         "dean of BSCRIM and who is the president pls?", "List all college deans",
+                         "list all deans please", "show the deans", "who are the deans pls?",
+                         "all college deans", "who are all college deans", "who are all academic deans"):
+            self.assertIsNone(program_dean_subject(question))
+            self.assertIsNone(requested_unit(question))
+        catalog = document("College of Criminal Justice Education", text="Bachelor of Science in Criminology (BSCRIM)")
+        for question in ("dean of BSCRIM Aviation pls?", "dean of BUNKNOWN pls who?"):
+            self.assertEqual(program_affiliations(program_dean_subject(question), [catalog]), {})
+
+    def test_reverse_role_order_preserves_historical_qualifiers(self):
+        from rag.source_policy import select_program_affiliation
+
+        parent = "College of Criminal Justice Education"
+        old = document(parent, source="Programs_2024.docx", text="Bachelor of Science in Criminology (BSCRIM)")
+        current = document("College of Other Studies", source="Programs_2026.docx", text="Bachelor of Science in Criminology (BSCRIM)")
+        for temporal in ("in 2024", "during 2024", "as of 2024"):
+            question = f"who is BSCRIM dean {temporal} pls?"
+            self.assertEqual(program_dean_subject(question), "BSCRIM")
+            self.assertIn("2024", requested_unit(question).remainder)
+            parents, is_current = select_program_affiliation(question, [old, current], dates={}, uploads={}, today=date(2026, 11, 18))
+            self.assertEqual(set(parents), {parent})
+            self.assertFalse(is_current)
+            unit = requested_unit(f"who is College of Education dean {temporal} please?")
+            self.assertEqual(unit.name, "College of Education")
+            self.assertIn("2024", unit.remainder)
+
+    def test_mixed_compounds_and_conjunctions_inside_degree_titles_are_distinct(self):
+        for question in ("who are College of Education and BSCRIM deans pls?",
+                         "who are BSCRIM and College of Education deans pls?",
+                         "dean of College of Education and BSCRIM please"):
+            self.assertIsNone(requested_unit(question))
+            self.assertIsNone(program_dean_subject(question))
+        title = "Bachelor of Science in Hospitality and Tourism Management"
+        self.assertEqual(program_dean_subject(f"dean of {title} pls?"), title)
+        self.assertEqual(program_dean_subject(f"who is {title} dean please?"), title)
+        for subject in (f"{title} and BSCRIM", f"{title} and Bachelor of Arts in Sociology"):
+            self.assertIsNone(program_dean_subject(f"dean of {subject} pls?"))
+
     def test_flat_program_aliases_match_current_major_rows_and_graduate_school(self):
         aliases = document("Degree Programs", text=(
             "MASTER OF ARTS IN EDUCATION (MAED) With specialization in: Reading "

@@ -123,6 +123,27 @@ check("a repaired three-term honors question skips the extra round trip",
       should_optimize("latin honor requirements", []) is False)
 check("a known acronym with sufficient content skips the extra round trip",
       should_optimize("BSIT admission requirements", []) is False)
+from rag.spelling import correct_query, has_unresolved_spelling_hint
+
+typo_question = "how do i become latin honot"
+check("honot remains too ambiguous for automatic local correction",
+      correct_query(typo_question) == "")
+check("a close unresolved honors typo requests interpretation",
+      has_unresolved_spelling_hint(typo_question))
+for history in ([], HISTORY):
+    check(f"the exact honot question reaches the optimizer, history={bool(history)}",
+          should_optimize(typo_question, history) is True)
+for q in ("how do i become latin honor", "how do i become latin honors",
+          "latin history admission requirements", "latin hint admission requirements",
+          "latin HONOT admission requirements", "latin Honot admission requirements",
+          "latin hzzzz admission requirements", "latin honot101 admission requirements"):
+    check(f"known words, names, codes and weak hints do not force interpretation: {q!r}",
+          has_unresolved_spelling_hint(q) is False)
+check("the corrected complete question still skips interpretation",
+      should_optimize("how do i become latin honors", []) is False)
+for q in ("dean of bscrim pls who?", "dean of bscrim please, who?", "pls dean of bscrim plz"):
+    check(f"courtesy does not make a thin dean question look complete: {q!r}",
+          should_optimize(q, []) == should_optimize("dean of bscrim", []))
 with patch("rag.latency.has_misspelling", return_value=True):
     check("the misspelling signal precedes first-turn thinness",
           should_optimize("four otherwise searchable content terms", []) is True)

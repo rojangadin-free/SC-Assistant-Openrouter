@@ -608,6 +608,16 @@ def spelling_candidates(text: str) -> Dict[str, List[str]]:
     return hints
 
 
+def has_unresolved_spelling_hint(text: str) -> bool:
+    """Ask for interpretation of a close unknown word, never apply the hint."""
+    vocab = _vocabulary()
+    return any(
+        token == token.lower() and token.lower() not in vocab.freq
+        and _typing_distance(token.lower(), candidates[0]) <= 0.75
+        for token, candidates in spelling_candidates(text).items()
+    )
+
+
 def _plural_ish(word: str) -> bool:
     word = (word or "").lower().strip("?.,!")
     return len(word) > 3 and word.endswith("s") and not word.endswith("ss")

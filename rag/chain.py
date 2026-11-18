@@ -565,9 +565,12 @@ def retrieve_documents(
         enrollment_queries, institution_history_queries, newer_source_names, program_catalog_queries,
         select_program_affiliation, leadership_roster_queries, roster_source_names, _historical,
         program_offering_scope, offering_catalog_documents,
+        family_discount_queries, family_discount_documents,
+        honors_queries, honors_documents,
     )
     from rag.unit_identity import (
         is_unit_reference, requested_unit, unit_query_variants, program_dean_subject, program_overview_subject,
+        request_text as normalize_request,
         document_unit_names,
     )
 
@@ -603,8 +606,7 @@ def retrieve_documents(
 
     primary = phrasings[0]
     offering_scope = program_offering_scope(user_question or primary)
-    # The broader candidate-pool experiment must not resurrect an old catalog
-    # when a relevant current offering source is available.
+    # The broader pool must not override a relevant current catalog.
     source_filter_enabled = source_filter_enabled or bool(offering_scope)
     preferred_query = primary if primary != (user_question or query or "").strip() else None
 
@@ -631,6 +633,11 @@ def retrieve_documents(
     # because it still has its grammar; a keyword rewrite usually does not.
     split_source = user_question or primary
     aspects = split_question(split_source)
+    if not aspects and family_discount_queries(split_source):
+        # A matching family-policy update wins over the handbook; unrelated
+        # scholarship updates must still allow dated fallback. Keep multi-topic
+        # requests on their existing broader/explicitly configured source path.
+        source_filter_enabled = True
     overview_subject = program_overview_subject(split_source) if not aspects else None
     program_requests = [(part, program_dean_subject(part) or overview_subject) for part in (aspects or [split_source])]
     program_requests = [(part, subject) for part, subject in program_requests if subject]
@@ -668,10 +675,15 @@ def retrieve_documents(
                 resolved = re.sub(rf"\b(?:program|course|degree)\s+(?:(?:in|of|for)\s+)?{label}",
                                   parent, part, flags=re.IGNORECASE)
                 resolved = re.sub(label, parent, resolved, flags=re.IGNORECASE)
+                normalized = normalize_request(resolved)
+                if normalized != resolved.strip(" .,?!\t\r\n"):
+                    resolved = normalized
                 if overview_subject:
                     resolved = f"{subject} program overview {parent}"
                     program_queries.extend([f"dean of {parent}", f"{subject} curriculum objectives {parent}"])
                 resolved_parts[part] = resolved
+                # Grammar and courtesy tails must not hide the exact roster.
+                program_queries.append(f"dean of {parent}")
                 program_evidence.extend(parents[parent])
                 program_messages.append(
                     f"Program {subject!r} is listed under {parent!r} in the supplied {'current' if current else 'historical'} catalog. " +
@@ -723,12 +735,17 @@ def retrieve_documents(
                 scope_question = f"{split_source}\nResolved reference: {phrasing}"
                 break
     history_queries = institution_history_queries(scope_question)
+    discount_queries = family_discount_queries(scope_question)
+    honor_queries = honors_queries(scope_question)
+    if honor_queries and not aspects:
+        # Completeness must not mix an old honors policy into a current update.
+        source_filter_enabled = True
     procedure_queries = list(dict.fromkeys(
         probe for phrasing in [scope_question, *phrasings, *aspects, *language_variants(split_source)]
         for probe in enrollment_queries(phrasing)
     ))
     relevance_queries = list(dict.fromkeys([
-        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries,
+        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries,
     ]))
 
     if verbose:
@@ -758,7 +775,7 @@ def retrieve_documents(
             allow_spelling=allow_spelling,
         )
     elif current_sources:
-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries]))
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = [(probe, source_filter) for probe in probes]
         catalogs = catalog_source_names(current_sources) if catalog_queries else []
@@ -794,7 +811,7 @@ def retrieve_documents(
         else:
             initial_docs = multi_query_retrieve(
                 primary,
-                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries,
+                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries,
                 timeout=request_budget.remaining(30) if request_budget else None,
                 allow_spelling=allow_spelling,
             )
@@ -825,6 +842,8 @@ def retrieve_documents(
         initial_docs = []
 
     catalog_evidence = offering_catalog_documents(initial_docs, scope_question)
+    discount_evidence = family_discount_documents(initial_docs) if discount_queries else []
+    honor_evidence = honors_documents(initial_docs) if honor_queries else []
     if on_selection is not None:
         on_selection(selection)
     roster_evidence = [doc for doc in initial_docs if (doc.metadata or {}).get("source") in roster_sources
@@ -910,10 +929,10 @@ def retrieve_documents(
             snippet = doc.page_content.replace("\n", " ")[:70]
             print(f"  [{i+1}] score={score_s} | {src} (Pg {pg}){aspect_s}: {snippet}...")
 
-    if roster_evidence or catalog_evidence:
+    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence:
         seen = set()
         ordered = []
-        for doc in [*roster_evidence, *catalog_evidence, *final_docs]:
+        for doc in [*roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
             metadata = doc.metadata or {}
             key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
             if key not in seen:
@@ -1511,12 +1530,16 @@ def create_graph():
                 from rag.source_policy import INSTITUTION_HISTORY_GUIDANCE
 
                 final_system_prompt += "\n\n" + INSTITUTION_HISTORY_GUIDANCE
-            from rag.source_policy import ENROLLMENT_GUIDANCE, enrollment_queries, leadership_guidance
+            from rag.source_policy import ENROLLMENT_GUIDANCE, enrollment_queries, leadership_guidance, family_discount_guidance, honors_queries, HONORS_GUIDANCE
 
             if enrollment_queries(request_text):
                 final_system_prompt += "\n\n" + ENROLLMENT_GUIDANCE
             if guidance := leadership_guidance(request_text):
                 final_system_prompt += "\n\n" + guidance
+            if guidance := family_discount_guidance(request_text, final_docs):
+                final_system_prompt += "\n\n" + guidance
+            if honors_queries(request_text):
+                final_system_prompt += "\n\n" + HONORS_GUIDANCE
             if program_context:
                 final_system_prompt += "\n\n<documented_program_affiliation>\n" + program_context + (
                     "\nUse the supplied catalog passage for the affiliation and the supplied roster for the dean. "

@@ -22,6 +22,7 @@ from rag.unit_identity import (
     program_dean_subject,
     program_affiliations,
     unit_query_variants,
+    request_text,
 )
 
 DEFAULT_FALLBACK_SOURCES = ("Samar-College-2024.pdf",)
@@ -95,6 +96,9 @@ entries. A dean-update heading can label name-to-college rows even without repea
 If supplied update and profile entries disagree on a name or initials, cite and
 describe that conflict rather than claiming the information is unavailable,
 silently merging different names, or asserting an unverified current office holder.
+Different spellings of a person's name are also a conflict: report the spellings
+with their respective sources. Do not declare one spelling correct or silently
+choose one just because a file is an organizational chart or ranks first.
 Do not use an old appointment or handbook to resolve a current-source conflict.
 </leadership_roster_request>"""
 
@@ -140,9 +144,68 @@ _OTHER_LEVEL = re.compile(
 _ENROLLMENT_PROBE = "college enrollment enrolment procedure admission requirements registration"
 
 
+def family_discount_queries(query):
+    """Recognize family-benefit wording without asserting personal eligibility."""
+    if not isinstance(query, str):
+        return []
+    financial = re.search(r"\bdiscounts?\b|\b(?:tuition|fees?)\s+(?:reductions?|waivers?|exemptions?)\b|"
+                          r"\b(?:family(?:\s+(?:members?|nucleus))?|siblings?)\s+(?:scholarships?|grants?)\b",
+                          query, re.IGNORECASE)
+    relatives = re.search(r"\b(?:siblings?|brothers?|sisters?|family|families|parents?|cousins?|relatives?)\b", query, re.IGNORECASE)
+    if re.search(r"\b(?:academic|athletic|sports?)\s+scholarships?\b", query, re.IGNORECASE) and not re.search(
+        r"\bfamily\b|\bsiblings?\s+discounts?\b|\bdiscounts?\s+for\s+siblings\b", query, re.IGNORECASE
+    ):
+        return []
+    if not financial or not relatives:
+        return []
+    return ["family members discount members of the family nucleus tuition fees full subject load",
+            "family members discount full payment scholarship grants"]
+
+
+def family_discount_documents(documents):
+    selected = []
+    for document in documents:
+        # Legacy handbook headings can leak across unrelated chunks. A title
+        # alone must not turn an academic award or office directory into policy.
+        text = getattr(document, "page_content", "") or ""
+        family = re.search(r"\bfamily\s+(?:members?|nucleus|discounts?)\b|\bmembers\s+of\s+(?:the\s+)?family\b|"
+                           r"\bsibling\s+discounts?\b|\bdiscounts?\s+for\s+siblings\b", text, re.IGNORECASE)
+        policy = re.search(r"\bdiscounts?\b|\bfull\s+(?:payment|subject\s+load)\b", text, re.IGNORECASE)
+        if family and policy:
+            selected.append(document)
+    return selected
+
+
+def family_discount_guidance(query, documents):
+    if not family_discount_queries(query):
+        return ""
+    guidance = (
+        "<family_discount_request>\nThe question asks about sibling/family tuition discounts, not unrelated academic, "
+        "athletic, ESC, or enrollment policies. Use the supplied Family Members/Family Nucleus discount policy. "
+        "A policy covering children in the same family can answer a sibling question even if its heading does not say 'siblings'. "
+        "State the source's family definition, full-load and other eligibility conditions, and scholarship-combination restrictions. "
+        "Do not assume every relative qualifies or that simultaneous enrollment alone establishes eligibility. "
+        "Respect an explicit maximum number of covered family members; do not describe a stated limit as merely unspecified. "
+        "Keep the Full Payment column and allocation rules as stated; do not invent how the table applies to each member. "
+        "If the policy lacks a detail, identify that limitation without substituting another scholarship. "
+        "Only name an office for confirmation when the provided material actually identifies that office. "
+        "Do not add unrequested office locations, schedules, or application steps.\n"
+        "</family_discount_request>"
+    )
+    sources = {str((getattr(document, "metadata", None) or {}).get("source") or "")
+               for document in family_discount_documents(documents)}
+    years = [stamp.year if stamp else None for stamp, _ in (date_from_filename(source) for source in sources)]
+    if years and all(year and year < date.today().year for year in years):
+        guidance += ("\n<dated_family_discount_policy>The supplied matching policy is from document year(s): "
+                     + ", ".join(str(year) for year in sorted(set(years)))
+                     + ". Visibly identify that edition in the answer. Do not describe its terms as confirmed current; "
+                     "suggest confirming current applicability with the responsible office.</dated_family_discount_policy>")
+    return guidance
+
+
 def enrollment_queries(query) -> list[str]:
     """Bounded procedure probes, not invented program rules or program aliases."""
-    if not isinstance(query, str) or "enrollment" not in _terms(query):
+    if not isinstance(query, str) or family_discount_queries(query) or "enrollment" not in _terms(query):
         return []
     if re.search(r"\b(?:what|which)\s+(?:programs?|courses?|degrees?)\s+(?:can|could|may)\s+"
                  r"(?:i|we|students?)\s+(?:enroll|enrol|register)\b", query, re.IGNORECASE):
@@ -216,6 +279,7 @@ def unit_selection_guidance(selection, documents, today=None):
 
 
 def leadership_guidance(query):
+    query = request_text(query)
     named_role = re.search(r"\b(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?|officials?)\b",
                            query or "", re.IGNORECASE)
     terse_role = re.match(r"\s*(?:the\s+)?(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?)"
@@ -240,6 +304,7 @@ def leadership_guidance(query):
 
 def leadership_roster_queries(query):
     """Acquire the full roster only for an unscoped dean-list request."""
+    query = request_text(query)
     words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
     allowed = {"who", "what", "are", "is", "the", "all", "our", "current", "currently", "list", "names", "name",
                "show", "give", "tell", "me", "us", "please", "deans", "college", "colleges", "academic", "departments",
@@ -465,6 +530,58 @@ def institution_history_queries(query) -> list[str]:
     return [f"{query.strip()} historical account humble beginnings", f"{query.strip()} founding origins established"]
 
 
+def honors_queries(query):
+    """Retrieve distinct honor definitions, not just related academic awards."""
+    from rag.spelling import correct_query, has_unresolved_spelling_hint, spelling_candidates
+
+    if not isinstance(query, str) or not query.strip():
+        return []
+    text = correct_query(query or "") or query or ""
+    if not re.search(r"\blatin\s+honou?rs?\b|\bgraduation\s+honou?rs?\b|\bcum\s*laude\b", text, re.IGNORECASE):
+        match = re.search(r"\blatin\s+([a-z]+)\b", text, re.IGNORECASE)
+        hints = spelling_candidates(text) if match and has_unresolved_spelling_hint(text) else {}
+        if not match or (hints.get(match[1]) or [""])[0] not in {"honor", "honors", "honour", "honours"}:
+            return []
+    return ["Summa Cum Laude general weighted average graduation honors",
+            "Magna Cum Laude general weighted average graduation honors",
+            "Cum Laude general weighted average graduation honors",
+            "graduation honors specific guidelines candidate requirements"]
+
+
+def honors_documents(documents):
+    """Prefer explicit tier definitions and common eligibility, not award mentions."""
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        levels = 0
+        for label in ("Summa Cum Laude", "Magna Cum Laude", "Cum Laude"):
+            definition = re.search(rf"(?:^|[\n.:])\s*[*#]*\s*{label}\s*[*#]*\s*(?:[.:|\-]|(?=\d))", text, re.IGNORECASE)
+            heading = any(re.fullmatch(rf"\s*{label}\s*", str(metadata.get(key) or ""), re.IGNORECASE) for key in _HEADINGS)
+            if (definition or heading) and re.search(r"\b(?:gwa|general weighted average)\b", text, re.IGNORECASE) and re.search(r"\d[.]\d", text):
+                levels += 1
+        guidelines = re.search(r"\b(?:candidate for (?:graduation with )?honors|no graduation honors)\b", text, re.IGNORECASE)
+        if levels or guidelines:
+            selected.append((levels, document))
+    return [document for _, document in sorted(selected, key=lambda item: item[0], reverse=True)]
+
+
+HONORS_GUIDANCE = """<latin_honors_requirements>
+For a broad Latin honors eligibility question, list each documented Latin honor
+in a separate row with its exact GWA range and its major/professional-subject
+grade condition. Do not omit a documented tier or merge Summa Cum Laude and
+Magna Cum Laude. Academic Excellence Award is a different award: its shared
+GWA range is not the definition of either Latin honor. Include the supplied
+common eligibility requirements as well as the GWA criteria, with citations.
+Do not add unrequested academic awards. Use only the selected policy version;
+do not fill an updated policy's omissions from an older handbook or memory.
+Identify the year when using a dated handbook fallback; do not describe its
+criteria as confirmed current merely because they were retrieved.
+If a tier's criteria are missing from the supplied evidence, state that limitation
+rather than inventing or borrowing a threshold. Respect requests for only one tier.
+</latin_honors_requirements>"""
+
+
 def history_source_names(*, dates, uploads) -> list[str]:
     """Raw reference-source names are search hints, never proof of history coverage."""
     names = [name for name in (uploads or {}) if isinstance(name, str)]
@@ -571,6 +688,8 @@ def _relevant(document, queries, unit=None):
     body_terms = _terms(text)
     heading_terms = _terms(headings) | _terms(title)
     evidence = body_terms | heading_terms
+    if queries and family_discount_queries(queries[0]) and not any(enrollment_queries(query) for query in queries):
+        return bool(family_discount_documents([document]))
     level = program_offering_scope(queries[0]) if queries else ""
     if level in {"college", "undergraduate"}:
         basic_or_technical = re.search(r"\b(?:basic education|elementary program|junior high school|senior high school|"

@@ -889,6 +889,22 @@ with patch.dict(namespace, {
                 check(f"reranker {label}: query-only spelling output leaves natural wording in control",
                       typo["primary"] == typo["user_question"] == typo["messages"][-1] == question
                       and state["input"] == question and state["chat_history"] == admission_history)
+            for prior in ([], admission_history):
+                question = "how do i become latin honot"
+                interpreter = Mock(return_value=SimpleNamespace(content="latin honor requirements"))
+                with patch.dict(namespace, {
+                    "FINAL_TOP_K": 2,
+                    "query_optimizer_model": SimpleNamespace(invoke=interpreter),
+                }):
+                    typo, state = chat_snapshot(question, prior, role="guest")
+                check(f"reranker {label}, history={bool(prior)}: exact honot request is interpreted",
+                      interpreter.call_count == 1 and question in interpreter.call_args.args[0][-1]["content"])
+                check(f"reranker {label}, history={bool(prior)}: exact honot request retrieves honors evidence",
+                      "latin honor requirements" in typo["probes"]
+                      and "honors" in typo["citations"] and honors.page_content in typo["messages"][0])
+                check(f"reranker {label}, history={bool(prior)}: exact honot request preserves input and history",
+                      typo["messages"][-1] == question and state["input"] == question
+                      and state["chat_history"] == prior and state["role"] == "guest")
 
     with patch.object(reranker, "_load_model", return_value=None):
         with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=unavailable_optimizer)}):

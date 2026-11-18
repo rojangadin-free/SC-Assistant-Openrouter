@@ -131,6 +131,53 @@ class Hybrid:
 
 
 class NewerRetrievalTests(unittest.TestCase):
+    def test_complete_honors_criteria_survive_ranking_and_final_context_cutoff(self):
+        criteria = document(BASE, "Graduation Honors and Awards for College\n"
+                            "Summa Cum Laude. GWA 1.00 to 1.20, no major/professional grade below 1.30.\n"
+                            "Magna Cum Laude. GWA 1.21 to 1.30, no major/professional grade below 1.50.\n"
+                            "Cum Laude. GWA 1.31 to 1.50, no major/professional grade below 2.0.", "criteria", page=52)
+        eligibility = document(BASE, "A candidate for honors must finish within the curriculum years, have no FAILED, INC or DR "
+                               "remarks, carry 18 units unless curriculum-prescribed, have good moral character and a certified activity.",
+                               "eligibility", page=53)
+        award = document(BASE, "ACADEMIC_EXCELLENCE. GWA 1.00 to 1.30 for those who failed to qualify for Summa Cum Laude "
+                         "and Magna Cum Laude.", "other-award", page=54)
+        unrelated = document(BASE, "Admission requires good moral character and enrollment requirements.", "admission")
+        for question in ("how do i become latin honot", "how do I become latin honors"):
+            for mode in ("true", "false"):
+                for reranking in ("true", "false"):
+                    with self.subTest(question=question, mode=mode, reranking=reranking), patch.dict(os.environ, {
+                        "RAG_SOURCE_FILTER_ENABLED": mode, "RERANKER_ENABLED": reranking,
+                    }), patch.dict(self.ns, {"FINAL_TOP_K": 2}):
+                        hybrid = self.install([], baseline=[award, unrelated, eligibility])
+                        hybrid.ensemble.invoke.side_effect = lambda query: [criteria] if "Summa Cum Laude" in query else [award, unrelated, eligibility]
+                        model = SimpleNamespace(predict=Mock(side_effect=lambda pairs, **kwargs: [10 if "ACADEMIC_EXCELLENCE" in text else 0 for _, text in pairs]))
+                        with patch.object(self.reranker, "_load_model", return_value=model if reranking == "true" else None):
+                            self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                            result = self.chat(question)
+                        if reranking == "true":
+                            model.predict.assert_called()
+                        self.assertEqual(set(result["citations"]), {"criteria", "eligibility"}, self.output.getvalue())
+                        prompt = result["messages_to_llm"][0].content
+                        for label, low, high in (("Summa Cum Laude", "1.00", "1.20"),
+                                                 ("Magna Cum Laude", "1.21", "1.30"), ("Cum Laude", "1.31", "1.50")):
+                            self.assertIn(f"{label}. GWA {low} to {high}", prompt)
+                        self.assertIn("18 units", prompt)
+                        self.assertIn("<latin_honors_requirements>", prompt)
+                        self.assertNotIn("ACADEMIC_EXCELLENCE", prompt)
+                        self.assertEqual(result["messages_to_llm"][-1].content, question)
+
+    def test_newer_honors_update_is_not_completed_from_old_thresholds(self):
+        old = document(BASE, "Summa Cum Laude. GWA 1.00 to 1.20; old honors thresholds.", "old-thresholds", page=52)
+        update = document("Graduation_Honors_2026.docx", "Graduation honors specific guidelines and candidate requirements. "
+                          "A candidate for honors must satisfy UPDATED_ELIGIBILITY and good moral character.", "update")
+        for mode in ("true", "false"):
+            with self.subTest(mode=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
+                self.install([update], baseline=[old])
+                result = self.chat("how do i become latin honot")
+                self.assertEqual(result["citations"], ["update"], self.output.getvalue())
+                self.assertNotIn("1.00 to 1.20", result["messages_to_llm"][0].content)
+                self.assertIn("UPDATED_ELIGIBILITY", result["messages_to_llm"][0].content)
+
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -1540,6 +1587,76 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertEqual(result["messages_to_llm"][-1].content, "dean of BMMA.")
         self.assertEqual(self.ranking.call_args.args[0], f"dean of {parent}.")
 
+    def test_conversational_dean_variants_keep_catalog_and_roster_without_optimizer(self):
+        for subject, parent in (("bscrim", "College of Criminal Justice Education"),
+                                ("BMMA", "College of Information Technology and Allied Sciences"),
+                                ("BA Sociology", "College of Liberal Arts and Sciences")):
+            title = {"bscrim": "Bachelor of Science in Criminology", "BMMA": "Bachelor of Multimedia Arts",
+                     "BA Sociology": "Bachelor of Arts in Sociology"}[subject]
+            catalog = document("Programs_Offered.docx", f"{parent}\n{title} ({subject})", "catalog", section_heading="Programs Offered")
+            roster = document("Organizational_Structure.docx", f"DOCUMENTED_DEAN\nDean, {parent}", "roster", section_heading="Academic Council")
+            for mode in ("true", "false"):
+                for question in (f"dean of {subject}", f"dean of {subject} pls who?", f"dean of {subject} please, who?",
+                                 f"pls, who is the dean of {subject}?", f"who is {subject} dean pls?", f"{subject}'s dean please?"):
+                    with self.subTest(question=question, mode=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
+                        hybrid = self.install([catalog, roster])
+                        hybrid.filtered = lambda query, metadata_filter: [catalog] if "programs offered" in query else (
+                            [roster] if query == f"dean of {parent}" else [])
+                        hybrid.ensemble.invoke.side_effect = lambda query: []
+                        self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                        result = self.chat(question)
+                        self.assertEqual(set(result["citations"]), {"catalog", "roster"}, self.output.getvalue())
+                        prompt = result["messages_to_llm"][0].content
+                        self.assertIn("DOCUMENTED_DEAN", prompt)
+                        self.assertIn("<documented_program_affiliation>", prompt)
+                        self.assertNotIn("No program-to-college affiliation", prompt)
+                        self.assertEqual(result["messages_to_llm"][-1].content, question)
+                        if question in (f"dean of {subject}", f"dean of {subject} pls who?", f"dean of {subject} please, who?"):
+                            self.assertEqual(self.ranking.call_args.args[0], f"dean of {parent}")
+
+    def test_unscoped_dean_lists_never_become_program_affiliation_requests(self):
+        roster = document("Organizational_Structure.docx", "NAMED_DEAN\nDean, College of Education", "roster", section_heading="Academic Council")
+        for question in ("all college deans", "who are all college deans", "who are all academic deans pls?",
+                         "List all college deans please"):
+            with self.subTest(question=question):
+                self.install([roster], baseline=[])
+                self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                result = self.chat(question)
+                self.assertEqual(result["citations"], ["roster"], self.output.getvalue())
+                self.assertNotIn("No program-to-college affiliation", result["messages_to_llm"][0].content)
+                self.assertNotIn("<documented_program_affiliation>", result["messages_to_llm"][0].content)
+
+    def test_identity_tail_typo_uses_catalog_proof_despite_malformed_or_failed_rewrite(self):
+        for subject, title, parent in (("bscrim", "Bachelor of Science in Criminology", "College of Criminal Justice Education"),
+                                       ("BMMA", "Bachelor of Multimedia Arts", "College of Information Technology and Allied Sciences"),
+                                       ("BA Sociology", "Bachelor of Arts in Sociology", "College of Liberal Arts and Sciences")):
+            catalog = document("Programs_Offered.docx", f"{parent}\n{title} ({subject})", "catalog", section_heading="Programs Offered")
+            roster = document("Organizational_Structure.docx", f"DOCUMENTED_DEAN\nDean, {parent}", "roster", section_heading="Academic Council")
+            for mode in ("true", "false"):
+                for reranking in ("true", "false"):
+                    for rewrite in (f"dean of {title} {parent}", RuntimeError("optimizer unavailable")):
+                        for tail in ("who si?", "pls who si?", "who is?"):
+                            question = f"dean of {subject} {tail}"
+                            with self.subTest(question=question, mode=mode, reranking=reranking, rewrite=rewrite), patch.dict(os.environ, {
+                                "RAG_SOURCE_FILTER_ENABLED": mode, "RERANKER_ENABLED": reranking,
+                            }), patch.dict(self.ns, {"resolve_role": lambda *args, **kwargs: "faculty"}):
+                                hybrid = self.install([catalog, roster], baseline=[])
+                                hybrid.filtered = lambda query, metadata_filter: [catalog] if "programs offered" in query else (
+                                    [roster] if query == f"dean of {parent}" else [])
+                                hybrid.ensemble.invoke.side_effect = lambda query: []
+                                self.ns["query_optimizer_model"].invoke.side_effect = (
+                                    rewrite if isinstance(rewrite, Exception) else lambda messages: SimpleNamespace(content=rewrite)
+                                )
+                                state = {"input": question, "chat_history": [], "role": "faculty"}
+                                result = self.ns["create_graph"]()(state)
+                                self.assertEqual(set(result["citations"]), {"catalog", "roster"}, self.output.getvalue())
+                                self.assertIn("DOCUMENTED_DEAN", result["messages_to_llm"][0].content)
+                                self.assertIn("<documented_program_affiliation>", result["messages_to_llm"][0].content)
+                                self.assertEqual(self.ranking.call_args.args[0], f"dean of {parent}")
+                                self.assertEqual(result["messages_to_llm"][-1].content, self.spelling.correct_query(question) or question)
+                                self.assertEqual(state["input"], question)
+                                self.assertEqual(state["role"], "faculty")
+
     def test_multiple_program_deans_keep_their_separate_documented_parents(self):
         it, education = "College of Information Technology and Allied Sciences", "College of Education"
         catalog = document("Programs_Offered.docx", f"{it}\nBachelor of Multimedia Arts (BMMA)\n"
@@ -1705,6 +1822,51 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertNotIn("Computer System Servicing NC II", prompt)
         self.assertIn("table", result["citations"])
         self.assertTrue(self.selections.call_args.kwargs["enforce_sources"])
+
+    def test_sibling_questions_find_and_pin_family_policy_even_when_optimizer_and_ranking_fail(self):
+        policy = document(BASE, "1.3.1 Members of the Family Nucleus. A tuition discount is granted to a maximum of four "
+                          "direct members: father, mother and children, provided they carry a full subject load.\n"
+                          "FAMILY_POLICY_ONLY\nNumber of Family Members | Full Payment | 20% | 15% | 10%\n"
+                          "2 | check | | | check\n3 | check | | check |\n4 | check | check | |\n"
+                          "Least units: highest discount; most units: lowest discount. Other school-funded scholarship grants cannot be combined.",
+                          "family-policy", page=95, section_heading="Other Scholarship Grants")
+        academic = document("Academic_Grants_2026.docx", "UNRELATED_ACADEMIC_AWARD 100% discount for Rank 1; 50% for Rank 2.",
+                            "academic", section_heading="Scholarships")
+        for question in ("Are there discounts for siblings enrolled at the same time?", "family members discount",
+                         "Is there a tuition discount for my brother and sister?"):
+            for mode in ("true", "false"):
+                with self.subTest(question=question, source_filter=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
+                    hybrid = self.install([academic], baseline=[policy])
+                    hybrid.ensemble.invoke.side_effect = lambda query: [policy] if "family members discount" in query.lower() else []
+                    self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("optimizer unavailable")
+                    model = SimpleNamespace(predict=lambda pairs, **kwargs: [
+                        .01 if "FAMILY_POLICY_ONLY" in text else 99.0 for _, text in pairs
+                    ])
+                    with patch.object(self.reranker, "_load_model", return_value=model), patch.dict(self.ns, {"FINAL_TOP_K": 1}):
+                        result = self.chat(question)
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertIn("FAMILY_POLICY_ONLY", prompt, self.output.getvalue())
+                    self.assertIn("full subject load", prompt)
+                    self.assertIn("20%", prompt)
+                    self.assertIn("<dated_family_discount_policy>", prompt)
+                    self.assertIn("2024", prompt)
+                    self.assertNotIn("UNRELATED_ACADEMIC_AWARD", prompt)
+                    self.assertEqual(result["citations"], ["family-policy"])
+                    self.assertEqual(result["messages_to_llm"][-1].content, question)
+
+    def test_a_current_family_discount_update_supersedes_old_rules_in_broader_pool_mode(self):
+        old = document(BASE, "Family members tuition discount: OLD_FAMILY_RULE 10% with full subject load.", "old-family")
+        updated = document("Family_Discount_2026.docx", "Family members tuition discount: CURRENT_FAMILY_RULE "
+                           "12% with full subject load.", "current-family")
+        with patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "false"}):
+            hybrid = self.install([updated], baseline=[old])
+            result = self.chat("Are there sibling discounts?")
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn("CURRENT_FAMILY_RULE", prompt)
+        self.assertNotIn("OLD_FAMILY_RULE", prompt)
+        self.assertNotIn("<dated_family_discount_policy>", prompt)
+        self.assertEqual(result["citations"], ["current-family"])
+        hybrid.ensemble.invoke.assert_not_called()
 
     def test_broad_program_list_keeps_every_level_and_college_scope_excludes_other_levels(self):
         college = document("Programs_Offered.docx", "College of Education\nBachelor of Elementary Education\n"

@@ -7,7 +7,8 @@ import re
 import time
 from typing import Dict, List, Optional
 
-from rag.spelling import has_misspelling
+from rag.spelling import has_misspelling, has_unresolved_spelling_hint
+from rag.unit_identity import request_text
 
 
 _STOPWORDS = {
@@ -50,8 +51,11 @@ def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> b
     query = (question or "").strip()
     if not query:
         return False
+    query = request_text(query)
     terms = _content_terms(query)
-    if has_misspelling(query):
+    # Local correction rejects ambiguous consonant substitutions. A strong
+    # hint can still justify interpretation without automatically rewriting it.
+    if has_misspelling(query) or has_unresolved_spelling_hint(query):
         return True
     if not history:
         return len(terms) < THIN_QUERY_TERMS

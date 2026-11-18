@@ -22,7 +22,8 @@ _GENERIC = {"it", "me", "us", "we", "my", "what", "which", "who", "where", "when
             "college", "school", "campus", "office", "faculty", "unit", "dean", "head", "staff",
             "fee", "fees", "cost", "help", "program", "programs", "course", "courses", "gpa", "gwa", "id",
             "in", "on", "at", "by", "from", "with", "to", "than", "under", "art", "arts", "name",
-            "current", "new", "old", "latest", "history", "academic", "for", "of", "and", "or", "the", "a", "an"}
+            "current", "new", "old", "latest", "history", "academic", "for", "of", "and", "or", "the", "a", "an",
+            "all", "every", "each", "list", "show", "tell", "please", "pls", "plz"}
 _GENERIC |= {word + "s" for word in _GENERIC}
 _HEADINGS = ("collection_heading", "section_heading", "section", "header")
 # Explicit institutional labels only; never drop arbitrary name qualifiers.
@@ -41,6 +42,34 @@ _ROSTER_HEADING = re.compile(
     r"\b(?:academic\s+council|personnel|staff|faculty\s+roster|leadership|administration|officials?|"
     r"organizational\s+structure|colleges\s+(?:&|and)\s+academic\s+units|deans?\s+(?:update|roster|list))\b", re.IGNORECASE,
 )
+
+
+def request_text(question):
+    """Normalize conversational edges and role order for parsing, not stored input."""
+    text = (question or "").strip(" .,?!\t\r\n")
+    courtesy = r"(?:please|pls|plz|kindly|thanks|thank\s+you|(?:can\s+you\s+)?tell\s+me)"
+    # Spelling repair can leave an incomplete identity question ("who is?").
+    # Strip its grammar, but not another named subject such as "who is president".
+    identity_tail = r"who(?:\s+(?:is|are|was|were)(?:\s+(?:it|that|he|she|they))?)?"
+    while text:
+        cleaned = re.sub(rf"^{courtesy}\b[\s,]*", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"[\s,]+(?:{courtesy}|{identity_tail})$", "", cleaned,
+                         flags=re.IGNORECASE).strip(" .,?!\t\r\n")
+        if cleaned == text:
+            break
+        text = cleaned
+    reverse = re.fullmatch(
+        r"(?:(?:who|what)\s+(?:is|are)\s+(?:the\s+)?)?(.+?)(?:['\u2019]s)?\s+"
+        r"(deans?|heads?|chairs?)(\s+(?:in|during|as of|for academic year)\s+20\d{2}\b.*)?",
+        text, re.IGNORECASE,
+    )
+    if reverse and (_HEAD.search(reverse[1]) or re.match(r"^(?:bachelor|master|doctor|associate)\b|^(?:ba|bs|ma)\s+", reverse[1], re.IGNORECASE) or (
+        re.fullmatch(r"[a-z]{2,12}", reverse[1], re.IGNORECASE)
+        and reverse[1].casefold() not in _GENERIC
+        and (is_known_acronym(reverse[1]) or reverse[1].isupper())
+    )):
+        text = f"{reverse[2]} of {reverse[1]}{reverse[3] or ''}"
+    return text
 
 
 @dataclass(frozen=True)
@@ -115,7 +144,11 @@ def _names(text):
 
 def requested_unit(question):
     """Only bind a single explicit subject; do not collapse compound requests."""
-    question = (question or "").strip()
+    question = request_text(question)
+    if any(is_known_acronym(match[1]) for match in re.finditer(
+        r"\b(?:and|or|versus|vs)\s+([a-z]{2,12})\b", question, re.IGNORECASE,
+    )):
+        return None
     names = _names(question)
     if len(names) == 1:
         name, start, end = names[0]
@@ -220,7 +253,7 @@ def document_matches_unit(document, request):
 
 def program_dean_subject(question):
     """A potential program identifier, not an assertion that it is a college."""
-    text = (question or "").strip()
+    text = request_text(question)
     match = re.search(r"\bdeans?\s+(?:of|for|in|at)\s+(?:the\s+)?(.+)$", text, re.IGNORECASE)
     if not match:
         return None
@@ -229,10 +262,18 @@ def program_dean_subject(question):
     explicit_program = bool(re.match(r"(?:program|course|degree)\s+(?:in|of|for)?\s*", subject, re.IGNORECASE))
     subject = re.sub(r"^(?:program|course|degree)\s+(?:(?:in|of|for)\s+)?", "", subject, flags=re.IGNORECASE)
     subject = re.sub(r"\s+(?:program|course|degree)$", "", subject, flags=re.IGNORECASE)
-    if _HEAD.search(subject) or re.search(r"\b(?:and|or|also|versus|vs)\b", subject, re.IGNORECASE):
+    if _HEAD.search(subject):
         return None
     if re.match(r"^(?:bachelor|master|doctor|associate)\b", subject, re.IGNORECASE):
+        coordinated = re.search(r"\b(?:and|or|also|versus|vs)\s+(?:the\s+)?"
+                                r"(?:bachelor|master|doctor|associate|deans?|president)\b", subject, re.IGNORECASE)
+        if coordinated or any(is_known_acronym(match[1]) for match in re.finditer(
+            r"\b(?:and|or|also|versus|vs)\s+([a-z]{2,12})\b", subject, re.IGNORECASE,
+        )):
+            return None
         return subject
+    if re.search(r"\b(?:and|or|also|versus|vs)\b", subject, re.IGNORECASE):
+        return None
     # Degree-code prefixes are candidates only; the catalog must prove them.
     if (re.fullmatch(r"[a-z]{2,12}(?:\s+[a-z][a-z -]{1,60})?", subject, re.IGNORECASE)
             and subject.casefold() not in _GENERIC | _UNIT_ALIASES.keys()
@@ -243,7 +284,7 @@ def program_dean_subject(question):
 
 def program_overview_subject(question):
     """Treat only a bare degree title/code as an overview, not an arbitrary topic."""
-    text = (question or "").strip(" .?!\t")
+    text = request_text(question)
     if re.search(r"\b(?:fees?|tuition|requirements?|curriculum|subjects?|credits?|deans?|objectives?|admission|enrollment)\b",
                  text, re.IGNORECASE):
         return None

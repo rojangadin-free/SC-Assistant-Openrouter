@@ -33,6 +33,72 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_latin_honors_probes_handle_supported_typos_without_topic_substitution(self):
+        from rag.source_policy import honors_queries
+
+        for question in ("how do i become latin honot", "how do I become latin honors", "latin honir requirements",
+                         "graduation honors requirements", "summa cumlaude GWA"):
+            probes = honors_queries(question)
+            self.assertEqual(len(probes), 4)
+            self.assertTrue(any("Summa Cum Laude" in probe for probe in probes))
+        for question in (None, "", 42, "latin history requirements", "latin hint requirements", "admission requirements",
+                         "academic excellence award", "latin HONOT requirements", "latin honot101 requirements"):
+            self.assertEqual(honors_queries(question), [])
+
+    def test_honors_evidence_uses_definitions_not_academic_excellence_mentions(self):
+        from rag.source_policy import honors_documents, HONORS_GUIDANCE
+
+        criteria = document(text="Summa Cum Laude. This honor requires GWA 1.00 to 1.20.\n"
+                            "Magna Cum Laude. This honor requires GWA 1.21 to 1.30.\n"
+                            "Cum Laude. This honor requires GWA 1.31 to 1.50.", page=52)
+        guidelines = document(text="A candidate for honors must have good moral character and no failed grades.", page=53)
+        award = document(text="Academic Excellence Award. GWA 1.00 to 1.30 is for students who failed to qualify for "
+                         "Summa Cum Laude and Magna Cum Laude.", page=54)
+        reference = document(text="See the handbook for Summa Cum Laude GWA requirements.")
+        unrelated = document(text="Admission requires good moral character.")
+        self.assertEqual(honors_documents([award, guidelines, unrelated, reference, criteria]), [criteria, guidelines])
+        split_definition = document(text="This honor requires a general weighted average of 1.00 to 1.20.",
+                                    section_heading="Summa Cum Laude", section="Summa Cum Laude")
+        self.assertEqual(honors_documents([split_definition]), [split_definition])
+        self.assertIn("separate row", HONORS_GUIDANCE)
+        self.assertIn("Academic Excellence Award is a different award", HONORS_GUIDANCE)
+        self.assertNotIn("1.00", HONORS_GUIDANCE)
+
+    def test_sibling_discount_intent_is_family_policy_not_general_enrollment_or_scholarships(self):
+        from rag.source_policy import family_discount_queries, family_discount_documents, family_discount_guidance, enrollment_queries
+        for question in ("Are there discounts for siblings enrolled at the same time?", "family members discount",
+                         "My brother and sister are enrolling together. Is there a tuition discount?",
+                         "Sibling enrolment discount", "Can cousins get a family discount?"):
+            with self.subTest(question=question):
+                self.assertTrue(family_discount_queries(question))
+                self.assertEqual(enrollment_queries(question), [])
+        for question in ("How do I enroll?", "Academic scholarship requirements", "Library overdue fees",
+                         "Can you access my siblings' grades?", "Siblings enrollment requirements",
+                         "How much is the tuition for my sister?", "Academic scholarship requirements for my brother",
+                         "My brother has an academic scholarship. What discount does he get?"):
+            self.assertEqual(family_discount_queries(question), [])
+        self.assertTrue(enrollment_queries("How do I enroll?"))
+        policy = document(BASE, "Members of the Family Nucleus. A discount from tuition fees is granted to parents and children "
+                          "carrying a full subject load. Maximum four direct members; full payment column; 2:10%, 3:15%, 4:20%. "
+                          "Cannot combine with other school-funded scholarship grants.", section_heading="Other Scholarship Grants")
+        unrelated = document(UPDATE, "Academic excellence discount: 100% for Rank 1, 50% for Rank 2.", section_heading="Scholarships")
+        stale_heading = document(BASE, "Academic excellence discount: 100% for Rank 1.", section_heading="Family Members Discount")
+        self.assertEqual(family_discount_documents([policy, unrelated, stale_heading]), [policy])
+        selected = select_documents([policy, unrelated], ["Are there discounts for siblings enrolled at the same time?"],
+                                    dates=DATES, uploads=UPLOADS, today=TODAY)
+        self.assertFalse(selected.restricted)
+        self.assertIn(policy, selected.documents)
+        guidance = family_discount_guidance("sibling discounts", selected.documents)
+        self.assertIn("<family_discount_request>", guidance)
+        self.assertIn("2024", guidance)
+        self.assertIn("Do not describe its terms as confirmed current", guidance)
+        updated = document("Family_Discount_2026.docx", "Family members discount: full subject load, 12% tuition reduction.")
+        selected = select_documents([policy, updated], ["sibling discounts"], dates=DATES,
+                                    uploads={updated.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertTrue(selected.restricted)
+        self.assertEqual(selected.documents, [updated])
+        self.assertNotIn("<dated_family_discount_policy>", family_discount_guidance("sibling discounts", selected.documents))
+
     def test_institution_offerings_include_other_levels_but_named_scope_does_not_expand(self):
         from rag.source_policy import program_offering_scope, program_list_guidance, offering_catalog_documents
         for query, scope in (("programs offered", "all"), ("What programs does Samar College offer?", "all"),
