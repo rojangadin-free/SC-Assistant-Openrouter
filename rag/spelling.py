@@ -444,6 +444,16 @@ def is_known_acronym(word: str) -> bool:
     return (word or "").casefold() in _SEED_ACRONYMS
 
 
+def program_code_candidates(word: str) -> List[str]:
+    """Discovery hints for shortened known degree codes, not proven affiliations."""
+    word = (word or "").casefold()
+    if not re.fullmatch(r"[a-z]{3,10}", word) or is_known_acronym(word):
+        return []
+    candidates = [prefix + word for prefix in ("bs", "ba", "b", "ms", "ma", "m")
+                  if is_known_acronym(prefix + word)]
+    return candidates if len(candidates) == 1 else []
+
+
 # Snapshot identity prevents an in-flight old lookup from caching a result for
 # a vocabulary published after it started.
 @lru_cache(maxsize=4096)
@@ -655,6 +665,11 @@ def _repairs(text: str) -> List[Tuple[re.Match, str]]:
     found: List[Tuple[re.Match, str]] = []
     for index, match in enumerate(matches):
         token = match.group(0)
+        if program_code_candidates(token) and (
+            re.search(r"\bdeans?\s+(?:of|for|in|at)\s+(?:the\s+)?$", text[:match.start()], re.I)
+            or re.match(r"\s+deans?\b", text[match.end():], re.I)
+        ):
+            continue
         # Neighbors must be original words; one edit cannot justify the next.
         fixed = _real_word_repair(token, lowered[index + 1:], lowered[:index])
         if not fixed and token == token.lower():

@@ -280,6 +280,8 @@ def unit_selection_guidance(selection, documents, today=None):
 
 def leadership_guidance(query):
     query = request_text(query)
+    if deans_list_queries(query):
+        return ""
     named_role = re.search(r"\b(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?|officials?)\b",
                            query or "", re.IGNORECASE)
     terse_role = re.match(r"\s*(?:the\s+)?(?:deans?|principals?|presidents?|heads?|chairs?|directors?|registrars?)"
@@ -305,6 +307,8 @@ def leadership_guidance(query):
 def leadership_roster_queries(query):
     """Acquire the full roster only for an unscoped dean-list request."""
     query = request_text(query)
+    if deans_list_queries(query):
+        return []
     words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
     allowed = {"who", "what", "are", "is", "the", "all", "our", "current", "currently", "list", "names", "name",
                "show", "give", "tell", "me", "us", "please", "deans", "college", "colleges", "academic", "departments",
@@ -323,6 +327,24 @@ def roster_source_names(sources):
 def _terms(text):
     words = re.findall(r"[a-z][a-z0-9]*", text.lower())
     return {_ALIASES.get(word, word) for word in words if word not in _NOISE and len(word) > 1}
+
+
+def overview_documents(documents, topic):
+    """Keep body evidence for the topic, allowing ordinary singular/plural forms."""
+    from rag.unit_identity import _plural_equal
+
+    terms = _terms(topic)
+    selected = []
+    for document in documents:
+        text = re.sub(r"(?m)^\[SECTION: [^\n]*\]\s*", "", getattr(document, "page_content", "") or "")
+        body = _terms(text)
+        if (terms and (len(text.split()) > 2 or re.search(r"[:=|]\s*\S|\d", text))
+                and not re.search(r"\btable of contents\b", text[:300], re.I)
+                and not re.search(r"\.{3,}\s*\d+", text)
+                and all(any(_plural_equal(term, word) for word in body) for term in terms)
+                and not re.fullmatch(r"\s*(?:see|refer to|consult)\b[^.!?]*[.!?]?\s*", text, re.I)):
+            selected.append(document)
+    return selected
 
 
 def _effective(source, dates):
@@ -530,6 +552,50 @@ def institution_history_queries(query) -> list[str]:
     return [f"{query.strip()} historical account humble beginnings", f"{query.strip()} founding origins established"]
 
 
+_DEANS_LIST = re.compile(r"\bdean(?:['\u2019]s|s['\u2019]?)?\s+list\b", re.IGNORECASE)
+
+
+def deans_list_queries(query):
+    """Dean's List is academic recognition, not an enumeration of office holders."""
+    if not isinstance(query, str) or not _DEANS_LIST.search(query):
+        return []
+    return ["Dean's List academic recognition eligibility requirements grades GWA",
+            "Dean's List academic scholarship commendable academic achievement"]
+
+
+def deans_list_documents(documents):
+    """Keep substantive academic mentions; a roster title alone is not evidence."""
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        if (_DEANS_LIST.search(text + " " + headings)
+                and re.search(r"\b(?:gwa|grades?|weighted average|semesters?|scholars?|scholarships?|"
+                              r"eligibility|requirements?|academic achievement|academic recognition)\b", text, re.IGNORECASE)
+                and not re.search(r"\btable of contents\b", text[:300], re.IGNORECASE)):
+            selected.append(document)
+    return selected
+
+
+DEANS_LIST_GUIDANCE = """<deans_list_academic_request>
+Dean's List (also typed 'deans list') refers to academic recognition, not a roster
+of college deans. Answer only the requested academic information with citations.
+For a bare topic such as 'deans list', give a short overview of the documented
+Dean's List references. Do not reinterpret it as a request for every eligibility
+criterion, or append a statement about unavailable standalone criteria.
+Use explicit Dean's List passages; do not substitute Latin honors, Academic
+Excellence Award, or a separate citation award's eligibility for Dean's List
+eligibility. A passage mentioning Dean's List as a prerequisite for another award
+or scholarship establishes that relationship only, not standalone entry criteria.
+Do not invent GWA thresholds, recipients, or procedures. If the exact requested
+detail cannot be established, say only 'I cannot confirm that detail.' Do not
+claim a document is missing or append commentary about retrieval, access, missing
+passages, or unrequested criteria. No follow-up offers, login reminders, or
+unrequested scholarship discount lists. Identify a dated edition when relevant.
+</deans_list_academic_request>"""
+
+
 def honors_queries(query):
     """Retrieve distinct honor definitions, not just related academic awards."""
     from rag.spelling import correct_query, has_unresolved_spelling_hint, spelling_candidates
@@ -690,6 +756,8 @@ def _relevant(document, queries, unit=None):
     evidence = body_terms | heading_terms
     if queries and family_discount_queries(queries[0]) and not any(enrollment_queries(query) for query in queries):
         return bool(family_discount_documents([document]))
+    if queries and deans_list_queries(queries[0]):
+        return bool(deans_list_documents([document]))
     level = program_offering_scope(queries[0]) if queries else ""
     if level in {"college", "undergraduate"}:
         basic_or_technical = re.search(r"\b(?:basic education|elementary program|junior high school|senior high school|"
@@ -831,7 +899,8 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
             documents = matching
         else:
             unit = None
-    if enrollment and not any(program_catalog_queries(query) or department_catalog_queries(query) for query in queries):
+    if ((enrollment and not any(program_catalog_queries(query) or department_catalog_queries(query) for query in queries))
+            or (queries and deans_list_queries(queries[0]))):
         documents = [doc for doc in documents if _relevant(doc, queries, unit)]
     sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
     ordinary = Selection(documents[:limit], False, tuple(sorted(original_sources - sources)),

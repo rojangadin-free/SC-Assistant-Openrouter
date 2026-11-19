@@ -46,6 +46,35 @@ def _has_anaphora(query: str) -> bool:
     return any(word in _ANAPHORA for word in words)
 
 
+def overview_topic(question: str) -> str:
+    """Recognize short standalone topics, not scoped questions or references."""
+    from rag.unit_identity import requested_unit
+
+    text = request_text(question or "")
+    text = re.sub(r"^(?:tell me about|information (?:on|about)|info (?:on|about)|about)\s+", "", text, flags=re.I)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'\u2019 -]*", text):
+        return ""
+    words = re.findall(r"[a-z]+", text.lower())
+    if not 1 <= len(words) <= 3 or _has_anaphora(text):
+        return ""
+    excluded = (_STOPWORDS | _AFFIRMATION_STARTERS | {
+        "hello", "hi", "thanks", "help", "explain", "find", "describe", "compare", "define",
+        "current", "latest", "today", "now", "total", "count", "number", "location", "locations", "hours",
+        "requirement", "requirements", "criteria", "eligibility", "grade", "grades", "gwa", "gpa", "schedule", "schedules",
+        "assignment", "assignments", "balance", "records", "record", "profile",
+        "admission", "admissions", "enrollment", "enrolment", "scholarship", "scholarships", "tuition", "fees",
+        "honor", "honors", "honour", "honours", "program", "programs", "course", "courses", "degree", "degrees",
+        "bachelor", "master", "doctor", "associate",
+        "departments", "colleges", "dean", "deans", "principal", "principals", "president", "officials",
+    })
+    if any(word in excluded for word in words):
+        return ""
+    unit = requested_unit(text)
+    if unit and unit.protected:
+        return ""
+    return text.strip()
+
+
 def should_optimize(question: str, history: Optional[List[Dict[str, str]]]) -> bool:
     """Match the reference gate: misspellings, thin questions, and follow-ups."""
     query = (question or "").strip()

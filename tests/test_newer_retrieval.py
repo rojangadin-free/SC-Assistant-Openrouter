@@ -1,4 +1,4 @@
-"""Offline regressions for newer-first acquisition, selection, and chat context.
+"""Offline regressions for age-neutral acquisition, selection, and chat context.
 
 Run: python -B -X utf8 tests/test_newer_retrieval.py -v
 Only selected real chain definitions execute; no application startup or corpus.
@@ -110,7 +110,13 @@ class Hybrid:
     def matching(self, query, metadata_filter):
         source = metadata_filter["source"]
         names = [source["$eq"]] if "$eq" in source else source["$in"]
-        return [doc for doc in self.current if doc.metadata["source"] in names]
+        return [doc for doc in self.all_documents() if doc.metadata["source"] in names]
+
+    def all_documents(self):
+        documents = {}
+        for doc in [*self.current, *self.baseline]:
+            documents.setdefault(doc.metadata["chunk_id"], doc)
+        return list(documents.values())
 
     def fetch(self, leaf, query, *, filter):
         self.calls.append((leaf, query, deepcopy(filter)))
@@ -118,7 +124,7 @@ class Hybrid:
 
     def unfiltered(self, query):
         self.calls.append(("ensemble", query, None))
-        return list(self.baseline)
+        return self.all_documents()
 
     def rrf(self, lists):
         documents, scores = {}, {}
@@ -166,7 +172,7 @@ class NewerRetrievalTests(unittest.TestCase):
                         self.assertNotIn("ACADEMIC_EXCELLENCE", prompt)
                         self.assertEqual(result["messages_to_llm"][-1].content, question)
 
-    def test_newer_honors_update_is_not_completed_from_old_thresholds(self):
+    def test_honors_criteria_and_eligibility_survive_across_source_ages(self):
         old = document(BASE, "Summa Cum Laude. GWA 1.00 to 1.20; old honors thresholds.", "old-thresholds", page=52)
         update = document("Graduation_Honors_2026.docx", "Graduation honors specific guidelines and candidate requirements. "
                           "A candidate for honors must satisfy UPDATED_ELIGIBILITY and good moral character.", "update")
@@ -174,8 +180,8 @@ class NewerRetrievalTests(unittest.TestCase):
             with self.subTest(mode=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
                 self.install([update], baseline=[old])
                 result = self.chat("how do i become latin honot")
-                self.assertEqual(result["citations"], ["update"], self.output.getvalue())
-                self.assertNotIn("1.00 to 1.20", result["messages_to_llm"][0].content)
+                self.assertEqual(set(result["citations"]), {"update", "old-thresholds"}, self.output.getvalue())
+                self.assertIn("1.00 to 1.20", result["messages_to_llm"][0].content)
                 self.assertIn("UPDATED_ELIGIBILITY", result["messages_to_llm"][0].content)
 
     def setUp(self):
@@ -256,7 +262,7 @@ class NewerRetrievalTests(unittest.TestCase):
         self.maps = Mock(wraps=self.pool.map_ordered)
         self.dates = {BASE.lower(): {"filename": BASE, "effective_date": "2024-06-01"}}
         self.uploads = {}
-        self.old = [document(BASE, f"Archived college departments and enrollment: OLD_RULE_{i}.",
+        self.old = [document(BASE, f"Archived college departments: OLD_RULE_{i}.",
                              f"old-{i}", page=i + 1) for i in range(45)]
         self.selections = Mock(wraps=self.policy.select_documents)
         self.ranking = Mock(wraps=self.reranker.rerank)
@@ -318,6 +324,8 @@ class NewerRetrievalTests(unittest.TestCase):
         for connection in self.sockets:
             connection.assert_not_called()
         self.freshness.get_doc_dates.assert_not_called()
+        self.ns["source_priority"].assert_not_called()
+        self.ns["freshness_block"].assert_not_called()
 
     def install(self, current, baseline=None):
         self.hybrid = Hybrid(current, self.old if baseline is None else baseline)

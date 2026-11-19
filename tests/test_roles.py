@@ -193,7 +193,9 @@ check("guests are treated as applicants", "PROSPECTIVE STUDENT" in gue)
 check("guests get the new-student path", "TRANSFEREE" in gue)
 check("guests are not implied to have a record",
       "never imply you can see their grades" in gue)
-check("guests are invited to log in exactly once", "ONCE" in gue)
+check("guests receive login guidance only for their own record requests",
+      "Mention logging in only if they explicitly ask for their own" in gue
+      and "never append login reminders to general policy answers" in gue)
 check("the applicant path is restricted to admission or enrollment questions",
       "Only for admission or enrollment questions" in gue
       and "Treat every process question" not in gue)

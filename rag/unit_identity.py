@@ -5,7 +5,7 @@ import unicodedata
 from copy import copy
 from dataclasses import dataclass
 
-from rag.spelling import is_known_acronym
+from rag.spelling import is_known_acronym, program_code_candidates
 
 _HEAD = re.compile(
     r"\b(?:college|school|department|faculty|institute|office|center|centre|university)\s+(?:of|for)\s+|"
@@ -66,7 +66,7 @@ def request_text(question):
     if reverse and (_HEAD.search(reverse[1]) or re.match(r"^(?:bachelor|master|doctor|associate)\b|^(?:ba|bs|ma)\s+", reverse[1], re.IGNORECASE) or (
         re.fullmatch(r"[a-z]{2,12}", reverse[1], re.IGNORECASE)
         and reverse[1].casefold() not in _GENERIC
-        and (is_known_acronym(reverse[1]) or reverse[1].isupper())
+        and (is_known_acronym(reverse[1]) or reverse[1].isupper() or program_code_candidates(reverse[1]))
     )):
         text = f"{reverse[2]} of {reverse[1]}{reverse[3] or ''}"
     return text
@@ -277,7 +277,7 @@ def program_dean_subject(question):
     # Degree-code prefixes are candidates only; the catalog must prove them.
     if (re.fullmatch(r"[a-z]{2,12}(?:\s+[a-z][a-z -]{1,60})?", subject, re.IGNORECASE)
             and subject.casefold() not in _GENERIC | _UNIT_ALIASES.keys()
-            and (explicit_program or re.match(r"^[bmad]", subject, re.IGNORECASE))):
+            and (explicit_program or re.match(r"^[bmad]", subject, re.IGNORECASE) or program_code_candidates(subject))):
         return subject
     return None
 
@@ -308,6 +308,8 @@ def program_affiliations(subject, documents, *, alias_documents=None, include_al
         return {}
     documents = list(documents)
     compact_target = target.replace(" ", "")
+    shorthand_codes = program_code_candidates(target)
+    candidate_codes = {compact_target, *shorthand_codes}
     degree = re.compile(r"^(?:bachelor|master|doctor|associate)\b", re.IGNORECASE)
     excluded = re.compile(r"\b(?:staff|faculty|biograph(?:y|ies)|qualifications?|alumni|academic council|deans? update)\b",
                           re.IGNORECASE)
@@ -326,11 +328,12 @@ def program_affiliations(subject, documents, *, alias_documents=None, include_al
             continue
         text = headings + "\n" + (getattr(document, "page_content", "") or "")
         for match in definition.finditer(text):
-            if re.sub(r"[ .-]", "", match[2]).casefold() == compact_target:
+            if re.sub(r"[ .-]", "", match[2]).casefold() in candidate_codes:
                 title = _program_title(match[1])
                 if title and not any(existing[0] is document for existing in labels.setdefault(title, [])):
                     labels[title].append((document, match[0]))
     affiliations = {}
+    matched_titles = set()
     for document in documents:
         metadata = getattr(document, "metadata", None) or {}
         headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
@@ -371,11 +374,13 @@ def program_affiliations(subject, documents, *, alias_documents=None, include_al
                 codes = [re.sub(r"[ .-]", "", code).casefold() for code in re.findall(r"\(([a-z0-9 .-]{2,24})\)", row,
                                                                                   re.IGNORECASE)]
                 titles = (_program_title(row), direct_normalized)
-                label = target if compact_target in codes else next((name for name in labels if any(
+                label = target if candidate_codes.intersection(codes) else next((name for name in labels if any(
                     title == name or re.match(rf"^{re.escape(name)}\s+(?:majors?\s+in|with\s+specializations?\s+in)\b", title)
                     for title in titles
                 )), None)
                 if label is not None:
+                    if shorthand_codes:
+                        matched_titles.add(titles[0])
                     key = next((name for name in affiliations if same_unit(name, parent)), parent)
                     proofs = [document]
                     if include_alias_evidence:
@@ -390,6 +395,8 @@ def program_affiliations(subject, documents, *, alias_documents=None, include_al
                         if not any(existing is proof for existing in affiliations.setdefault(key, [])):
                             affiliations[key].append(proof)
             index += 1
+    if shorthand_codes and len(matched_titles) > 1:
+        return {}
     # A genuine college's own acronym takes precedence over a coincidental degree code.
     if re.fullmatch(r"[a-z]{2,12}", target) and any(
         target == "".join(word[0] for word in _tokens(name)) or same_unit(target, name)

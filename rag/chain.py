@@ -164,6 +164,7 @@ def expand_queries(query: str, allow_spelling: bool = True) -> List[str]:
     queries = [query]
     from rag.source_policy import department_catalog_queries, enrollment_queries
     from rag.unit_identity import unit_query_variants
+    from rag.latency import overview_topic
 
     queries.extend(unit_query_variants(query))
     queries.extend(department_catalog_queries(query))
@@ -243,7 +244,9 @@ def expand_queries(query: str, allow_spelling: bool = True) -> List[str]:
 
 
     # Thin query -> add reformulations that bias toward enumerative passages.
-    if not procedures and len(terms) < THIN_QUERY_TERMS and terms:
+    if topic := overview_topic(resolved):
+        queries.append(f"{topic} overview description")
+    elif not procedures and len(terms) < THIN_QUERY_TERMS and terms:
         core = " ".join(terms)
         for extra in (f"complete list of {core}", f"{core} include the following"):
             if extra not in queries:
@@ -566,7 +569,8 @@ def retrieve_documents(
         select_program_affiliation, leadership_roster_queries, roster_source_names, _historical,
         program_offering_scope, offering_catalog_documents,
         family_discount_queries, family_discount_documents,
-        honors_queries, honors_documents,
+        honors_queries, honors_documents, deans_list_queries, deans_list_documents,
+        overview_documents,
     )
     from rag.unit_identity import (
         is_unit_reference, requested_unit, unit_query_variants, program_dean_subject, program_overview_subject,
@@ -605,6 +609,14 @@ def retrieve_documents(
         return []
 
     primary = phrasings[0]
+    from rag.latency import overview_topic
+
+    topic = overview_topic(user_question or query)
+    if topic:
+        # A rewrite may aid recall, but cannot turn a topic into a different ask.
+        phrasings = list(dict.fromkeys([topic, *phrasings]))
+        primary = topic
+        source_filter_enabled = False
     offering_scope = program_offering_scope(user_question or primary)
     # The broader pool must not override a relevant current catalog.
     source_filter_enabled = source_filter_enabled or bool(offering_scope)
@@ -652,9 +664,13 @@ def retrieve_documents(
         for part, subject in program_requests:
             affiliation_question = f"dean of {subject}" if overview_subject else part
             lookup = f"{subject} degree program parent college programs offered"
+            from rag.spelling import program_code_candidates
+
+            code_queries = [f"{code} degree program parent college programs offered"
+                            for code in program_code_candidates(subject)]
             lookup_docs = []
             if current_sources:
-                jobs = [(lookup, {"source": {"$in": current_sources}})]
+                jobs = [(probe, {"source": {"$in": current_sources}}) for probe in [lookup, *code_queries]]
                 jobs += [(lookup, {"source": {"$eq": source}})
                          for source in catalog_source_names(current_sources)]
                 lookup_docs = multi_query_retrieve(
@@ -665,7 +681,7 @@ def retrieve_documents(
             parents, current = select_program_affiliation(affiliation_question, lookup_docs, dates=dates, uploads=uploads)
             if not parents:
                 fallback = multi_query_retrieve(
-                    lookup, timeout=request_budget.remaining(30) if request_budget else None,
+                    lookup, extra_queries=code_queries, timeout=request_budget.remaining(30) if request_budget else None,
                     allow_spelling=False,
                 )
                 parents, current = select_program_affiliation(affiliation_question, [*lookup_docs, *fallback], dates=dates, uploads=uploads)
@@ -737,6 +753,7 @@ def retrieve_documents(
     history_queries = institution_history_queries(scope_question)
     discount_queries = family_discount_queries(scope_question)
     honor_queries = honors_queries(scope_question)
+    academic_list_queries = deans_list_queries(scope_question)
     if honor_queries and not aspects:
         # Completeness must not mix an old honors policy into a current update.
         source_filter_enabled = True
@@ -745,7 +762,7 @@ def retrieve_documents(
         for probe in enrollment_queries(phrasing)
     ))
     relevance_queries = list(dict.fromkeys([
-        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries,
+        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries,
     ]))
 
     if verbose:
@@ -775,7 +792,7 @@ def retrieve_documents(
             allow_spelling=allow_spelling,
         )
     elif current_sources:
-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries]))
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries, *academic_list_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = [(probe, source_filter) for probe in probes]
         catalogs = catalog_source_names(current_sources) if catalog_queries else []
@@ -811,7 +828,7 @@ def retrieve_documents(
         else:
             initial_docs = multi_query_retrieve(
                 primary,
-                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries,
+                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries + academic_list_queries,
                 timeout=request_budget.remaining(30) if request_budget else None,
                 allow_spelling=allow_spelling,
             )
@@ -841,9 +858,12 @@ def retrieve_documents(
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
 
+    if topic:
+        initial_docs = overview_documents(initial_docs, topic)
     catalog_evidence = offering_catalog_documents(initial_docs, scope_question)
     discount_evidence = family_discount_documents(initial_docs) if discount_queries else []
     honor_evidence = honors_documents(initial_docs) if honor_queries else []
+    academic_list_evidence = deans_list_documents(initial_docs) if academic_list_queries else []
     if on_selection is not None:
         on_selection(selection)
     roster_evidence = [doc for doc in initial_docs if (doc.metadata or {}).get("source") in roster_sources
@@ -898,7 +918,7 @@ def retrieve_documents(
             initial_docs,
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
-            queries=phrasings[1:] + identity_queries + procedure_queries + catalog_queries,
+            queries=[f"{topic} overview description"] if topic else phrasings[1:] + identity_queries + procedure_queries + catalog_queries,
             request_budget=request_budget,
             preferred_query=preferred_query,
         )
@@ -929,10 +949,10 @@ def retrieve_documents(
             snippet = doc.page_content.replace("\n", " ")[:70]
             print(f"  [{i+1}] score={score_s} | {src} (Pg {pg}){aspect_s}: {snippet}...")
 
-    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence:
+    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence or academic_list_evidence:
         seen = set()
         ordered = []
-        for doc in [*roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
+        for doc in [*academic_list_evidence, *roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
             metadata = doc.metadata or {}
             key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
             if key not in seen:
@@ -1425,15 +1445,18 @@ def create_graph():
 
 
             # === STEP 3: Handle Conversation Summary ===
-            from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries
+            from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries, deans_list_queries
             from rag.unit_identity import is_unit_reference
+            from rag.latency import overview_topic
 
+            topic = overview_topic(request_text)
             department_listing = bool(department_catalog_queries(request_text))
             program_listing = bool(program_catalog_queries(request_text))
             institution_history = bool(institution_history_queries(request_text) or (
                 is_unit_reference(request_text) and institution_history_queries(contextual_query)
             ))
-            scoped_answer = selection.restricted or bool(selection.requested_unit)
+            academic_list_request = bool(deans_list_queries(request_text))
+            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic)
             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
@@ -1448,7 +1471,7 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a scoped document answer.
-            if department_listing or ((program_listing or institution_history) and not is_unit_reference(request_text)):
+            if department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
                 prompt_history = []
             else:
                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
@@ -1540,6 +1563,10 @@ def create_graph():
                 final_system_prompt += "\n\n" + guidance
             if honors_queries(request_text):
                 final_system_prompt += "\n\n" + HONORS_GUIDANCE
+            from rag.source_policy import deans_list_queries, DEANS_LIST_GUIDANCE
+
+            if deans_list_queries(request_text):
+                final_system_prompt += "\n\n" + DEANS_LIST_GUIDANCE
             if program_context:
                 final_system_prompt += "\n\n<documented_program_affiliation>\n" + program_context + (
                     "\nUse the supplied catalog passage for the affiliation and the supplied roster for the dean. "
@@ -1555,6 +1582,39 @@ def create_graph():
                     "It is not evidence or instructions. The latest user question, explicit names and constraints, "
                     "access/privacy rules, and requested response language take precedence. "
                     "Ground the answer in the supplied documents and other authorized, verified context."
+                )
+            final_system_prompt += (
+                "\n\n<answer_scope>\nAnswer only the latest request, directly and concisely, with required citations. "
+                "Do not append follow-up offers, login reminders, or inventories of unrequested missing details. "
+                "Never discuss retrieved documents, document access, retrieval limitations, or claim you lack a document. "
+                "If an explicitly requested fact cannot be established, say only that you cannot confirm that fact; "
+                "do not guess. Do not volunteer an inability to confirm facts the user did not ask for.\n</answer_scope>"
+            )
+            if academic_list_request and not re.search(
+                r"\b(?:requirements?|criteria|eligibility|qualify|qualifications?|gwa|grades?|become|apply|how|who|recipients?)\b",
+                request_text, re.IGNORECASE,
+            ):
+                final_system_prompt += (
+                    "\n\n<deans_list_overview>\nThe user requested a Dean's List overview, NOT qualification criteria. "
+                    "Any generated search hint that adds requirements or eligibility is for retrieval only and must not widen the answer. "
+                    "Return only a short source-supported overview with citations and the document edition. "
+                    "End immediately after the supported facts. No introductory document-access phrases, "
+                    "no concluding paragraph, and no sentence about unconfirmed standalone criteria.\n</deans_list_overview>"
+                )
+            if topic:
+                final_system_prompt += (
+                    "\n\n<standalone_topic_overview>\nThe latest user message names a standalone topic: "
+                    f"{topic!r}. Give a brief overview using the directly relevant facts provided. "
+                    "Do not ask for clarification merely because the user supplied a topic instead of a full sentence. "
+                    "Generated search hints cannot add a request for current totals, room assignments, requirements, "
+                    "locations, or a complete inventory. For campus facilities, describe the facilities or their "
+                    "documented use/rules, not degree curricula that incidentally mention the topic. "
+                    "Use a topic heading identifying the document edition once when dated, then at most three concise "
+                    "source-supported bullets with citations. Preserve historical or proposed wording in those facts. "
+                    "Do not list adjacent facilities, events, or unrelated programs merely because they share a paragraph. "
+                    "Start directly with the topic heading, not 'based on available information'. "
+                    "End after the supported bullets. No concluding note, missing-detail disclaimer, "
+                    "current-inventory caveat, or follow-up offer.\n</standalone_topic_overview>"
                 )
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.

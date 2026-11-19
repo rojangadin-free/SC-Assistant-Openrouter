@@ -179,8 +179,8 @@ _GUEST_GUIDANCE = (
     "- For an admission question, spell out the relevant requirements, where to go, "
     "and what an applicant brings. Expand acronyms the first time you use them.\n"
     "- They have no record, so never imply you can see their grades, balance or "
-    "schedule. Mentioning that logging in enables personalised help is welcome "
-    "ONCE, at the end."
+    "schedule. Mention logging in only if they explicitly ask for their own "
+    "personal records; never append login reminders to general policy answers."
 )
 
 _GUIDANCE = {
