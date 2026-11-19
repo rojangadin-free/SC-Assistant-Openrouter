@@ -33,6 +33,33 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_bare_history_defaults_to_institution_and_skips_short_topic_overview(self):
+        from rag.latency import overview_topic
+        from rag.source_policy import institution_history_queries
+
+        canonical = institution_history_queries("history of Samar College")
+        for question in ("history", "History?", "history.", "tell me about history"):
+            with self.subTest(question=question):
+                self.assertEqual(institution_history_queries(question), canonical)
+                self.assertEqual(overview_topic(question), "")
+        for question in ("history of our conversation", "chat history", "History subjects",
+                         "history course at Samar College", "Samar College history curriculum"):
+            self.assertEqual(institution_history_queries(question), [])
+        self.assertEqual(overview_topic("library"), "library")
+
+    def test_bare_history_keeps_narrative_continuations_without_literal_history_word(self):
+        beginning = document(text="The college opened its doors in the documented founding year.",
+                             section_heading="Historical Account", page=8)
+        continuation = document(text="It subsequently expanded its buildings and facilities over the following decades.",
+                                section_heading="Historical Account", page=9)
+        curriculum = document("Curriculum.docx", "Subject: Readings in Philippine History. Units: 3.",
+                              section_heading="First Year Curriculum")
+        for enabled in (True, False):
+            result = select_documents([curriculum, beginning, continuation], ["history"],
+                                      dates=DATES, uploads={"Curriculum.docx": UPLOADS[UPDATE]},
+                                      today=TODAY, enforce_sources=enabled)
+            self.assertEqual(result.documents, [beginning, continuation])
+
     def test_latin_honors_probes_handle_supported_typos_without_topic_substitution(self):
         from rag.source_policy import honors_queries
 

@@ -49,7 +49,10 @@ def _has_anaphora(query: str) -> bool:
 def overview_topic(question: str) -> str:
     """Recognize short standalone topics, not scoped questions or references."""
     from rag.unit_identity import requested_unit
+    from rag.source_policy import institution_history_queries
 
+    if institution_history_queries(question):
+        return ""
     text = request_text(question or "")
     text = re.sub(r"^(?:tell me about|information (?:on|about)|info (?:on|about)|about)\s+", "", text, flags=re.I)
     if not re.fullmatch(r"[A-Za-z][A-Za-z'\u2019 -]*", text):

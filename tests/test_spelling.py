@@ -131,7 +131,7 @@ from rag.dictation import dictation_variants  # noqa: E402
 from rag.language import language_variants  # noqa: E402
 from rag import reranker  # noqa: E402
 from rag.query_optimizer import (  # noqa: E402
-    OPTIMIZER_PROMPT, optimizer_messages, optimize_query,
+    OPTIMIZER_PROMPT, optimizer_messages, optimize_query, optimize_queries, CORRECTION_PROMPT,
 )
 
 reload_vocabulary()
@@ -520,9 +520,9 @@ check("chain.py adds the corrected phrasing as a retrieval probe",
 check("the expansion helper keeps its input as the first query",
       "queries = [query]" in chain_src)
 check("the graph delegates the query-only model call to the shared optimizer",
-      "optimize_query(query_optimizer_model, user_text, history)" in chain_src)
-check("the optional rewrite is collected through the retrieval callback",
-      "late_query=late_rewrite" in chain_src and "user_question=user_text" in chain_src)
+      "optimize_queries(query_optimizer_model, user_text, history)" in chain_src)
+check("the corrected and contextualized queries are passed to retrieval",
+      "contextual_query or standalone_query," in chain_src and "user_question=user_text" in chain_src)
 check("the graph no longer imports JSON interpretation or offer-resolution APIs",
       all(name not in chain_src for name in (
           "parse_interpretation", "interpretation_guidance", "resolve_offer_acceptance",
@@ -627,6 +627,8 @@ def filtered_fetch(query, *, filter):
 
 def optimize(messages):
     if isinstance(messages[-1], dict):
+        if messages[0]["content"] == CORRECTION_PROMPT:
+            return SimpleNamespace(content=messages[-1]["content"])
         optimizer_prompts.append(messages)
         latest = messages[-1]["content"].split("\n\nLatest Question: ", 1)[1]
         latest = latest.split("\nLIKELY MISSPELLINGS", 1)[0]
@@ -660,7 +662,7 @@ namespace = {
     "StateGraph": _Graph, "END": None, "InMemorySaver": lambda: None,
     "HumanMessage": SimpleNamespace, "SystemMessage": SimpleNamespace,
     "correct_query": correct_query,
-    "optimize_query": optimize_query,
+    "optimize_queries": optimize_queries,
     "spelling_variants": spelling_variants, "dictation_variants": dictation_variants,
     "language_variants": language_variants, "should_optimize": should_optimize,
     "pick_search_query": pick_search_query, "Deadline": Deadline, "Timings": Timings,
@@ -697,7 +699,7 @@ namespace["FINAL_TOP_K"] = 1
 node = namespace["create_graph"]()
 
 
-def chat_snapshot(question, history=None, image=None, role="student"):
+def chat_snapshot(question, history=None, image=None, role="student", corrected=None):
     probes.clear()
     optimizer_prompts.clear()
     scored_queries.clear()
@@ -706,7 +708,15 @@ def chat_snapshot(question, history=None, image=None, role="student"):
     namespace["rerank_multi"].reset_mock()
     state = {"input": question, "chat_history": history or [], "image_data": image,
              "role": role}
-    result = node(state)
+    contextualizer = namespace["query_optimizer_model"]
+
+    def staged_invoke(messages):
+        if messages[0]["content"] == CORRECTION_PROMPT:
+            return SimpleNamespace(content=corrected or messages[-1]["content"])
+        return contextualizer.invoke(messages)
+
+    with patch.dict(namespace, {"query_optimizer_model": SimpleNamespace(invoke=staged_invoke)}):
+        result = node(state)
     return {
         "messages": [message.content for message in result["messages_to_llm"]],
         "citations": result["citations"], "probes": sorted(probes),
@@ -724,6 +734,23 @@ def answer_path(snapshot):
 
 
 history = [{"role": "user", "content": "what programs are offered?"}]
+corrected_grammar = "What are the enrollment requirements for new students?"
+contextualized_grammar = "new student enrollment application requirements"
+grammar_model = Mock(return_value=SimpleNamespace(content=contextualized_grammar))
+with patch.object(reranker, "_load_model", return_value=None), patch.dict(namespace, {
+    "query_optimizer_model": SimpleNamespace(invoke=grammar_model),
+}):
+    grammar, state = chat_snapshot("what is enrollment requirements for new students?",
+                                   corrected=corrected_grammar)
+    check("grammar correction feeds contextualization before retrieval",
+          grammar_model.call_args.args[0] == optimizer_messages(corrected_grammar)
+          and grammar["user_question"] == corrected_grammar)
+    check("retrieval searches both corrected and contextualized grammar queries",
+          corrected_grammar in grammar["probes"] and contextualized_grammar in grammar["probes"]
+          and grammar["primary"] == contextualized_grammar)
+    check("grammar correction does not mutate stored input",
+          state["input"] == "what is enrollment requirements for new students?")
+
 for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
     with patch.object(reranker, "_load_model", return_value=model):
         clean, _ = chat_snapshot("list the deans", history)
@@ -732,7 +759,7 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
         check(f"reranker {label}: generation keeps the conservative local repair",
               typo["messages"][-1] == natural, typo["messages"][-1])
         check(f"reranker {label}: the natural question remains intact and contextual query leads ranking",
-              typo["primary"] == typo["user_question"] == natural
+               typo["user_question"] == natural and typo["primary"] == directory_query
               and typo["ranking_primary"] == directory_query)
         check(f"reranker {label}: contextual and natural queries both retrieve documents",
               directory_query in typo["probes"] and natural in typo["probes"])
@@ -798,8 +825,8 @@ with patch.object(reranker, "_load_model", return_value=None):
               correction_spy.call_count == 1
               and correction_spy.call_args.args == ("latn hnir",))
         check("keyword-only output supplements retrieval without mutating the natural question",
-              snapshot["primary"] == snapshot["user_question"] == snapshot["messages"][-1]
-              == "latin honor" and keywords in snapshot["probes"]
+               snapshot["user_question"] == snapshot["messages"][-1] == "latin honor"
+               and snapshot["primary"] == keywords and keywords in snapshot["probes"]
               and state["input"] == "latn hnir")
         check("spelling expansion stays enabled when the optimizer succeeds",
               spelling_spy.called and retrieval_spy.call_args.kwargs.get("allow_spelling", True) is True)
@@ -843,7 +870,7 @@ with patch.object(reranker, "_load_model", return_value=None), patch.dict(namesp
         check(f"source selection and answer context stay within the requested unit: {question!r}",
               f"{code.upper()}_ONLY_RECORD" in snapshot["messages"][0]
               and f"{other.upper()}_ONLY_RECORD" not in snapshot["messages"][0]
-               and snapshot["primary"] == snapshot["user_question"] == question
+                and snapshot["user_question"] == question and snapshot["primary"].lower() == "cas"
                and snapshot["ranking_primary"] == "cas")
         check(f"model output can only add a probe, even when it names a previous unit: {question!r}",
               "cas" in snapshot["probes"])
@@ -887,7 +914,8 @@ with patch.dict(namespace, {
                       "latin honor requirements" in typo["probes"]
                       and "honors" in typo["citations"] and honors.page_content in typo["messages"][0])
                 check(f"reranker {label}: query-only spelling output leaves natural wording in control",
-                      typo["primary"] == typo["user_question"] == typo["messages"][-1] == question
+                       typo["user_question"] == typo["messages"][-1] == question
+                       and typo["primary"] == "latin honor requirements"
                       and state["input"] == question and state["chat_history"] == admission_history)
             for prior in ([], admission_history):
                 question = "how do i become latin honot"
@@ -916,7 +944,7 @@ with patch.dict(namespace, {
                   and "Ask ONLY one" not in snapshot["messages"][0])
         late = concurrent.futures.Future()
         late.set_running_or_notify_cancel()
-        with patch.dict(namespace, {"Deadline": lambda: SimpleNamespace(expired=lambda: False, remaining=lambda: 0)}):
+        with patch.object(late, "result", side_effect=concurrent.futures.TimeoutError):
             with patch.object(namespace["optimizer_pool"], "submit",
                               return_value=late):
                 snapshot, _ = chat_snapshot("what about latin hnir requirements", admission_history)

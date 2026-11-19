@@ -29,7 +29,7 @@ from rag.roles import resolve_role, role_block
 from rag.language import language_variants
 from rag.dictation import dictation_variants
 from rag.spelling import correct_query, spelling_variants
-from rag.query_optimizer import optimize_query
+from rag.query_optimizer import optimize_queries
 from rag.query_embeddings import CachedQueryEmbeddings
 from rag.runtime import (
     CapacityError, RequestBudget, env_int, retrieval_pool, preparation_pool,
@@ -37,7 +37,7 @@ from rag.runtime import (
 )
 
 from rag.latency import (
-    should_optimize, pick_search_query, Deadline, Timings,
+    pick_search_query, Timings,
 )
 # The captions the student sees while waiting. Published from the real phase
 # boundaries below rather than on a timer in the browser, so "Searching…" is
@@ -1227,8 +1227,8 @@ def create_graph():
             request_budget = (config or {}).get("configurable", {}).get("budget") or RequestBudget()
             request_budget.remaining()
             user_text = state["input"] or ""
-            # Use the same locally repaired question for search and generation.
-            # The optional keyword rewrite must not replace the user's intent.
+            # Keep a local spelling fallback if model-based query preparation
+            # is unavailable. Contextualization must not replace the user's intent.
             corrected = correct_query(user_text)
             if corrected:
                 print(f"  Spelling repair: {user_text!r} -> {corrected!r}")
@@ -1307,10 +1307,10 @@ def create_graph():
 
             timings = Timings()
 
-            # The rewrite overlaps preparation and leads retrieval only if it
-            # arrives before its deadline.
+            # Correction and contextualization run sequentially, while account
+            # and image preparation can still run in parallel.
             def task_query_optimization():
-                return optimize_query(query_optimizer_model, user_text, history)
+                return optimize_queries(query_optimizer_model, user_text, history)
 
             # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
             #
@@ -1318,20 +1318,16 @@ def create_graph():
             # optional optimizer has its own small pool and never queues behind
             # another student's slow rewrite. Do not join these pools per turn.
             executor = preparation_pool
-            budget = Deadline()
             future_img = future_student = future_query = None
             try:
                 future_img = executor.submit(task_image_analysis) if image_data else None
                 future_student = executor.submit(task_student_fetch) if uid else None
 
-                # Self-contained questions already carry enough search terms.
-                # Follow-ups and thin questions benefit from contextual rewriting.
-                wants_rewrite = should_optimize(user_text, history)
-                if wants_rewrite:
+                # Every text query passes through correction before contextualization.
+                if user_text.strip():
                     try:
                         future_query = optimizer_pool.submit(task_query_optimization)
                     except CapacityError:
-                        wants_rewrite = False
                         timings.note("optimizer", "busy")
 
                 # Only claimed when the rewrite is genuinely running. On the
@@ -1342,11 +1338,8 @@ def create_graph():
                     emit_phase(progress, "understanding")
 
 
-                # These two ARE waited for, and deliberately: the image
-                # description and the student record change what the answer is
-                # allowed to say, so proceeding without them would produce a
-                # different (wrong) answer rather than a slower one. Only the
-                # rewrite is optional, because it only affects recall.
+                # Image and account preparation must finish before the answer.
+                # Query preparation is collected next, before document searches.
                 image_description = future_img.result(timeout=request_budget.remaining(30)) if future_img else None
                 student_context = future_student.result(timeout=request_budget.remaining(15)) if future_student else ""
                 request_budget.remaining()
@@ -1363,29 +1356,32 @@ def create_graph():
                     program_context = guidance
                 if future_query is None:
                     timings.note("optimizer", "skipped")
-
-                    def late_rewrite():
-                        return ""
                 else:
-                    def late_rewrite():
-                        nonlocal contextual_query
-                        try:
-                            rewritten = future_query.result(
-                                timeout=min(budget.remaining(), request_budget.remaining())
-                            )
-                        except concurrent.futures.TimeoutError:
-                            timings.note("optimizer", "too-late")
-                            print("  Rewrite missed its budget; using the student's own wording.")
-                            return ""
+                    timings.start("query_optimization")
+                    try:
+                        corrected_query, rewritten = future_query.result(
+                            timeout=request_budget.remaining(30)
+                        )
+                    except concurrent.futures.TimeoutError:
+                        timings.note("optimizer", "too-late")
+                        print("  Query optimization timed out; using the locally corrected query.")
+                    except Exception as exc:
+                        timings.note("optimizer", "failed")
+                        print(f"  Query optimization unavailable (non-fatal): {exc}")
+                    else:
+                        user_text = corrected_query
+                        request_text = corrected_query
+                        standalone_query = corrected_query
                         timings.note("optimizer", "used")
                         picked = pick_search_query(user_text, rewritten)
                         contextual_query = "" if picked == user_text.strip() else picked
-                        return contextual_query
+                    finally:
+                        timings.stop("query_optimization")
 
                 # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
                 #
-                # A timely rewrite leads retrieval/ranking. The latest user text
-                # remains intact for scope, intent constraints, and generation.
+                # Search both the contextualized query and the corrected query.
+                # The corrected question controls explicit scope and intent.
                 timings.start("retrieval+rerank")
                 dates = get_doc_dates()
                 uploads = {}
@@ -1396,11 +1392,10 @@ def create_graph():
                 except Exception:
                     print("[chain] Upload chronology unavailable; using recorded source dates.")
                 final_docs = retrieve_documents(
-                    standalone_query,
+                    contextual_query or standalone_query,
                     top_k=RERANK_CANDIDATES,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
                     user_question=user_text,
-                    late_query=late_rewrite,
                     timings=timings,
                     progress=progress,
                     request_budget=request_budget,
@@ -1584,7 +1579,9 @@ def create_graph():
                     "Ground the answer in the supplied documents and other authorized, verified context."
                 )
             final_system_prompt += (
-                "\n\n<answer_scope>\nAnswer only the latest request, directly and concisely, with required citations. "
+                "\n\n<answer_scope>\nAnswer only the latest request, directly, with required citations. "
+                "Be concise for focused questions; a broad institutional history request requires a comprehensive "
+                "chronological account of the documented events, not a short overview. "
                 "Do not append follow-up offers, login reminders, or inventories of unrequested missing details. "
                 "Never discuss retrieved documents, document access, retrieval limitations, or claim you lack a document. "
                 "If an explicitly requested fact cannot be established, say only that you cannot confirm that fact; "

@@ -147,7 +147,7 @@ _SEED_TERMS: Tuple[str, ...] = (
     "assessment", "miscellaneous", "laboratory", "matriculation",
 
     # ---- Academics ---------------------------------------------------------
-    "course", "courses", "program", "programs", "curriculum", "subject",
+    "course", "courses", "program", "programs", "curriculum", "subject", "education",
     "subjects", "units", "semester", "semestral", "trimester", "midterm",
     "finals", "prelim", "prelims", "grade", "grades", "grading", "average",
     "computation", "passing", "failing", "incomplete", "removal", "retention",
@@ -635,6 +635,12 @@ def _plural_ish(word: str) -> bool:
 
 def _real_word_repair(token: str, following: List[str], preceding: List[str]) -> Optional[str]:
     typed = (token or "").lower()
+    # Role context disambiguates this truncated word from an EDUC course code.
+    if typed == "educ" and not token.isupper() and (
+        preceding[-2:] in (["dean", "of"], ["deans", "of"])
+        or preceding[-3:] in (["dean", "of", "the"], ["deans", "of", "the"])
+    ):
+        return "education"
     meant = _REAL_WORD_CONFUSIONS.get(typed)
     if not meant or meant == typed:
         return None

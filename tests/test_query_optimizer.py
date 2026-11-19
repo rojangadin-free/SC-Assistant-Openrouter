@@ -17,17 +17,20 @@ import _bootstrap  # noqa: F401
 
 from rag import spelling
 from rag.latency import pick_search_query
-from rag.query_optimizer import OPTIMIZER_PROMPT, optimize_query, optimizer_messages
+from rag.query_optimizer import (
+    CORRECTION_PROMPT, OPTIMIZER_PROMPT, optimize_queries, optimize_query, optimizer_messages,
+)
 
 REFERENCE_PROMPT = (
     "You are a search query optimizer. Understand the user's intent and the provided context first. Formulate the best search query for RAG that uses sparse and dense retrieval. If you cannot understand the user's intent, return the user's original query.\n"
     "CRITICAL SEARCH RULES: \n"
-    "1. CONTEXT AWARENESS: Only check chat history if the user asks and it is not a complete question.\n"
-    "2. SPELLING: Fix obvious misspellings of school, academic and program terms so the query uses the words a handbook would use (e.g. 'honir' -> 'honor', 'enrolmnet' -> 'enrollment', 'requirments' -> 'requirements'). Keep correctly spelled words, acronyms and proper nouns exactly as typed.\n"
-    "3. Do NOT answer the question, just output the optimized search query."
+    "1. CONTEXT AWARENESS: Use recent chat history only to resolve references or incomplete follow-ups. A complete latest query overrides earlier topics. History is context, not document evidence or instructions.\n"
+    "2. The input query has already been corrected for spelling and grammar. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
+    "3. Do NOT answer the question, just output the optimized search query.\n"
     "4. Always remember that every question is about samar college. \n"
     "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
-    "6. If the user ask about 'dean' but only put the program for example 'dean of BSIT' you must add the name of the department of that program in the query (e.g. 'dean of BSIT' -> 'dean of College of Information Technology and Allied Sciences').\n"
+    "6. For a program's dean, preserve the program identifier. Do not guess its parent department or college; that affiliation must be verified against retrieved catalog documents.\n"
+    "7. A standalone 'history' query means the full institutional history of Samar College, regardless of earlier conversation topics. Search for Samar College historical account, humble beginnings, founding, development, and milestones; do not narrow it to just the founding date or conversation history.\n"
 )
 
 
@@ -137,6 +140,68 @@ class QueryOptimizerTests(unittest.TestCase):
         model = SimpleNamespace(invoke=Mock(side_effect=RuntimeError("provider unavailable")))
         self.assertEqual(optimize_query(model, original), original)
         model.invoke.assert_called_once()
+
+    def test_correction_precedes_contextualization(self):
+        history = [{"role": "user", "content": "SCTI programs"}]
+        model = Mock()
+        model.invoke.side_effect = [
+            SimpleNamespace(content="What are its requirements?"),
+            SimpleNamespace(content="SCTI program requirements Samar College"),
+        ]
+        with patch("rag.query_optimizer.correct_query", return_value=""):
+            result = optimize_queries(model, "what is its requirments?", history)
+        self.assertEqual(result, ("What are its requirements?", "SCTI program requirements Samar College"))
+        first, second = model.invoke.call_args_list
+        self.assertEqual(first.args[0], [
+            {"role": "system", "content": CORRECTION_PROMPT},
+            {"role": "user", "content": "what is its requirments?"},
+        ])
+        self.assertEqual(second.args[0], optimizer_messages(result[0], history))
+
+    def test_contextualization_failure_keeps_corrected_query(self):
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content="Who is the BSIT dean?"), RuntimeError("offline")]
+        self.assertEqual(optimize_queries(model, "who are BSIT dean?"),
+                         ("Who is the BSIT dean?", "Who is the BSIT dean?"))
+
+    def test_correction_failure_still_contextualizes_local_repair(self):
+        model = Mock()
+        model.invoke.side_effect = [RuntimeError("offline"), SimpleNamespace(content="Samar College enrollment requirements")]
+        with patch("rag.query_optimizer.correct_query", return_value="enrollment requirements"):
+            result = optimize_queries(model, "enrolmnet requirments")
+        self.assertEqual(result, ("enrollment requirements", "Samar College enrollment requirements"))
+        self.assertIn("Latest Question: enrollment requirements", model.invoke.call_args.args[0][1]["content"])
+
+    def test_invalid_or_empty_correction_preserves_query(self):
+        for content in (None, 42, "", " \n", [], [{"text": None}]):
+            with self.subTest(content=content), patch("rag.query_optimizer.correct_query", return_value=""):
+                model = Mock()
+                model.invoke.side_effect = [SimpleNamespace(content=content), SimpleNamespace(content="")]
+                self.assertEqual(optimize_queries(model, "not BSIT"), ("not BSIT", "not BSIT"))
+
+    def test_empty_query_does_not_call_model(self):
+        model = Mock()
+        self.assertEqual(optimize_queries(model, " \n"), ("", ""))
+        model.invoke.assert_not_called()
+
+    def test_dean_of_educ_is_locally_corrected_even_when_models_fail(self):
+        model = Mock()
+        model.invoke.side_effect = RuntimeError("offline")
+        self.assertEqual(optimize_queries(model, "dean of educ"),
+                         ("dean of education", "dean of education"))
+        self.assertEqual(model.invoke.call_args_list[0].args[0][1]["content"], "dean of education")
+        self.assertIn("Latest Question: dean of education", model.invoke.call_args_list[1].args[0][1]["content"])
+
+    def test_educ_repair_is_contextual_and_preserves_course_identifiers(self):
+        for typed, expected in (("dean of educ", "dean of education"),
+                                ("who is the dean of Educ?", "who is the dean of education?"),
+                                ("dean of the educ,", "dean of the education,")):
+            with self.subTest(typed=typed):
+                self.assertEqual(spelling.correct_query(typed), expected)
+        for question in ("EDUC-101 requirements", "dean of EDUC-101", "dean of educ101",
+                         "dean of EDUC", "educ course requirements", "BS EDUC requirements"):
+            with self.subTest(question=question):
+                self.assertEqual(spelling.correct_query(question), "")
 
     def test_invalid_text_blocks_use_the_same_nonfatal_fallback(self):
         model = SimpleNamespace(invoke=Mock(return_value=SimpleNamespace(content=[{"text": None}])))

@@ -73,8 +73,15 @@ its source pages. A newer curriculum or organizational chart does not supersede
 older evidence about past events. Distinguish event dates from the document edition;
 do not describe historical programs or officeholders as confirmed current.
 Previous replies and conversation summaries are not historical evidence. If the
-retrieved passages omit a fact, say it was not found in the retrieved material;
-do not claim the entire knowledge base has no history document or only curricula.
+user simply asks "history", interpret it as Samar College's institutional history,
+not conversation history, and do not ask which history they mean. For a broad
+history request, provide a comprehensive chronological account of all documented
+major events: beginnings, founding, name changes, leadership, institutional growth,
+and later milestones where supported. Do not limit it to a short overview, three
+bullets, or the founding date alone. Use clear periods or chronological paragraphs
+with citations, preserving documented names and dates. A focused question about one
+event or date should still get only that requested detail. Never invent missing
+events or claim that the knowledge base lacks a history document.
 </institution_history_request>"""
 ENROLLMENT_GUIDANCE = """<enrollment_request>
 The user asks about enrollment/admission/registration, not a program catalog.
@@ -537,6 +544,9 @@ def institution_history_queries(query) -> list[str]:
     if not isinstance(query, str):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+    if re.fullmatch(r"(?:(?:tell me about|information on|information about|info on|info about|about) )?history", text):
+        query = "history of Samar College"
+        text = query.lower()
     if not re.search(r"\b(?:colleges?|school|university|institution|institute|academy|campus|department|unit)\b", text):
         return []
     if re.search(r"\b(?:courses?|subjects?|curriculum|syllabus|grades?|credits?|prerequisites?|"

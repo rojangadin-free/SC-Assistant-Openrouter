@@ -303,8 +303,8 @@ print("\n=== 7. The wiring in rag/chain.py is real ====================")
 with open("rag/chain.py", encoding="utf-8") as fh:
     chain_src = fh.read()
 
-check("chain.py consults should_optimize()",
-      "should_optimize(user_text, history)" in chain_src)
+check("chain.py optimizes every nonempty text query",
+      "if user_text.strip():" in chain_src)
 
 # The critical one. `with ThreadPoolExecutor(...)` joins every worker on exit,
 # which would put the optimizer's round-trip back in front of retrieval and undo
@@ -323,11 +323,11 @@ check("the rewrite is only ever collected with a timeout",
       "future_query.result(" in chain_src
       and "future_query.result()" not in chain_src)
 
-check("the reference plain-text optimizer does not replace the working question",
-      "optimize_query(query_optimizer_model, user_text, history)" in chain_src
-      and "user_text = interpretation.question" not in chain_src)
-check("retrieval retains the natural question and optional companion rewrite",
-      "user_question=user_text" in chain_src and "late_query=late_rewrite" in chain_src)
+check("the sequential optimizer supplies the corrected working question",
+      "optimize_queries(query_optimizer_model, user_text, history)" in chain_src
+      and "user_text = corrected_query" in chain_src)
+check("retrieval retains the corrected question and contextualized companion",
+      "user_question=user_text" in chain_src and "contextual_query or standalone_query," in chain_src)
 check("a missed budget is handled, not raised",
       "concurrent.futures.TimeoutError" in chain_src)
 check("the timing line is emitted", "timings.render()" in chain_src)
