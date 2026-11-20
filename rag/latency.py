@@ -63,10 +63,11 @@ def overview_topic(question: str) -> str:
     excluded = (_STOPWORDS | _AFFIRMATION_STARTERS | {
         "hello", "hi", "thanks", "help", "explain", "find", "describe", "compare", "define",
         "current", "latest", "today", "now", "total", "count", "number", "location", "locations", "hours",
-        "requirement", "requirements", "criteria", "eligibility", "grade", "grades", "gwa", "gpa", "schedule", "schedules",
+        "requirement", "requirements", "criteria", "eligibility", "grade", "grades", "grading", "marking", "transmutation", "gwa", "gpa", "schedule", "schedules",
         "assignment", "assignments", "balance", "records", "record", "profile",
         "admission", "admissions", "enrollment", "enrolment", "scholarship", "scholarships", "tuition", "fees",
         "honor", "honors", "honour", "honours", "program", "programs", "course", "courses", "degree", "degrees",
+        "subject", "subjects", "curriculum", "curricula", "syllabus",
         "bachelor", "master", "doctor", "associate",
         "departments", "colleges", "dean", "deans", "principal", "principals", "president", "officials",
     })

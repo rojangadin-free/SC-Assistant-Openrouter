@@ -520,9 +520,9 @@ check("chain.py adds the corrected phrasing as a retrieval probe",
 check("the expansion helper keeps its input as the first query",
       "queries = [query]" in chain_src)
 check("the graph delegates the query-only model call to the shared optimizer",
-      "optimize_queries(query_optimizer_model, user_text, history)" in chain_src)
+      "optimize_queries(query_optimizer_model, user_text, history, on_intent=intents.append)" in chain_src)
 check("the corrected and contextualized queries are passed to retrieval",
-      "contextual_query or standalone_query," in chain_src and "user_question=user_text" in chain_src)
+      "contextual_query or standalone_query," in chain_src and "user_question=request_text" in chain_src)
 check("the graph no longer imports JSON interpretation or offer-resolution APIs",
       all(name not in chain_src for name in (
           "parse_interpretation", "interpretation_guidance", "resolve_offer_acceptance",

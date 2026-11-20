@@ -520,6 +520,7 @@ def retrieve_documents(
     uploads=None,
     on_selection=None,
     on_program_resolution=None,
+    original_question: str = None,
 ) -> list:
 
 
@@ -533,7 +534,8 @@ def retrieve_documents(
     Two query strings, deliberately
     -------------------------------
     `query`         the LLM's optimized/keyword search query
-    `user_question` what the user literally typed
+    `user_question` the resolved request, including its authoritative scope
+    `original_question` the corrected original phrasing, retained as a probe
 
     The contextualized query leads retrieval and reranking when available. The
     natural question remains a backup phrasing and controls explicit scope and
@@ -570,7 +572,8 @@ def retrieve_documents(
         program_offering_scope, offering_catalog_documents,
         family_discount_queries, family_discount_documents,
         honors_queries, honors_documents, deans_list_queries, deans_list_documents,
-        overview_documents,
+        overview_documents, curriculum_queries, curriculum_documents, curriculum_semester_queries, curriculum_program,
+        grading_queries, grading_documents,
     )
     from rag.unit_identity import (
         is_unit_reference, requested_unit, unit_query_variants, program_dean_subject, program_overview_subject,
@@ -600,7 +603,7 @@ def retrieve_documents(
 
     # Prefer contextualized wording without dropping the user's own phrasing.
     phrasings = []
-    for q in (late_phrasing, query, user_question):
+    for q in (late_phrasing, query, user_question, original_question):
         q = (q or "").strip()
         if q and q not in phrasings:
             phrasings.append(q)
@@ -745,7 +748,11 @@ def retrieve_documents(
         " and ".join(resolved_parts.get(part, part) for part in aspects) if resolved_parts and aspects
         else resolved_parts.get(split_source, split_source)
     )
-    if not requested_unit(split_source) and is_unit_reference(split_source):
+    from rag.query_intent import known_query_intents
+
+    explicit_policy = known_query_intents(split_source) & {"grading", "curriculum", "deans_list", "honors", "history"}
+    resolved_semantics = original_question is not None and original_question != split_source
+    if not requested_unit(split_source) and is_unit_reference(split_source) and not explicit_policy and not resolved_semantics:
         for phrasing in (primary, late_phrasing):
             if requested_unit(phrasing) or institution_history_queries(phrasing):
                 scope_question = f"{split_source}\nResolved reference: {phrasing}"
@@ -754,6 +761,12 @@ def retrieve_documents(
     discount_queries = family_discount_queries(scope_question)
     honor_queries = honors_queries(scope_question)
     academic_list_queries = deans_list_queries(scope_question)
+    subject_queries = curriculum_queries(scope_question)
+    grade_queries = grading_queries(scope_question)
+    if grade_queries and not aspects:
+        source_filter_enabled = True
+    if subject_queries and not aspects:
+        source_filter_enabled = True
     if honor_queries and not aspects:
         # Completeness must not mix an old honors policy into a current update.
         source_filter_enabled = True
@@ -762,7 +775,7 @@ def retrieve_documents(
         for probe in enrollment_queries(phrasing)
     ))
     relevance_queries = list(dict.fromkeys([
-        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries,
+        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries,
     ]))
 
     if verbose:
@@ -792,9 +805,15 @@ def retrieve_documents(
             allow_spelling=allow_spelling,
         )
     elif current_sources:
-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries, *academic_list_queries]))
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = [(probe, source_filter) for probe in probes]
+        if subject_queries:
+            # Search curriculum/program files individually so unrelated degree
+            # catalogs cannot consume the current-source candidate allowance.
+            jobs = [(subject_queries[0], {"source": {"$eq": source}}) for source in current_sources
+                    if re.search(r"\b(?:curricul(?:um|a)|programs?)\b",
+                                 doc_key(source).replace("_", " ").replace("-", " "), re.I)] + jobs
         catalogs = catalog_source_names(current_sources) if catalog_queries else []
         if catalogs:
             # A large curriculum must not hide a smaller Programs Offered file
@@ -828,7 +847,7 @@ def retrieve_documents(
         else:
             initial_docs = multi_query_retrieve(
                 primary,
-                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries + academic_list_queries,
+                extra_queries=phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries + academic_list_queries + subject_queries + grade_queries,
                 timeout=request_budget.remaining(30) if request_budget else None,
                 allow_spelling=allow_spelling,
             )
@@ -864,18 +883,73 @@ def retrieve_documents(
     discount_evidence = family_discount_documents(initial_docs) if discount_queries else []
     honor_evidence = honors_documents(initial_docs) if honor_queries else []
     academic_list_evidence = deans_list_documents(initial_docs) if academic_list_queries else []
+    semester_queries = curriculum_semester_queries(scope_question)
+    if semester_queries:
+        # A term-specific ask may initially retrieve only OTHER semesters of its
+        # current degree. Establish the source from that degree evidence before
+        # applying the requested term, rather than falling back to an old term.
+        candidates = [*preferred_docs, *initial_docs]
+        degree_query = " ".join([
+            f"{curriculum_program(scope_question)[0]} subjects",
+            *re.findall(r"\b(?:20\d{2}|historical|previous|former|old|compare|comparison|versus)\b", scope_question, re.I),
+        ])
+        degree_selection = select_documents(
+            candidates, [degree_query], dates=dates, uploads=uploads,
+            limit=max(1, len(candidates)), enforce_sources=source_filter_enabled,
+        )
+        sources = list(dict.fromkeys((doc.metadata or {}).get("source", "") for doc in degree_selection.documents))
+        if sources:
+            # Discover missing semesters only within already proven eligible
+            # curriculum sources, then apply the same ownership/source boundary.
+            semester_docs = multi_query_retrieve(
+                primary, filtered_queries=[(probe, {"source": {"$eq": source}})
+                                           for source in sources if source for probe in semester_queries],
+                timeout=request_budget.remaining(30) if request_budget else None,
+                allow_spelling=allow_spelling,
+            )
+            combined = []
+            seen = set()
+            for doc in [*degree_selection.documents, *semester_docs]:
+                metadata = doc.metadata or {}
+                key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
+                if key not in seen:
+                    seen.add(key)
+                    combined.append(doc)
+            selection = select_documents(combined, relevance_queries, dates=dates, uploads=uploads,
+                                         limit=max(1, len(combined)), enforce_sources=source_filter_enabled)
+            initial_docs = selection.documents
+    subject_evidence = curriculum_documents(initial_docs, scope_question) if subject_queries else []
+    if grade_queries and initial_docs:
+        sources = list(dict.fromkeys((doc.metadata or {}).get("source", "") for doc in initial_docs))
+        extra_grading = multi_query_retrieve(
+            primary, filtered_queries=[(probe, {"source": {"$eq": source}})
+                                       for source in sources if source for probe in grade_queries],
+            timeout=request_budget.remaining(30) if request_budget else None, allow_spelling=allow_spelling,
+        )
+        combined = []
+        seen = set()
+        for doc in [*initial_docs, *extra_grading]:
+            metadata = doc.metadata or {}
+            key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
+            if key not in seen:
+                seen.add(key)
+                combined.append(doc)
+        selection = select_documents(combined, relevance_queries, dates=dates, uploads=uploads,
+                                     limit=max(1, len(combined)), enforce_sources=source_filter_enabled)
+        initial_docs = selection.documents
+    grading_evidence = grading_documents(initial_docs, scope_question) if grade_queries else []
     if on_selection is not None:
         on_selection(selection)
     roster_evidence = [doc for doc in initial_docs if (doc.metadata or {}).get("source") in roster_sources
                        and re.search(r"\b(?:oic\s+)?dean\s*(?:,|of\b)\s*\w", doc.page_content, re.IGNORECASE)]
     roster_evidence.sort(key=lambda doc: len(set(document_unit_names(doc))), reverse=True)
-    if selection.restricted or catalog_queries or history_queries or not source_filter_enabled:
+    if selection.restricted or catalog_queries or history_queries or subject_queries or grade_queries or not source_filter_enabled:
         # Reserve space for each source and catalog/history section
         # before the reranker's fixed scoring budget, not after it has cut them.
         groups = {}
         for doc in initial_docs:
             md = doc.metadata or {}
-            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries or history_queries else ""
+            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries or history_queries or subject_queries or grade_queries else ""
             groups.setdefault((doc_key(md.get("source", "")), str(section)), []).append(doc)
         initial_docs = [
             documents[rank]
@@ -918,7 +992,7 @@ def retrieve_documents(
             initial_docs,
             top_k=top_k,
             max_pairs=RERANK_CANDIDATES,
-            queries=[f"{topic} overview description"] if topic else phrasings[1:] + identity_queries + procedure_queries + catalog_queries,
+            queries=[f"{topic} overview description"] if topic else phrasings[1:] + identity_queries + procedure_queries + catalog_queries + subject_queries + grade_queries,
             request_budget=request_budget,
             preferred_query=preferred_query,
         )
@@ -949,16 +1023,19 @@ def retrieve_documents(
             snippet = doc.page_content.replace("\n", " ")[:70]
             print(f"  [{i+1}] score={score_s} | {src} (Pg {pg}){aspect_s}: {snippet}...")
 
-    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence or academic_list_evidence:
+    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence or academic_list_evidence or subject_evidence or grading_evidence:
         seen = set()
         ordered = []
-        for doc in [*academic_list_evidence, *roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
+        for doc in [*grading_evidence, *subject_evidence, *academic_list_evidence, *roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
             metadata = doc.metadata or {}
             key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
             if key not in seen:
                 seen.add(key)
                 ordered.append(doc)
-        final_docs = ordered[:top_k]
+        # Complete curricula are small structured lists; reserve the eligible
+        # rows even when a generic reranker/context top-k would omit a semester.
+        context_limit = max(top_k, min(len(subject_evidence) + len(grading_evidence), RERANK_CANDIDATES))
+        final_docs = ordered[:context_limit]
     if program_evidence and top_k > 1:
         seen = set()
         for doc in final_docs:
@@ -1310,7 +1387,9 @@ def create_graph():
             # Correction and contextualization run sequentially, while account
             # and image preparation can still run in parallel.
             def task_query_optimization():
-                return optimize_queries(query_optimizer_model, user_text, history)
+                intents = []
+                corrected, contextualized = optimize_queries(query_optimizer_model, user_text, history, on_intent=intents.append)
+                return corrected, contextualized, intents[-1] if intents else None
 
             # 🚀 EXECUTE THE PREPARATION TASKS SIMULTANEOUSLY
             #
@@ -1347,6 +1426,7 @@ def create_graph():
                 standalone_query = user_text
                 request_text = user_text
                 contextual_query = ""
+                semantic_intent = None
                 program_context = ""
 
                 def program_resolution(resolved_query, guidance):
@@ -1359,7 +1439,7 @@ def create_graph():
                 else:
                     timings.start("query_optimization")
                     try:
-                        corrected_query, rewritten = future_query.result(
+                        corrected_query, rewritten, *intent_metadata = future_query.result(
                             timeout=request_budget.remaining(30)
                         )
                     except concurrent.futures.TimeoutError:
@@ -1370,6 +1450,7 @@ def create_graph():
                         print(f"  Query optimization unavailable (non-fatal): {exc}")
                     else:
                         user_text = corrected_query
+                        semantic_intent = intent_metadata[0] if intent_metadata else None
                         request_text = corrected_query
                         standalone_query = corrected_query
                         timings.note("optimizer", "used")
@@ -1377,6 +1458,16 @@ def create_graph():
                         contextual_query = "" if picked == user_text.strip() else picked
                     finally:
                         timings.stop("query_optimization")
+
+                from rag.query_intent import resolve_query_intent
+
+                request_text = resolve_query_intent(user_text, semantic_intent, history)
+                if request_text != user_text:
+                    # Use one resolved intent for evidence and answer routing.
+                    # Keep the corrected user's wording for the final message.
+                    standalone_query = request_text
+                    if semantic_intent is None or not contextual_query:
+                        contextual_query = request_text
 
                 # === STEPS 1 & 2: Retrieval + Cross-Encoder Reranking ===
                 #
@@ -1395,7 +1486,8 @@ def create_graph():
                     contextual_query or standalone_query,
                     top_k=RERANK_CANDIDATES,
                     verbose=os.getenv("RAG_DEBUG", "false").lower() == "true",
-                    user_question=user_text,
+                    user_question=request_text,
+                    original_question=user_text,
                     timings=timings,
                     progress=progress,
                     request_budget=request_budget,
@@ -1419,16 +1511,21 @@ def create_graph():
 
 
             request_budget.remaining()
+            from rag.source_policy import curriculum_queries, grading_queries
+
+            curriculum_request = bool(curriculum_queries(request_text))
+            grading_request = bool(grading_queries(request_text))
+            context_limit = max(FINAL_TOP_K, RERANK_CANDIDATES) if curriculum_request or grading_request else FINAL_TOP_K
             if source_selections:
                 # Do not reclassify a reduced ranked pool: that could forget that
                 # obsolete sources were excluded before scoring and restore history.
                 selection = source_selections[-1]
-                final_docs = final_docs[:FINAL_TOP_K]
+                final_docs = final_docs[:context_limit]
             else:
                 selection = select_documents(
                     final_docs,
                     [request_text, standalone_query, *split_question(request_text), *language_variants(request_text)],
-                    dates=dates, uploads=uploads, limit=FINAL_TOP_K, today=datetime.now().date(),
+                    dates=dates, uploads=uploads, limit=context_limit, today=datetime.now().date(),
                     enforce_sources=os.getenv("RAG_SOURCE_FILTER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
                 )
                 final_docs = selection.documents
@@ -1440,18 +1537,21 @@ def create_graph():
 
 
             # === STEP 3: Handle Conversation Summary ===
-            from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries, deans_list_queries
+            from rag.source_policy import department_catalog_queries, institution_history_queries, program_catalog_queries, deans_list_queries, curriculum_queries
             from rag.unit_identity import is_unit_reference
             from rag.latency import overview_topic
 
             topic = overview_topic(request_text)
             department_listing = bool(department_catalog_queries(request_text))
             program_listing = bool(program_catalog_queries(request_text))
-            institution_history = bool(institution_history_queries(request_text) or (
-                is_unit_reference(request_text) and institution_history_queries(contextual_query)
+            from rag.query_intent import known_query_intents
+
+            institution_history = not curriculum_request and bool(institution_history_queries(request_text) or (
+                is_unit_reference(request_text) and not known_query_intents(request_text) and institution_history_queries(contextual_query)
             ))
             academic_list_request = bool(deans_list_queries(request_text))
-            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic)
+            curriculum_request = bool(curriculum_queries(request_text))
+            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic) or curriculum_request or grading_request
             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
@@ -1466,7 +1566,7 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a scoped document answer.
-            if department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
+            if grading_request or curriculum_request or department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
                 prompt_history = []
             else:
                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
@@ -1548,6 +1648,22 @@ def create_graph():
                 from rag.source_policy import INSTITUTION_HISTORY_GUIDANCE
 
                 final_system_prompt += "\n\n" + INSTITUTION_HISTORY_GUIDANCE
+            if curriculum_request:
+                from rag.source_policy import CURRICULUM_GUIDANCE, curriculum_program
+
+                final_system_prompt += "\n\n" + CURRICULUM_GUIDANCE.format(program=curriculum_program(request_text)[1])
+            if grading_request:
+                from rag.source_policy import GRADING_GUIDANCE
+
+                final_system_prompt += "\n\n" + GRADING_GUIDANCE
+            if request_text != user_text:
+                final_system_prompt += (
+                    f"\n\n<resolved_followup>\nResolved request for routing: {request_text!r}. "
+                    "This supplies the request's topic or conversational reference, not factual evidence. "
+                    "Answer the original user's question using selected documents. Preserve all explicit names, "
+                    "levels, dates and constraints. Do not add requirements or facts from prior assistant replies."
+                    "\n</resolved_followup>"
+                )
             from rag.source_policy import ENROLLMENT_GUIDANCE, enrollment_queries, leadership_guidance, family_discount_guidance, honors_queries, HONORS_GUIDANCE
 
             if enrollment_queries(request_text):
@@ -1587,7 +1703,7 @@ def create_graph():
                 "If an explicitly requested fact cannot be established, say only that you cannot confirm that fact; "
                 "do not guess. Do not volunteer an inability to confirm facts the user did not ask for.\n</answer_scope>"
             )
-            if academic_list_request and not re.search(
+            if academic_list_request and deans_list_queries(user_text) and not re.search(
                 r"\b(?:requirements?|criteria|eligibility|qualify|qualifications?|gwa|grades?|become|apply|how|who|recipients?)\b",
                 request_text, re.IGNORECASE,
             ):

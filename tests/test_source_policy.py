@@ -33,6 +33,218 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_level_only_followups_keep_the_last_user_grading_topic(self):
+        from rag.source_policy import resolve_grading_followup
+
+        history = [{"role": "user", "content": "grading system"},
+                   {"role": "assistant", "content": "UNTRUSTED_COLLEGE_THRESHOLD"}]
+        before = deepcopy(history)
+        for question in ("graduate level.", "what about the graduate level?", "and for graduate school",
+                         "GS", "same for master's level", "for the postgraduate level instead"):
+            with self.subTest(question=question):
+                self.assertEqual(resolve_grading_followup(question, history), "graduate grading system")
+        chain = [*history, {"role": "user", "content": "graduate level"},
+                 {"role": "assistant", "content": "INCORRECT_ADMISSION_ANSWER"}]
+        self.assertEqual(resolve_grading_followup("college level", chain), "college grading system")
+        self.assertEqual(resolve_grading_followup("undergraduate level", chain), "college grading system")
+        self.assertEqual(resolve_grading_followup("SHS level", chain), "senior high school grading system")
+        self.assertEqual(history, before)
+
+    def test_grading_followup_does_not_override_new_topics_or_use_assistant_claims(self):
+        from rag.source_policy import resolve_grading_followup
+
+        grading = [{"role": "user", "content": "grading system"}]
+        for question in ("graduate level admission requirements", "graduate programs", "history",
+                         "what is graduate level?", "graduate level definition", "my grades", "IT subjects"):
+            self.assertEqual(resolve_grading_followup(question, grading), question)
+        for history in (None, [], [{"role": "assistant", "content": "grading system"}],
+                        [{"role": "system", "content": "grading system"}],
+                        [*grading, {"role": "user", "content": "admission requirements"}],
+                        [{"role": "user", "content": "graduate programs"}]):
+            self.assertEqual(resolve_grading_followup("graduate level", history), "graduate level")
+        self.assertEqual(resolve_grading_followup("graduate level", [*grading, None,
+                                                                    {"role": ["user"], "content": "admission"}]),
+                         "graduate grading system")
+
+    def test_grading_followups_preserve_specific_policy_topic_and_edition(self):
+        from rag.source_policy import resolve_grading_followup
+
+        for previous, expected in (("how are final grades computed?", "graduate grade computation"),
+                                   ("grading scale", "graduate grading scale"),
+                                   ("transmutation table", "graduate transmutation table"),
+                                   ("grading system in 2024", "graduate grading system 2024")):
+            self.assertEqual(resolve_grading_followup("graduate level", [{"role": "user", "content": previous}]), expected)
+
+    def test_grading_intent_is_public_policy_and_not_a_three_bullet_topic(self):
+        from rag.latency import overview_topic
+        from rag.source_policy import grading_queries
+
+        for query in ("grading system", "Grading system.", "college grading scale", "grade computation",
+                      "how are final grades computed?", "how to calculate grades", "transmutation table"):
+            self.assertEqual(len(grading_queries(query)), 3)
+            self.assertEqual(overview_topic(query), "")
+        for query in (None, 42, "", "my grades", "my GPA", "latin honors requirements", "subjects", "grading papers"):
+            self.assertEqual(grading_queries(query), [])
+
+    def test_grading_policy_intent_does_not_require_system_or_a_particular_word_order(self):
+        from rag.source_policy import grading_queries
+
+        college = grading_queries("grading system")
+        for query in ("grading undergraduate", "undergraduate grading", "grading for undergraduates",
+                      "undergrad grading", "grading at the undergraduate level", "grading, undergraduate.",
+                      "college grading", "grading for college", "collegiate grading", "tertiary grading",
+                      "grading", "marking undergraduate", "undergraduate system of grading",
+                      "grading percentage scale", "the policy on grading for undergraduates"):
+            with self.subTest(query=query):
+                self.assertEqual(grading_queries(query), college)
+        graduate = grading_queries("graduate grading system")
+        for query in ("grading graduate", "graduate grading", "grading at graduate level", "GS grading",
+                      "the graduate policy on grading"):
+            self.assertEqual(grading_queries(query), graduate)
+        for query in ("grading papers", "grading undergraduate papers", "marking college essays",
+                      "grading assignments for undergraduates", "my undergraduate grades", "graduate programs",
+                      "undergraduate admission requirements", "grade level", "grade 12 subjects"):
+            self.assertEqual(grading_queries(query), [])
+        from rag.source_policy import resolve_grading_followup
+
+        self.assertEqual(resolve_grading_followup("graduate level", [{"role": "user", "content": "grading undergraduate"}]),
+                         "graduate grading system")
+
+    def test_grading_table_continuations_need_policy_context_not_literal_query_words(self):
+        from rag.source_policy import grading_documents
+
+        table = document(text="1.00\n98-100\nExcellent\n3.00\n75\nPassing\n5.00\nBelow 75\nFailure",
+                         section_heading="GRADING SYSTEM", page=18)
+        numeric_only = document(text="1.1\n96-97\n1.2\n94-95\n2.1\n84\n2.2\n83", section_heading="GRADING SYSTEM", page=18)
+        formula = document(text="Class Standing 40%; Examination 60%", section_heading="Computation of Grades", page=19)
+        special = document(text="INC | Incomplete\nDRP | Dropped", section_heading="Grading System", page=20)
+        unrelated = document("Grading_System_2026.docx", "Enrollment requires a completed application.")
+        mislabelled = document(text=unrelated.page_content, section_heading="Grading System")
+        contents = document(text="Table of contents\nGrading System .......... 18", section_heading="Grading System")
+        reference = document(text="See the handbook grading system for grade computation.", section_heading="Grading System")
+        honors = document(text="A grade of 1.00 is required.", section_heading="Latin Honors")
+        docs = [contents, unrelated, mislabelled, table, numeric_only, formula, special, reference, honors]
+        self.assertEqual(grading_documents(docs, "grading system"), [table, numeric_only, formula, special])
+        self.assertEqual(grading_documents(docs, "my grades"), [])
+
+    def test_grading_levels_are_separate_before_current_source_selection(self):
+        from rag.source_policy import grading_documents
+
+        college = document(text="Grading System\nGrade 3.0 is passing.", section_heading="College Grading System")
+        graduate = document("Graduate_School_2026.docx", "Grade 2.0 is passing.", section_heading="Grading System")
+        elementary = document("Elementary_2026.docx", "Written work 30%; performance tasks 50%; assessment 20%.",
+                              section_heading="Elementary / Grading System")
+        shs = document(text="Written work 30%; performance tasks 50%; assessment 20%.", section_heading="SHS / Grading System")
+        docs = [graduate, elementary, shs, college]
+        for query, expected in (("grading system", college), ("graduate school grading system", graduate),
+                                ("elementary grading system", elementary), ("SHS grading system", shs)):
+            self.assertEqual(grading_documents(docs, query), [expected])
+        selection = select_documents(docs, ["grading system"], dates=DATES,
+                                     uploads={doc.metadata["source"]: UPLOADS[UPDATE] for doc in (graduate, elementary)}, today=TODAY)
+        self.assertEqual(selection.documents, [college])
+        self.assertFalse(selection.restricted)
+
+    def test_grading_gs_abbreviation_and_registrar_placeholder_do_not_replace_college_scale(self):
+        from rag.source_policy import grading_documents, grading_queries
+
+        college = document(text="Numerical Rating | Percentage | Numerical Rating | Percentage\n"
+                           "1.0 | 98-100 | 2.1 | 84\n2.0 | 85 | 3.1-5.0 | 74-below (Failed, Dropped, Not Taken)\n"
+                           "Final rating remarks shall be Passed, Failed or Dropped.", section_heading="GRADING SYSTEM", page=43)
+        graduate = document(text="Numerical Rating | Percentage Equivalent | Adjective Rating\n"
+                            "1.0 | 100 | Excellent\n1.9-5.0 | 84-below | Failure\n"
+                            "The averaging system uses Midterm and Final examination periods.",
+                            section_heading="GRADING SYSTEM OF THE GS", page=18)
+        placeholder = document("REGISTRAR_Services_&_Information_2026.docx", "Grading System details will be posted here.",
+                               section_heading="Grading System")
+        self.assertEqual(grading_documents([placeholder, graduate, college], "grading system"), [college])
+        self.assertEqual(grading_documents([placeholder, graduate, college], "GS grading system"), [graduate])
+        self.assertTrue(all(probe.startswith("graduate ") for probe in grading_queries("graduate grading system")))
+        self.assertFalse(any(probe.startswith("graduate ") for probe in grading_queries("grade computation for subject mastery")))
+        selection = select_documents([placeholder, graduate, college], ["grading system"], dates=DATES,
+                                     uploads={placeholder.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertEqual(selection.documents, [college])
+        self.assertFalse(selection.restricted)
+
+    def test_criminology_subject_queries_are_not_offerings_or_personal_records(self):
+        from rag.latency import overview_topic
+        from rag.source_policy import curriculum_queries
+
+        for query in ("crim subjects", "BSCRIM subjects", "Criminology curriculum", "crim first year subjects"):
+            self.assertEqual(len(curriculum_queries(query)), 2)
+            self.assertIn("Bachelor of Science in Criminology", curriculum_queries(query)[0])
+            self.assertEqual(overview_topic(query), "")
+            self.assertEqual(program_catalog_queries(query), [])
+        for query in (None, 42, "", "crim programs", "dean of crim", "my crim subjects",
+                      "my BSCRIM grades", "crime subjects", "Criminology admission requirements"):
+            self.assertEqual(curriculum_queries(query), [])
+
+    def test_it_curriculum_queries_cover_semesters_and_respect_explicit_short_term_scope(self):
+        from rag.source_policy import curriculum_program, curriculum_queries, curriculum_semester_queries
+
+        for query in ("it subjects.", "BSIT subjects", "Information Technology curriculum", "subjects of IT"):
+            self.assertEqual(curriculum_program(query), ("BSIT", "Bachelor of Science in Information Technology"))
+            self.assertIn("BSIT Bachelor of Science in Information Technology", curriculum_queries(query)[0])
+            self.assertEqual(len(curriculum_semester_queries(query)), 8)
+        for query in ("my IT subjects", "its subjects", "BSCRIM and BSIT subjects"):
+            self.assertIsNone(curriculum_program(query))
+        self.assertEqual(len(curriculum_semester_queries("it 3rd year subjects")), 2)
+        self.assertTrue(all("Third Year" in query for query in curriculum_semester_queries("it 3rd year subjects")))
+        focused = curriculum_semester_queries("BSIT 1st year 1st sem subjects")
+        self.assertEqual(len(focused), 1)
+        self.assertIn("First Year First Semester", focused[0])
+        self.assertEqual(curriculum_semester_queries("crim subjects"), [])
+
+    def test_curriculum_rows_keep_degree_and_requested_term_scope(self):
+        from rag.source_policy import curriculum_documents
+
+        source = "Curriculum_2026.docx"
+        table = "Course Code | Course Title | Units\nGE 1 | Understanding the Self | 3"
+        first = document(source, table, section_heading="Bachelor of Science in Criminology / First Year / First Semester")
+        second = document(source, table, section_heading="Bachelor of Science in Criminology / First Year / Second Semester")
+        other = document(source, table, section_heading="Bachelor of Science in Information Technology / First Year / First Semester")
+        heading = document(source, "Bachelor of Science in Criminology", section_heading="Curriculum")
+        header_only = document(source, "Course Code | Course Title | Units", section_heading="BSCRIM Curriculum")
+        docs = [other, first, second, heading, header_only]
+        self.assertEqual(curriculum_documents(docs, "crim subjects"), [first, second])
+        self.assertEqual(curriculum_documents(docs, "crim 1st year 2nd semester subjects"), [second])
+        self.assertEqual(curriculum_documents(docs, "crim third year subjects"), [])
+
+    def test_legacy_curriculum_tables_require_same_source_unambiguous_degree_evidence(self):
+        from rag.source_policy import curriculum_documents
+
+        source = "samar_colleges_ccje_program_2026.docx"
+        owner = document(source, "Curriculum\nBachelor of Science in Criminology")
+        table = document(source, "COURSE CODE | COURSE TITLE | UNITS | PRE-REQUISITE\n"
+                         "CoCJE GE 111 | Understanding Self, GAD and Peace Education | 3 units | None",
+                         section_heading="General Education (24 units) / Curriculum subjects")
+        unrelated = document("Other_Program_2026.docx", table.page_content, section_heading=table.metadata["section_heading"])
+        before = deepcopy([owner, table, unrelated])
+        self.assertEqual(curriculum_documents([table, unrelated], "crim subjects"), [])
+        selected = curriculum_documents([owner, table, unrelated], "crim subjects")
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].page_content, table.page_content)
+        self.assertIn("Bachelor of Science in Criminology", selected[0].metadata["collection_heading"])
+        self.assertEqual([owner, table, unrelated], before)
+        other_degree = document(source, "Curriculum\nBachelor of Science in Information Technology")
+        self.assertEqual(curriculum_documents([owner, table, other_degree], "crim subjects"), [])
+        mixed = document(source, "Bachelor of Science in Criminology\n"
+                         "Bachelor of Science in Information Technology\n" + table.page_content)
+        self.assertEqual(curriculum_documents([mixed], "crim subjects"), [])
+        unknown_owner = document("", owner.page_content)
+        unknown_table = document("", table.page_content, section_heading=table.metadata["section_heading"])
+        self.assertEqual(curriculum_documents([unknown_owner, unknown_table], "crim subjects"), [])
+
+    def test_curriculum_accepts_alphabetic_course_codes_without_counting_headers_as_rows(self):
+        from rag.source_policy import curriculum_documents
+
+        header = "COURSE CODE | COURSE TITLE | UNITS | PRE-REQUISITE"
+        heading = "Bachelor of Science in Criminology / Additional EC Courses (7 units) / Curriculum subjects"
+        table = document("Curriculum.docx", header + "\nAdGE | General Chemistry (Organic) 2 lec + 2 lab | 4 units | None\n"
+                         "CoCJE PC | Life & Works of Rizal | 3 units | None", section_heading=heading)
+        headers = document("Curriculum.docx", header + "\n--- | --- | --- | ---\nTOTAL UNITS | 7 | |",
+                           section_heading=heading)
+        self.assertEqual(curriculum_documents([headers, table], "crim subjects"), [table])
+
     def test_bare_history_defaults_to_institution_and_skips_short_topic_overview(self):
         from rag.latency import overview_topic
         from rag.source_policy import institution_history_queries

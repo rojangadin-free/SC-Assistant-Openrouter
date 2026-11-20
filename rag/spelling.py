@@ -147,7 +147,7 @@ _SEED_TERMS: Tuple[str, ...] = (
     "assessment", "miscellaneous", "laboratory", "matriculation",
 
     # ---- Academics ---------------------------------------------------------
-    "course", "courses", "program", "programs", "curriculum", "subject", "education",
+    "course", "courses", "program", "programs", "curriculum", "subject", "education", "lister", "listers",
     "subjects", "units", "semester", "semestral", "trimester", "midterm",
     "finals", "prelim", "prelims", "grade", "grades", "grading", "average",
     "computation", "passing", "failing", "incomplete", "removal", "retention",
@@ -163,7 +163,7 @@ _SEED_TERMS: Tuple[str, ...] = (
     "college", "colleges", "school", "institute", "office", "administration",
 
     # ---- Institution-specific ---------------------------------------------
-    "samar", "catbalogan", "waray", *_SEED_ACRONYMS, "senior", "highschool",
+    "samar", "catbalogan", "waray", "crim", *_SEED_ACRONYMS, "senior", "highschool",
     "elementary", "preschool", "kindergarten",
 
     # ---- Policy / conduct --------------------------------------------------

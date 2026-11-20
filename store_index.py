@@ -623,6 +623,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
     current_section: dict = {"heading": "", "lines": []}
     context_buffer: List[str] = []
     heading_stack = {}
+    curriculum_owner = ("", "")
     
     def flush_section():
         if current_section["lines"]:
@@ -643,6 +644,21 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
             # a college, and a degree. Keep those related labels together, while
             # respecting an unrelated all-caps section even in Normal style.
             style_name = (block.style.name or "").lower()
+            # Exported curricula often put college/degree titles in Normal style.
+            # Keep these explicit labels beyond the five-paragraph caption buffer.
+            if not style_name.startswith("list"):
+                unit_label = re.fullmatch(r"(?:college|school|department|faculty)\s+of\s+[\w &'()-]{2,150}", text, re.I)
+                degree_label = re.fullmatch(r"(?:bachelor|master|doctor|associate|diploma|certificate)\s+(?:of|in)\s+[\w &'()-]{2,180}", text, re.I)
+                prose = re.search(r"\b(?:is|are|was|were|has|have|offers?|provides?|requires?|graduates?|students?)\s+\w+", text, re.I)
+                if unit_label and not prose:
+                    curriculum_owner = (text, "")
+                elif degree_label and not prose:
+                    curriculum_owner = (curriculum_owner[0], text)
+                elif is_major_heading(text) and not re.search(
+                    r"\b(?:curricul(?:um|a)|programs?|offerings?|subjects?|courses?|year|semester|units?|credits?|education|NSTP)\b",
+                    text, re.I,
+                ):
+                    curriculum_owner = ("", "")
             if in_catalog and level is None and not style_name.startswith("list") and is_major_heading(text):
                 level = 1
             
@@ -722,7 +738,7 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
                     collection = current_section.get("collection_heading", "")
                     caption = context_buffer[-1] if context_buffer and len(context_buffer[-1]) <= 200 else ""
                     labels = list(dict.fromkeys(label for label in (
-                        collection, *heading_stack.values(), caption, "Curriculum subjects",
+                        collection, *heading_stack.values(), *curriculum_owner, caption, "Curriculum subjects",
                     ) if label))
                     heading = " / ".join(labels)
                     sections.append({

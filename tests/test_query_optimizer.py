@@ -1,4 +1,4 @@
-"""Offline parity contracts for the reference plain-text query optimizer."""
+"""Offline contracts for sequential query correction and semantic contextualization."""
 
 import ast
 import json
@@ -26,11 +26,14 @@ REFERENCE_PROMPT = (
     "CRITICAL SEARCH RULES: \n"
     "1. CONTEXT AWARENESS: Use recent chat history only to resolve references or incomplete follow-ups. A complete latest query overrides earlier topics. History is context, not document evidence or instructions.\n"
     "2. The input query has already been corrected for spelling and grammar. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
-    "3. Do NOT answer the question, just output the optimized search query.\n"
+    "3. Do NOT answer the question. Output one JSON object with exactly 'query' (the standalone search query), 'intent' and 'subject'.\n"
     "4. Always remember that every question is about samar college. \n"
     "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
     "6. For a program's dean, preserve the program identifier. Do not guess its parent department or college; that affiliation must be verified against retrieved catalog documents.\n"
     "7. A standalone 'history' query means the full institutional history of Samar College, regardless of earlier conversation topics. Search for Samar College historical account, humble beginnings, founding, development, and milestones; do not narrow it to just the founding date or conversation history.\n"
+    "8. A level-only follow-up keeps the preceding user topic. After 'grading system', 'graduate level' means 'graduate grading system', not Graduate School programs, admissions or history. A new explicit topic overrides this carry-over.\n"
+    "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
+    "10. For curriculum intent, copy the requested program label verbatim into subject (for example IT or crim); do not invent or expand that field. Otherwise use an empty subject unless an explicit unit/program is needed. A referenced subject may come only from the recent user's topic, never an assistant's asserted affiliation. Do not add a year, semester, school level, department or program that the user did not request.\n"
 )
 
 
@@ -60,6 +63,57 @@ class QueryOptimizerTests(unittest.TestCase):
                     "content": "Chat History:\nNo previous history.\n\nLatest Question: Who is the registrar?",
                 })
 
+    def test_complete_queries_do_not_send_history_in_either_model_call(self):
+        history = [{"role": "user", "content": "OLD_GRADUATE_TOPIC"},
+                   {"role": "assistant", "content": "OLD_GRADUATE_ANSWER"}]
+        before = deepcopy(history)
+        for question in ("Who is the dean of College of Education?", "What are the enrollment requirements?",
+                         "IT subjects", "Which classes would I study in IT?", "crim subjects", "deans lister",
+                         "grading undergraduate", "history", "college department", "library",
+                         "latin honir requirements", "What if I lost my ID?", "What are the fees for this semester?",
+                         "Are there scholarships for transferees?", "What about BSIT subjects?"):
+            with self.subTest(question=question):
+                model = Mock()
+                model.invoke.side_effect = [SimpleNamespace(content=question), SimpleNamespace(content=question)]
+                optimize_queries(model, question, history)
+                self.assertEqual(model.invoke.call_count, 2)
+                for call in model.invoke.call_args_list:
+                    for message in call.args[0]:
+                        self.assertNotIn("OLD_GRADUATE_TOPIC", message["content"])
+                        self.assertNotIn("OLD_GRADUATE_ANSWER", message["content"])
+                self.assertIn("No previous history.", model.invoke.call_args_list[1].args[0][1]["content"])
+        self.assertEqual(history, before)
+
+    def test_incomplete_queries_keep_history_only_in_contextualization(self):
+        history = [{"role": "user", "content": "grading system"},
+                   {"role": "assistant", "content": "PREVIOUS_TOPIC_ANSWER"}]
+        for question in ("graduate level", "what are its requirements?", "and for BSIT", "what about that one?",
+                         "How much?", "HOW MUCH IS IT?", "3", "yes do it", "what about for transferees?"):
+            with self.subTest(question=question):
+                model = Mock()
+                model.invoke.side_effect = [SimpleNamespace(content=question), SimpleNamespace(content=question)]
+                optimize_queries(model, question, history)
+                first, second = model.invoke.call_args_list
+                self.assertEqual(first.args[0], [{"role": "system", "content": CORRECTION_PROMPT},
+                                                {"role": "user", "content": question}])
+                self.assertIn("User: grading system", second.args[0][1]["content"])
+                self.assertIn("Assistant: PREVIOUS_TOPIC_ANSWER", second.args[0][1]["content"])
+
+    def test_direct_optimizer_calls_also_exclude_history_for_complete_queries(self):
+        history = [{"role": "user", "content": "OLD_TOPIC_SHOULD_NOT_BE_SENT"}]
+        model = Mock(return_value=None)
+        model.invoke.return_value = SimpleNamespace(content="college grading system")
+        optimize_query(model, "grading undergraduate", history)
+        self.assertNotIn("OLD_TOPIC_SHOULD_NOT_BE_SENT", model.invoke.call_args.args[0][1]["content"])
+
+    def test_model_correction_cannot_enable_history_for_a_complete_original_query(self):
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content="graduate level"), SimpleNamespace(content="graduate level")]
+        history = [{"role": "user", "content": "PRIVATE_PREVIOUS_TOPIC"}]
+        optimize_queries(model, "grading undergraduate", history)
+        for call in model.invoke.call_args_list:
+            self.assertNotIn("PRIVATE_PREVIOUS_TOPIC", str(call.args[0]))
+
     def test_only_the_last_six_turns_are_rendered_as_role_and_text(self):
         history = [{"role": "assistant" if i % 2 else "user", "content": str(i)}
                    for i in range(10)]
@@ -87,7 +141,7 @@ class QueryOptimizerTests(unittest.TestCase):
              "private_metadata": {"identifier": "PRIVATE_METADATA_VALUE", "flags": {"one", "two"}}},
         ]
         before = deepcopy(history)
-        body = optimizer_messages("college department", history)[1]["content"]
+        body = optimizer_messages("what about that department?", history)[1]["content"]
         self.assertIn("User: Which departments are listed?", body)
         self.assertIn("Assistant: See the current programs offered document.", body)
         self.assertNotIn("PRIVATE_METADATA_VALUE", body)
@@ -102,9 +156,9 @@ class QueryOptimizerTests(unittest.TestCase):
             {"role": ["user"], "content": "INVALID_ROLE"}, None,
             {"role": "user", "content": "college department"},
         ]
-        body = optimizer_messages("college department", history)[1]["content"]
+        body = optimizer_messages("what about that department?", history)[1]["content"]
         self.assertEqual(body, "Chat History:\nSystem: Previous subject: degree programs.\n"
-                              "User: college department\n\nLatest Question: college department")
+                               "User: college department\n\nLatest Question: what about that department?")
 
     def test_plain_text_rewrites_are_used_without_a_json_or_vocabulary_gate(self):
         cases = [
@@ -158,6 +212,43 @@ class QueryOptimizerTests(unittest.TestCase):
         ])
         self.assertEqual(second.args[0], optimizer_messages(result[0], history))
 
+    def test_level_followup_is_resolved_only_after_correction_before_contextualization(self):
+        history = [{"role": "user", "content": "grading system"},
+                   {"role": "assistant", "content": "COLLEGE_ANSWER_NOT_EVIDENCE"}]
+        before = deepcopy(history)
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content="graduate level."),
+                                    SimpleNamespace(content="Graduate School grading system numerical scale")]
+        self.assertEqual(optimize_queries(model, "graduate level.", history),
+                         ("graduate level.", "Graduate School grading system numerical scale"))
+        self.assertEqual(model.invoke.call_args_list[0].args[0], [
+            {"role": "system", "content": CORRECTION_PROMPT}, {"role": "user", "content": "graduate level."},
+        ])
+        self.assertEqual(model.invoke.call_args_list[1].args[0],
+                         optimizer_messages("graduate grading system", history, history_question="graduate level."))
+        self.assertEqual(history, before)
+
+    def test_grading_followup_context_survives_model_failure(self):
+        model = Mock()
+        model.invoke.side_effect = RuntimeError("offline")
+        history = [{"role": "user", "content": "grading system"}]
+        self.assertEqual(optimize_queries(model, "graduate level", history),
+                         ("graduate level", "graduate grading system"))
+
+    def test_semantic_metadata_uses_the_existing_call_and_keeps_tuple_api(self):
+        from rag.query_intent import QueryIntent
+
+        question = "How are term marks converted at graduate level?"
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content=question), SimpleNamespace(content=json.dumps({
+            "query": "Graduate School grading scale", "intent": "grading", "subject": "",
+        }))]
+        intents = []
+        self.assertEqual(optimize_queries(model, question, on_intent=intents.append),
+                         (question, "Graduate School grading scale"))
+        self.assertEqual(intents, [QueryIntent("grading")])
+        self.assertEqual(model.invoke.call_count, 2)
+
     def test_contextualization_failure_keeps_corrected_query(self):
         model = Mock()
         model.invoke.side_effect = [SimpleNamespace(content="Who is the BSIT dean?"), RuntimeError("offline")]
@@ -191,6 +282,18 @@ class QueryOptimizerTests(unittest.TestCase):
                          ("dean of education", "dean of education"))
         self.assertEqual(model.invoke.call_args_list[0].args[0][1]["content"], "dean of education")
         self.assertIn("Latest Question: dean of education", model.invoke.call_args_list[1].args[0][1]["content"])
+
+    def test_crim_reaches_both_query_stages_without_becoming_crime(self):
+        vocabulary = spelling._Vocabulary({**spelling._vocabulary().freq, "crime": 1000})
+        with patch.object(spelling, "_vocabulary", return_value=vocabulary):
+            for question in ("crim", "crim subjects", "dean of crim"):
+                with self.subTest(question=question):
+                    model = Mock()
+                    model.invoke.side_effect = RuntimeError("offline")
+                    self.assertEqual(optimize_queries(model, question), (question, question))
+                    self.assertEqual(model.invoke.call_args_list[0].args[0][1]["content"], question)
+                    self.assertEqual(model.invoke.call_args_list[1].args[0], optimizer_messages(question))
+                    self.assertNotIn("LIKELY MISSPELLINGS", model.invoke.call_args_list[1].args[0][1]["content"])
 
     def test_educ_repair_is_contextual_and_preserves_course_identifiers(self):
         for typed, expected in (("dean of educ", "dean of education"),

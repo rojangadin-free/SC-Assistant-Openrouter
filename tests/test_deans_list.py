@@ -22,6 +22,8 @@ class DeansListTests(unittest.TestCase):
     def test_academic_name_is_not_a_personnel_roster_request(self):
         policy = self.harness.policy
         for question in ("deans list", "dean's list", "Dean\u2019s List", "deans list pls",
+                         "deans lister", "Dean's Lister", "Dean\u2019s Lister", "DEANS LISTERS",
+                         "how do I become a deans lister?", "deans lister requirements",
                          "what is the deans list?", "how do I qualify for Dean's List?",
                          "Dean's List GWA requirements", "college Dean's List"):
             with self.subTest(question=question):
@@ -29,7 +31,8 @@ class DeansListTests(unittest.TestCase):
                 self.assertEqual(policy.leadership_roster_queries(question), [])
                 self.assertEqual(policy.leadership_guidance(question), "")
         for question in (None, "", 42, "list of deans", "list all college deans",
-                         "who are the deans?", "dean of BSCRIM", "Latin honors requirements"):
+                         "who are the deans?", "dean of BSCRIM", "Latin honors requirements",
+                         "deans listing of personnel", "deans listening session", "the listed deans"):
             self.assertEqual(policy.deans_list_queries(question), [])
         for question in ("list all college deans", "who are the deans?", "give me the list of deans"):
             self.assertTrue(policy.leadership_roster_queries(question))
@@ -46,6 +49,8 @@ class DeansListTests(unittest.TestCase):
         unrelated = fixtures.document(fixtures.BASE, "Summa Cum Laude. GWA 1.00 to 1.20.", "latin")
         docs = [roster, title, unrelated, mention, scholarship]
         self.assertEqual(policy.deans_list_documents(docs), [mention, scholarship])
+        recipient = fixtures.document(fixtures.BASE, "Dean's Listers receive academic recognition each semester.", "listers")
+        self.assertEqual(policy.deans_list_documents([roster, title, unrelated, recipient]), [recipient])
         for mode in (True, False):
             selection = policy.select_documents(docs, ["deans list", "college deans named roster"],
                                                 dates=self.harness.dates, uploads={roster.metadata["source"]: fixtures.STAMP},
@@ -63,7 +68,9 @@ class DeansListTests(unittest.TestCase):
         fixtures.definitions("src/prompt.py", {"system_prompt"}, h.ns)
         roles = h.module("roles")
         h.ns.update(resolve_role=roles.resolve_role, role_block=roles.role_block)
-        for question in ("deans list", "Dean\u2019s List", "deans list pls", "Dean's List requirements"):
+        for question in ("deans list", "Dean\u2019s List", "deans list pls", "Dean's List requirements",
+                         "deans lister", "Dean's Lister", "Dean\u2019s Lister", "deans listers",
+                         "deans lister requirements"):
             for mode in ("true", "false"):
                 for optimizer_failed in (True, False):
                     with self.subTest(question=question, mode=mode, optimizer_failed=optimizer_failed), patch.dict(
@@ -91,6 +98,15 @@ class DeansListTests(unittest.TestCase):
                         if "requirements" not in question:
                             self.assertIn("<deans_list_overview>", prompt)
                         self.assertEqual(result["messages_to_llm"][-1].content, question)
+
+    def test_lister_is_not_changed_to_listed_by_the_spelling_corpus(self):
+        spelling = self.harness.spelling
+        vocab = spelling._Vocabulary({**spelling._vocabulary().freq, "listed": 1000})
+        with patch.object(spelling, "_vocabulary", return_value=vocab):
+            for question in ("deans lister", "Dean's Lister", "deans listers", "deans lister requirements"):
+                with self.subTest(question=question):
+                    self.assertEqual(spelling.correct_query(question), "")
+                    self.assertEqual(spelling.misspellings(question), [])
 
 
 if __name__ == "__main__":

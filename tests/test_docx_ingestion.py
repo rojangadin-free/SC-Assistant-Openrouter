@@ -577,6 +577,35 @@ class SectionIdentityTests(IngestionTestCase):
 
 
 class CurriculumIngestionTests(IngestionTestCase):
+    def test_normal_style_titles_keep_degree_identity_across_course_categories(self):
+        document = docx.Document()
+        expected = []
+        programs = (("College of Criminal Justice Education", "Bachelor of Science in Criminology"),
+                    ("College of Information Technology", "Bachelor of Science in Information Technology"))
+        for college, program in programs:
+            for text in ("UNDERGRADUATE PROGRAMS", college, "ACADEMIC PROGRAMS", "Programs Offered", "Curriculum", program):
+                document.add_paragraph(text)
+            for category in ("General Education (24 units)", "Professional Courses (57 units)"):
+                document.add_paragraph(category)
+                rows = [["COURSE CODE", "COURSE TITLE", "UNITS", "PRE-REQUISITE"],
+                        ["CoCJE GE 111", "Understanding Self, GAD and Peace Education", "3 units", "None"]]
+                add_table(document, rows)
+                expected.append((college, program, category, rows))
+        document.add_heading("FACULTY", level=1)
+        add_table(document, [["COURSE CODE", "COURSE TITLE", "UNITS"], ["OTHER 101", "Unrelated course", "3"]])
+        docs = self.ns["process_docx_linear"](self.save_docx(document), "Categories.docx")
+        tables = [doc for doc in docs if markdown_rows(doc.page_content)]
+        self.assertEqual(len(tables), len(expected) + 1)
+        for table, (college, program, category, rows) in zip(tables, expected):
+            self.assertEqual(markdown_rows(table.page_content), rows)
+            for label in (college, program, category):
+                self.assertIn(label, table.metadata["section_heading"])
+                self.assertIn(label, table.page_content.splitlines()[0])
+            other = programs[1][1] if program == programs[0][1] else programs[0][1]
+            self.assertNotIn(other, table.page_content)
+        self.assertNotIn("Bachelor", tables[-1].metadata["section_heading"])
+        self.assert_no_index_work()
+
     def curriculum(self, rows_per_table=3):
         document = docx.Document()
         document.add_heading("ACADEMIC PROGRAMS", level=1)

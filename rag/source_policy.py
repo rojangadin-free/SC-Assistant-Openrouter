@@ -66,6 +66,45 @@ as confirmed current, even with a citation or disclaimer. For an explicit histor
 request, identify the requested edition and keep it separate from current offerings.
 Do not restore omitted programs from previous answers, summaries or memory.
 </program_list_request>"""
+CURRICULUM_GUIDANCE = """<curriculum_subject_request>
+The latest request asks for {program} curriculum subjects, not a list of
+degree offerings, a dean, admission requirements, or the user's enrolled subjects.
+For a broad subject-list request, list every supplied subject row, preserving
+course codes, exact titles, units and prerequisites where stated, with citations.
+For a focused question about one course, answer only that requested detail.
+Keep the source's course categories
+and any explicit year/semester organization. For a whole-degree request, include
+every supplied year and semester in order, including First Year First Semester
+and both Third Year semesters when supplied; do not summarize away entire terms.
+If the curriculum groups courses by
+category rather than year or semester, use those categories; never invent a term
+assignment. Include general education, electives, PE/NSTP and professional courses
+when supplied, not only courses whose titles contain Criminology. A broad subject
+request is not limited to a three-bullet overview or a semester added by a search
+rewrite. Respect any year/semester explicitly requested by the user. Do not add
+subjects from another degree or an excluded older curriculum. Identify a dated
+fallback edition and keep it distinct from confirmed current curriculum evidence.
+Do not substitute demo/personal subjects, ask for login, or claim a document is absent.
+</curriculum_subject_request>"""
+GRADING_GUIDANCE = """<grading_system_request>
+This is a public grading-policy request, not the user's personal grades or honors
+eligibility. An unqualified "grading system" asks for the college grading system;
+identify that scope. Respect an explicitly requested school level instead and never
+apply graduate, elementary, JHS or SHS thresholds/weights to college students.
+For a broad request, give the complete supplied grading scale, including every
+numerical rating, percentage equivalent and descriptive remark, with citations.
+Then explain all supplied period/final-grade computation formulas and component
+weights, passing/failing rules, and special marks such as incomplete, dropped or
+withdrawn only where documented. Keep different formula stages distinct. Preserve
+exact ranges, numbers, conditions and deadlines; do not round, infer missing
+weights, repair an apparent inconsistency, or invent a worked example.
+Do not restrict this policy explanation to three bullets or only the top of a
+scale table. Keep continuation rows and related computation passages. A focused
+question needs only its requested detail. Name the edition for an older handbook
+fallback. Use only the selected policy version; never refill an update's omissions
+from an older handbook, memory or conversation. Do not ask for login or substitute
+admission, scholarship, curriculum, or personal-record information.
+</grading_system_request>"""
 INSTITUTION_HISTORY_GUIDANCE = """<institution_history_request>
 The user asks about the institution's history, origins or founding, not History
 subjects or a current program list. Use the supplied historical narrative and cite
@@ -452,6 +491,239 @@ def catalog_source_names(sources) -> list[str]:
                                                 doc_key(source).replace("_", " ").replace("-", " ")))))
 
 
+def curriculum_program(query):
+    """Recognize a public degree curriculum request, including short program labels."""
+    if not isinstance(query, str):
+        return None
+    if (not re.search(r"\b(?:subjects?|curricul(?:um|a)|syllabus)\b", query, re.I)
+            or re.search(r"\b(?:my|own|personal|enrollment|admission|grades?|deans?)\b", query, re.I)):
+        return None
+    programs = []
+    if re.search(r"\b(?:crim|bs\s*crim|criminology)\b", query, re.I):
+        programs.append(("BSCRIM", "Bachelor of Science in Criminology"))
+    if re.search(r"\bbs\s*it\b|\binformation\s+technology\b", query, re.I) or re.search(
+        r"\bit\s+(?:(?:(?:first|second|third|fourth|[1-4](?:st|nd|rd|th)?)\s+(?:year|sem(?:ester)?)|all)\s+)*"
+        r"(?:subjects?|curricul(?:um|a)|syllabus)\b|"
+        r"\b(?:subjects?|curricul(?:um|a)|syllabus)\s+(?:(?:of|for|in)\s+)?it\b", query, re.I,
+    ):
+        programs.append(("BSIT", "Bachelor of Science in Information Technology"))
+    return programs[0] if len(programs) == 1 else None
+
+
+def _curriculum_term(text, kind):
+    """Return a single requested/documented term, accepting numeric and short labels."""
+    label = r"sem(?:ester)?" if kind == "semester" else "year"
+    matches = [number for number, ordinal in enumerate(("first|1st|1|i", "second|2nd|2|ii", "third|3rd|3|iii", "fourth|4th|4|iv"), 1)
+               if re.search(rf"\b(?:(?:{ordinal})\s+{label}|{label}\s+(?:{ordinal}))\b", text, re.I)]
+    return matches[0] if len(matches) == 1 else 0
+
+
+def curriculum_queries(query) -> list[str]:
+    """Public curriculum probes, not degree offerings or personal records."""
+    program = curriculum_program(query)
+    if not program:
+        return []
+    code, title = program
+    return [f"{query.strip()} {code} {title} curriculum course code course title units",
+            f"{query.strip()} {code} {title} curriculum general education electives professional courses PE NSTP"]
+
+
+def curriculum_semester_queries(query) -> list[str]:
+    """Recall each BSIT semester separately rather than trust a single broad top-k."""
+    program = curriculum_program(query)
+    if not program or program[0] != "BSIT":
+        return []
+    year, semester = _curriculum_term(query, "year"), _curriculum_term(query, "semester")
+    return [f"{program[0]} {program[1]} {year_name} Year {semester_name} Semester curriculum subjects course code course title"
+            for year_number, year_name in enumerate(("First", "Second", "Third", "Fourth"), 1)
+            for semester_number, semester_name in enumerate(("First", "Second"), 1)
+            if (not year or year == year_number) and (not semester or semester == semester_number)]
+
+
+def curriculum_documents(documents, query):
+    """Keep curriculum rows and restore source-proven ownership on legacy table chunks."""
+    program = curriculum_program(query)
+    if not program:
+        return []
+    from rag.unit_identity import _program_title
+
+    documents = list(documents)
+    code, program = program
+    target = _program_title(program)
+    owners, curriculum_sources, labels = {}, set(), []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        labelled = re.sub(r"\[(?:SECTION|TABLE\s+context):\s*([^\]]+)\]", r"\n\1\n", text, flags=re.I)
+        scope = headings + "\n" + labelled
+        titles = {_program_title(line.strip(" #\t")) for line in re.split(r"\n|\s+/\s+|\|", scope)
+                  if re.match(r"\s*#*\s*(?:bachelor|master|doctor|associate|diploma|certificate)\b", line, re.I)}
+        source = doc_key(metadata.get("source", ""))
+        owners.setdefault(source, set()).update(titles)
+        if re.search(r"\bcurricul(?:um|a)\b", scope, re.I):
+            curriculum_sources.add(source)
+        labels.append((document, metadata, text, headings, titles, source))
+    selected = []
+    for document, metadata, text, headings, titles, source in labels:
+        if (re.search(r"\b(?:table of contents|faculty|staff|roster|admission|scholarships?)\b", headings, re.I)
+                or re.search(r"\btable of contents\b", text[:300], re.I)):
+            continue
+        explicit = target in titles or bool(re.search(rf"\b{code}\b", headings, re.I))
+        if titles and titles != {target}:
+            continue
+        linked = bool(source) and source in curriculum_sources and owners.get(source) == {target}
+        if not explicit and not linked:
+            continue
+        # A degree heading or catalog row alone does not supply a subject list.
+        course_columns = re.search(r"\b(?:course|subject)\s+(?:code|title|description)\b|\bdescriptive title\b", text, re.I)
+        course_rows = [line for line in text.splitlines() if re.search(
+            r"^\s*\|?\s*[A-Za-z][A-Za-z0-9 .-]*\s*\|\s*\S", line,
+        ) and not re.match(
+            r"^\s*\|?\s*(?:(?:course|subject)(?:\s+(?:code|title))?|code|total(?:\s+units)?)\s*\|", line, re.I,
+        )]
+        if not course_columns or not course_rows:
+            continue
+        scope = headings or text
+        outside_scope = False
+        for kind in ("year", "semester"):
+            requested = _curriculum_term(query, kind)
+            if requested and _curriculum_term(scope, kind) != requested:
+                outside_scope = True
+        if outside_scope:
+            continue
+        if not explicit:
+            document = copy(document)
+            document.metadata = {**metadata, "collection_heading": " / ".join(
+                label for label in (metadata.get("collection_heading"), program) if label
+            )}
+        selected.append(document)
+    if code == "BSIT":
+        selected.sort(key=lambda doc: tuple(_curriculum_term(
+            "\n".join(str((getattr(doc, "metadata", None) or {}).get(key) or "") for key in _HEADINGS), kind,
+        ) or 9 for kind in ("year", "semester")))
+    return selected
+
+
+def grading_queries(query) -> list[str]:
+    """Recognize public grading policies/computation, not a request for personal marks."""
+    if not isinstance(query, str):
+        return []
+    level = _grading_level(query)
+    policy = re.search(r"\b(?:systems?|scales?|polic(?:y|ies)|schemes?|components?|computation)\b", query, re.I)
+    academic_level = level or re.search(r"\b(?:undergrad(?:uate)?s?|college|collegiate|tertiary)\b", query, re.I)
+    # The topic and its academic level need not be adjacent or contain 'system'.
+    policy_topic = re.search(r"\b(?:grading|marking)\b", query, re.I) and (
+        policy or academic_level or re.fullmatch(r"(?:grading|marking)", request_text(query), re.I)
+    )
+    if not policy and re.search(r"\b(?:papers?|essays?|assignments?|homework|submissions?)\b", query, re.I):
+        policy_topic = False
+    calculation = re.search(
+        r"\bgrades?\s+(?:computation|calculation|scale|equivalen\w*)\b|"
+        r"\b(?:comput(?:e|ed|ation)|calculat(?:e|ed|ion))\b.{0,45}\bgrades?\b|"
+        r"\bgrades?\b.{0,45}\b(?:computed|calculated)\b|\btransmutation(?:\s+table)?\b", query, re.I,
+    )
+    if not policy_topic and not calculation:
+        return []
+    level = level or "college"
+    return [f"{level} grading system numerical rating percentage equivalent descriptive remarks passing failing",
+            f"{level} computation of grades prelim midterm final grade class standing examination component weights",
+            f"{level} grading system incomplete dropped withdrawn no credit special marks completion rules"]
+
+
+def _grading_level(text):
+    for level, pattern in (
+        ("graduate", r"graduate(?:\s+(?:school|studies|programs?))?|GS|postgraduate|master(?:s|'s)?|doctoral"),
+        ("senior high school", r"senior\s+high|\bSHS\b|\bgrades?\s+(?:11|12)\b"),
+        ("junior high school", r"junior\s+high|\bJHS\b|\bgrades?\s+(?:7|8|9|10)\b"),
+        ("elementary", r"elementary|grade\s+school|primary|kindergarten"),
+        ("basic education", r"basic\s+education|K[- ]?12"),
+    ):
+        if re.search(rf"\b(?:{pattern})\b", text, re.I):
+            return level
+    return ""
+
+
+def resolve_grading_followup(question, history=None):
+    """Carry a recent user grading topic into a level-only follow-up, not a new topic."""
+    def level_only(text):
+        if not isinstance(text, str):
+            return ""
+        text = request_text(text)
+        text = re.sub(r"^(?:(?:what|how)\s+about|and(?:\s+for)?|same\s+for|for|at)\s+", "", text, flags=re.I)
+        text = re.sub(r"^the\s+", "", text, flags=re.I)
+        if not re.fullmatch(
+            r"(?:graduate(?:\s+(?:school|studies))?|postgraduate|GS|master(?:'s|s)?|college|undergrad(?:uate)?|"
+            r"elementary|primary|junior\s+high(?:\s+school)?|senior\s+high(?:\s+school)?|JHS|SHS|basic\s+education)"
+            r"(?:\s+level)?(?:\s+instead)?", text, re.I,
+        ):
+            return ""
+        return _grading_level(text) or "college"
+
+    level = level_only(question)
+    if not level:
+        return question
+    for message in reversed((history or [])[-12:]):
+        if not isinstance(message, dict) or message.get("role") != "user" or not isinstance(message.get("content"), str):
+            continue
+        previous = message["content"]
+        if grading_queries(previous):
+            if re.search(r"\btransmutation\b", previous, re.I):
+                topic = "transmutation table"
+            elif re.search(r"\b(?:comput(?:e|ed|es|ation|ing)|calculat(?:e|ed|es|ion|ing))\b", previous, re.I):
+                topic = "grade computation"
+            elif re.search(r"\b(?:scale|equivalen\w*)\b", previous, re.I):
+                topic = "grading scale"
+            else:
+                topic = "grading system"
+            editions = re.findall(r"\b(?:20\d{2}|historical|previous|old|compare|comparison|versus)\b", previous, re.I)
+            return " ".join([level, topic, *editions])
+        if not level_only(previous):
+            break
+    return question
+
+
+def grading_documents(documents, query):
+    """Keep substantive grading sections and their numeric/table continuations."""
+    if not grading_queries(query):
+        return []
+    level = _grading_level(query) or "college"
+    selected = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        labels = "\n".join(re.findall(r"\[(?:SECTION|TABLE\s+context):\s*([^\]]+)\]", text, re.I))
+        scope = headings + "\n" + labels
+        body = re.sub(r"\[(?:SECTION|TABLE\s+context):[^\]]*\]", "", text, flags=re.I)
+        source = doc_key(metadata.get("source", "")).replace("_", " ").replace("-", " ")
+        document_level = _grading_level(scope + "\n" + source) or _grading_level(body[:300])
+        if ((document_level and document_level != level)
+                or (level != "college" and not document_level)
+                or re.search(r"\b(?:table of contents|honors?|honours?|scholarships?|dean'?s list|curriculum|subjects?|admission)\b", scope, re.I)
+                or re.search(r"\btable of contents\b", body[:300], re.I)
+                or re.search(r"\b(?:details|information)\s+will\s+be\s+(?:posted|provided|announced)\b|\bcoming soon\b", body, re.I)
+                or len(re.findall(r"\.{3,}\s*\d+", body)) >= 2):
+            continue
+        heading = re.search(
+            r"\b(?:grading|marking)\b|\b(?:computation|calculation)\s+of\s+(?:final\s+)?grades?\b|"
+            r"\b(?:incomplete|final)\s+grades?\b|\bgrade\s+(?:scale|equivalen\w*|computation|components?)\b|\btransmutation\b",
+            scope, re.I,
+        )
+        direct = re.search(r"\b(?:grading|marking)\s+(?:system|scale|polic(?:y|ies))\b|"
+                           r"\b(?:computation|calculation)\s+of\s+(?:final\s+)?grades?\b", body, re.I)
+        content = re.search(
+            r"\d\s*%|\b(?:grades?|marks?|ratings?|equivalen\w*|examinations?|exams?|quizzes|quiz|class standing|"
+            r"prelim\w*|midterm\w*|finals?|passing|failing|passed|failed|failure|excellent|satisfactory|incomplete|dropped|withdrawn|completion)\b|"
+            r"(?:^|\n)\s*\|?\s*\d(?:\.\d+)?\s*\||"
+            r"(?:^|\n)\s*[1-5]\.\d{1,2}\s+\d{2,3}\b", body, re.I,
+        )
+        reference_only = re.match(r"\s*(?:see|refer to|consult|read)\b", body, re.I)
+        if (heading or direct) and content and not reference_only:
+            selected.append(document)
+    return selected
+
+
 def program_catalog_queries(query) -> list[str]:
     """Find offering catalogs even when a short request omits 'programs' or 'courses'."""
     if not isinstance(query, str) or enrollment_queries(query):
@@ -562,7 +834,7 @@ def institution_history_queries(query) -> list[str]:
     return [f"{query.strip()} historical account humble beginnings", f"{query.strip()} founding origins established"]
 
 
-_DEANS_LIST = re.compile(r"\bdean(?:['\u2019]s|s['\u2019]?)?\s+list\b", re.IGNORECASE)
+_DEANS_LIST = re.compile(r"\bdean(?:['\u2019]s|s['\u2019]?)?\s+list(?:er)?s?\b", re.IGNORECASE)
 
 
 def deans_list_queries(query):
@@ -589,7 +861,7 @@ def deans_list_documents(documents):
 
 
 DEANS_LIST_GUIDANCE = """<deans_list_academic_request>
-Dean's List (also typed 'deans list') refers to academic recognition, not a roster
+Dean's List and Dean's Lister (also typed 'deans list' or 'deans lister') refer to academic recognition, not a roster
 of college deans. Answer only the requested academic information with citations.
 For a bare topic such as 'deans list', give a short overview of the documented
 Dean's List references. Do not reinterpret it as a request for every eligibility
@@ -768,6 +1040,10 @@ def _relevant(document, queries, unit=None):
         return bool(family_discount_documents([document]))
     if queries and deans_list_queries(queries[0]):
         return bool(deans_list_documents([document]))
+    if queries and curriculum_queries(queries[0]):
+        return bool(curriculum_documents([document], queries[0]))
+    if queries and grading_queries(queries[0]):
+        return bool(grading_documents([document], queries[0]))
     level = program_offering_scope(queries[0]) if queries else ""
     if level in {"college", "undergraduate"}:
         basic_or_technical = re.search(r"\b(?:basic education|elementary program|junior high school|senior high school|"
@@ -870,6 +1146,10 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
     queries = [query.strip() for query in queries if isinstance(query, str) and query.strip()]
     today = today or date.today()
     original_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
+    if queries and curriculum_queries(queries[0]):
+        documents = curriculum_documents(documents, queries[0])
+    if queries and grading_queries(queries[0]):
+        documents = grading_documents(documents, queries[0])
     enrollment = bool(queries and enrollment_queries(queries[0]))
     if enrollment:
         # A shared-procedure probe must also contribute to relevance, not just recall.
