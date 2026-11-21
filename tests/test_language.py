@@ -130,6 +130,14 @@ check("punctuation-only input yields nothing", to_english_query("???") == "")
 # ============================================================
 section("4. Variants are additive — the original is never replaced")
 # ============================================================
+check("Waray location article is not an English pronoun in the fallback probe",
+      "it" not in to_english_query("diin it sc?").split())
+check("neither equivalent campus-location query gains fee-table padding",
+      all("list of fees and amounts" not in variant
+          for query in ("diin it sc?", "diin mabibilngan it sc")
+          for variant in language_variants(query)))
+check("the longer campus-location phrase gains English location vocabulary",
+      "location" in to_english_query("diin mabibilngan it sc"))
 v = language_variants("Pila an bayad sa enrollment?")
 check("at least one variant produced", len(v) >= 1, v)
 check("the variant is English", "how much" in v[0], v)

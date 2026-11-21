@@ -8,6 +8,173 @@ import test_newer_retrieval as fixtures
 
 
 class TopicOverviewTests(unittest.TestCase):
+    def test_equivalent_waray_campus_location_queries_find_address_without_old_topic_or_document_absence_claims(self):
+        h = self.harness
+        letterhead = fixtures.document("SCTI_Program.docx", "SAMAR COLLEGES, INC.\nMabini Avenue, Catbalogan City Samar",
+                                       "street-address", section_heading="SCTI PROGRAM OFFERED")
+        city = fixtures.document("Library_Services_2026.docx", "Samar Colleges, Inc. | Catbalogan City, Samar",
+                                 "city-address", section_heading="Footer & Contact Information")
+        office = fixtures.document("Office_Directory_2026.docx", "OSAS: Ground Floor, New Building, Samar Colleges, Inc., Catbalogan City.",
+                                   "office", section_heading="Office Locations")
+        old_site = fixtures.document(fixtures.BASE, "In 1949 Samar College had a main building at San Roque Street and Allen Avenue.",
+                                     "old-site", section_heading="The Humble Beginnings of Samar College")
+        english = "Samar College official physical address location"
+        for question in ("diin it sc?", "diin mabibilngan it sc"):
+            for correction in ("true", "false"):
+                for rewrite in (None, english, "College of Education office location", json.dumps({"query": "student ID replacement", "intent": "student_id", "subject": ""})):
+                    with self.subTest(question=question, correction=correction, rewrite=rewrite), patch.dict(os.environ, {
+                        "QUERY_CORRECTION_ENABLED": correction, "RAG_SOURCE_FILTER_ENABLED": "true",
+                    }):
+                        hybrid = h.install([office, letterhead, city], baseline=[old_site])
+                        h.ns["query_optimizer_model"].invoke = Mock(
+                            side_effect=RuntimeError("offline") if rewrite is None else None,
+                            return_value=fixtures.SimpleNamespace(content=rewrite),
+                        )
+                        result = h.chat(question, history=[{"role": "user", "content": "I lost my student ID"},
+                                                           {"role": "assistant", "content": "OLD_CARD_TOPIC"}])
+                        self.assertEqual(set(result["citations"]), {"street-address", "city-address"}, h.output.getvalue())
+                        prompt = result["messages_to_llm"][0].content
+                        self.assertIn(letterhead.page_content, prompt)
+                        self.assertIn(city.page_content, prompt)
+                        self.assertIn("<campus_location_request>", prompt)
+                        self.assertIn("Never say there is no document", prompt)
+                        self.assertIn("a documented city/province answers", prompt)
+                        self.assertIn("offering unrelated programs/admission/help", prompt)
+                        for unrelated in (office.page_content, old_site.page_content, "OLD_CARD_TOPIC", "<student_id_request>", "<standalone_topic_overview>"):
+                            self.assertNotIn(unrelated, prompt)
+                        self.assertEqual(result["messages_to_llm"][-1].content, question)
+                        self.assertTrue(any("institutional letterhead" in query for _, query, _ in hybrid.calls))
+                        self.assertFalse(any("list of fees and amounts" in query for _, query, _ in hybrid.calls))
+                        if rewrite is not None:
+                            self.assertNotIn("OLD_CARD_TOPIC", str(h.ns["query_optimizer_model"].invoke.call_args.args[0]))
+
+    def test_unsupported_location_is_fact_uncertainty_without_fake_coverage_or_external_referral(self):
+        h = self.harness
+        office = fixtures.document("Directory.docx", "OSAS: Ground Floor, New Building.", "office", section_heading="Office Locations")
+        h.install([office], baseline=[])
+        h.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("offline")
+        result = h.chat("diin it sc?")
+        self.assertEqual(result["citations"], [])
+        prompt = result["messages_to_llm"][0].content
+        self.assertNotIn(office.page_content, prompt)
+        self.assertIn("<campus_location_request>", prompt)
+        self.assertIn("say only that you cannot confirm that fact", prompt)
+        self.assertIn("without inventing an address, referring to external pages/contact channels", prompt)
+
+    def test_english_search_translation_does_not_change_the_waray_reply_language_source(self):
+        h = self.harness
+        language_namespace = {}
+        fixtures.definitions("src/prompt.py", {"response_language_prompt"}, language_namespace)
+        language_policy = language_namespace["response_language_prompt"]
+        loss = fixtures.document(fixtures.BASE, "Lost RFID must be reported to Security Management Office.",
+                                 "rfid", section_heading="Radio Frequency Identification (RFID)")
+        original = "nawawara an ak student ID ha SC"
+        english = "Samar College lost RFID identification card reporting policy"
+        for enabled in ("true", "false"):
+            # Include a provider that wrongly translates during correction: the
+            # original language must still determine the visible answer language.
+            for corrected in (None, "I lost my student ID at Samar College."):
+                with self.subTest(correction=enabled, corrected=corrected), patch.dict(os.environ, {
+                    "QUERY_CORRECTION_ENABLED": enabled,
+                }), patch.dict(h.ns, {"response_language_prompt": language_policy}):
+                    hybrid = h.install([], baseline=[loss])
+                    h.ns["query_optimizer_model"].invoke = Mock(return_value=fixtures.SimpleNamespace(content=json.dumps({
+                        "query": english, "intent": "student_id", "subject": "",
+                    })))
+                    result = h.chat(original, corrected=corrected)
+                    self.assertEqual(result["citations"], ["rfid"], h.output.getvalue())
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertTrue(prompt.endswith(language_policy))
+                    self.assertIn("Waray-Waray input: answer in Waray-Waray", prompt)
+                    self.assertIn("A Waray query translated to English for search still receives a Waray answer", prompt)
+                    if corrected and enabled == "true":
+                        self.assertIn("<reply_language_source>", prompt)
+                        self.assertIn(repr(original), prompt)
+                        self.assertEqual(result["messages_to_llm"][-1].content, corrected)
+                    else:
+                        self.assertEqual(result["messages_to_llm"][-1].content, original)
+                    self.assertTrue(any(query == english for _, query, _ in hybrid.calls))
+                    self.assertIn(loss.page_content, prompt)
+
+    def test_waray_lost_speaker_cannot_turn_into_id_loss_even_after_an_id_conversation(self):
+        h = self.harness
+        question = "magaanu man ak kun nawawara ak ha SC HAHAHAHA"
+        id_policy = fixtures.document(fixtures.BASE, "Lost RFID must be reported to Security Management Office.",
+                                      "rfid", section_heading="Radio Frequency Identification (RFID)")
+        office = fixtures.document("Office_Directory_2026.docx", "Office of Student Affairs and Services (OSAS), Ground Floor, New Building.",
+                                   "office-location", section_heading="Office Locations")
+        wrong = json.dumps({"query": "student ID replacement", "intent": "student_id", "subject": ""})
+        for correction in ("true", "false"):
+            for first_stage in (None, "I lost my student ID at SC"):
+                with self.subTest(correction=correction, first_stage=first_stage), patch.dict(os.environ, {
+                    "QUERY_CORRECTION_ENABLED": correction, "RAG_SOURCE_FILTER_ENABLED": "true",
+                }), patch.dict(h.ns, {"get_asker_role": lambda state: "guest"}):
+                    hybrid = h.install([office], baseline=[id_policy])
+                    h.ns["query_optimizer_model"].invoke = Mock(return_value=fixtures.SimpleNamespace(content=wrong))
+                    result = h.chat(question, corrected=first_stage, history=[
+                        {"role": "user", "content": "I lost my student ID"},
+                        {"role": "assistant", "content": "OLD_ID_RESPONSE"},
+                    ])
+                    self.assertEqual(result["citations"], [], h.output.getvalue())
+                    self.assertEqual(result["messages_to_llm"][-1].content, question)
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertIn("<campus_navigation_request>", prompt)
+                    self.assertIn("ask briefly where", prompt)
+                    self.assertNotIn("<student_id_request>", prompt)
+                    self.assertNotIn("<standalone_topic_overview>", prompt)
+                    for unrelated in (id_policy.page_content, office.page_content, "OLD_ID_RESPONSE"):
+                        self.assertNotIn(unrelated, prompt)
+                    self.assertFalse(any("student ID" in query or "RFID" in query for _, query, _ in hybrid.calls))
+                    self.assertTrue(any("campus map" in query for _, query, _ in hybrid.calls))
+
+    def test_first_person_and_fragment_lost_id_select_the_same_rfid_policy(self):
+        h = self.harness
+        # Actual handbook wording, deliberately without literal 'student ID'.
+        loss = fixtures.document(fixtures.BASE, "Lost RFID must be reported to Security Management Office.",
+                                 "rfid-loss", page=133, section_heading="MISTS Services Offered to Students / Radio Frequency Identification (RFID)")
+        prices = fixtures.document(fixtures.BASE, "Price of school RFID is Php 280.00 pesos complete set, if\n"
+                                   "RFID only Php 200.00 pesos and lace only 80.00 pesos.", "rfid-prices", page=133,
+                                   section_heading="MISTS Services Offered to Students / Radio Frequency Identification (RFID)")
+        enrollment = fixtures.document("REGISTRAR_Services_&_Information_2026.docx", "New Students and Transferees\n"
+                                       "Secure ID Information Form. Present Plotting Form for Student Number.", "id-enrollment",
+                                       section_heading="Enrollment Procedure / New Students and Transferees")
+        lab = fixtures.document(fixtures.BASE, "A lost or damaged computer unit requires a depreciated replacement charge.",
+                                "lab-equipment", section_heading="Computer Laboratory Rules")
+        variants = ("i lost student ID", "lost student ID", "I lost my student ID.",
+                    "my student ID is lost", "I misplaced my school card", "I lost my RFID",
+                    "nawawara an ak student ID ha SC", "nawara an ak RFID")
+        for question in variants:
+            for enabled in ("true", "false"):
+                for rewrite in (None, "new student enrollment requirements ID form", json.dumps({
+                    "query": "new student enrollment requirements ID form", "intent": "enrollment", "subject": "",
+                })):
+                    with self.subTest(question=question, correction=enabled, rewrite=rewrite), patch.dict(os.environ, {
+                        "QUERY_CORRECTION_ENABLED": enabled, "RAG_SOURCE_FILTER_ENABLED": "true",
+                    }), patch.dict(h.ns, {"FINAL_TOP_K": 1, "get_asker_role": lambda state: "guest"}):
+                        hybrid = h.install([enrollment], baseline=[lab, loss, prices])
+                        h.ns["query_optimizer_model"].invoke = Mock(
+                            side_effect=RuntimeError("offline") if rewrite is None else None,
+                            return_value=fixtures.SimpleNamespace(content=rewrite),
+                        )
+                        result = h.chat(question, role="guest", history=[
+                            {"role": "user", "content": "enrollment requirements"},
+                            {"role": "assistant", "content": "OLD_ENROLLMENT_ANSWER"},
+                        ])
+                        self.assertEqual(set(result["citations"]), {"rfid-loss", "rfid-prices"}, h.output.getvalue())
+                        prompt = result["messages_to_llm"][0].content
+                        self.assertIn(loss.page_content, prompt)
+                        self.assertIn(prices.page_content, prompt)
+                        self.assertIn("<student_id_request>", prompt)
+                        self.assertNotIn("<standalone_topic_overview>", prompt)
+                        self.assertNotIn("<enrollment_request>", prompt)
+                        for wrong in (enrollment.page_content, lab.page_content, "OLD_ENROLLMENT_ANSWER"):
+                            self.assertNotIn(wrong, prompt)
+                        self.assertEqual(result["messages_to_llm"][-1].content, question)
+                        self.assertTrue(any("RFID" in query for _, query, _ in hybrid.calls))
+                        if rewrite is not None:
+                            sent = h.ns["query_optimizer_model"].invoke.call_args.args[0]
+                            self.assertNotIn("OLD_ENROLLMENT_ANSWER", str(sent))
+
     def test_correction_off_skips_repairs_but_still_contextualizes_and_retrieves(self):
         h = self.harness
         question = "what arre the requiremnts for enrollemtn"

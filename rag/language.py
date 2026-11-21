@@ -83,6 +83,7 @@ _TERMS: Dict[str, str] = {
     "saan": "where",
     "hain": "where",
     "diin": "where",
+    "mabibilngan": "located location",
     "paano": "how",
     "paunan-o": "how",
     "ano": "what",
@@ -227,6 +228,7 @@ _PARTICLES = {
     "ang", "an", "sa", "han", "hin", "ng", "nga", "si", "ni", "kay", "para",
     "yung", "iyong", "ito", "iyan", "adto", "ini", "nga", "daw", "raw",
     "kuya", "ate", "sir", "maam", "ma'am", "mam",
+    "it",
 }
 
 # A question needs at least this many recognised non-English words before it is
@@ -337,7 +339,7 @@ def language_variants(question: str) -> List[str]:
     # gets) becomes the FIVE-word "how much is payment fee", so a <= 4 cutoff
     # skipped exactly the queries it was written for. It is measured on the
     # student's own question instead.
-    if len(question.split()) <= 4:
+    if len(question.split()) <= 4 and set(english.split()).intersection({"payment", "fee", "fees", "cost", "price", "tuition", "penalty"}):
         variants.append(f"{english} list of fees and amounts")
 
 

@@ -9,10 +9,72 @@ from unittest.mock import patch
 import _bootstrap  # noqa: F401
 
 from rag import source_policy as policy, spelling
-from rag.query_intent import QueryIntent, decode_optimizer_output, resolve_query_intent
+from rag.query_intent import QueryIntent, decode_optimizer_output, known_query_intents, query_needs_history, query_rewrite_supported, resolve_query_intent
 
 
 class QueryIntentTests(unittest.TestCase):
+    def test_waray_campus_location_questions_are_equivalent_and_history_independent(self):
+        variants = ("diin it sc?", "diin mabibilngan it sc", "Hain an Samar College?",
+                    "Where is Samar College located?", "What is the address of Samar Colleges, Inc.?",
+                    "SC address", "location of Samar College")
+        probes = None
+        for question in variants:
+            with self.subTest(question=question):
+                self.assertIn("campus_location", known_query_intents(question))
+                self.assertFalse(query_needs_history(question))
+                self.assertEqual(resolve_query_intent(question, QueryIntent("student_id"), [
+                    {"role": "user", "content": "I lost my student ID"},
+                ]), question)
+                actual = policy.campus_location_queries(question)
+                probes = probes or actual
+                self.assertEqual(actual, probes)
+        for question in ("Where is the registrar at SC?", "Where can I replace my ID at SC?",
+                         "I am lost at SC", "SC programs", "Where is IT located?"):
+            self.assertNotIn("campus_location", known_query_intents(question))
+
+    def test_waray_speaker_lost_at_school_is_navigation_not_a_lost_card(self):
+        question = "magaanu man ak kun nawawara ak ha SC HAHAHAHA"
+        self.assertIn("campus_navigation", known_query_intents(question))
+        self.assertNotIn("student_id", known_query_intents(question))
+        self.assertFalse(query_needs_history(question))
+        self.assertEqual(resolve_query_intent(question, QueryIntent("student_id"), [
+            {"role": "user", "content": "I lost my student ID"},
+            {"role": "assistant", "content": "Previous ID answer"},
+        ]), question)
+
+    def test_explicit_waray_card_loss_stays_separate_from_lost_on_campus(self):
+        for question in ("nawawara an ak student ID ha SC", "nawara an ak RFID", "nawawala ang ID ko"):
+            self.assertIn("student_id", known_query_intents(question))
+            self.assertNotIn("campus_navigation", known_query_intents(question))
+
+    def test_card_subject_requires_original_or_an_eligible_user_followup_reference(self):
+        complete = "magaanu man ak kun nawawara ak ha SC HAHAHAHA"
+        wrong = "lost student ID RFID replacement"
+        self.assertFalse(query_rewrite_supported(complete, wrong, [{"role": "user", "content": "I lost my student ID"}], preserve_topic=False))
+        self.assertFalse(query_rewrite_supported("Nawawara ak yana HAHAHA", wrong, preserve_topic=False))
+        self.assertFalse(query_rewrite_supported("what about that?", wrong, [{"role": "assistant", "content": "student ID"}], preserve_topic=False))
+        self.assertTrue(query_rewrite_supported("what about that?", wrong, [{"role": "user", "content": "I lost my student ID"}], preserve_topic=False))
+        self.assertTrue(query_rewrite_supported("nawawara an ak ID", wrong, preserve_topic=False))
+
+    def test_first_person_lost_id_is_the_same_public_policy_topic_as_a_fragment(self):
+        from rag.latency import overview_topic
+
+        variants = ("i lost student ID", "lost student ID", "I lost my student ID.",
+                    "my student ID is lost", "How do I replace a lost identification card?")
+        for question in variants:
+            with self.subTest(question=question):
+                self.assertIn("student_id", known_query_intents(question))
+                self.assertFalse(query_needs_history(question))
+                self.assertEqual(overview_topic(question), "")
+                self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
+                self.assertEqual(policy.student_id_queries(question), policy.student_id_queries("lost student ID"))
+
+    def test_id_policy_intent_is_distinct_from_private_number_lookup_or_lost_other_items(self):
+        for question in ("What is my student ID number?", "I lost my student ID number", "I lost my receipt", "I lost my phone",
+                         "I lost my diploma", "my grades", "list the students", "student ID issuance for new students"):
+            with self.subTest(question=question):
+                self.assertNotIn("student_id", known_query_intents(question))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.vocabulary = patch.object(spelling, "SPELL_VOCAB_FILE", str(Path(self.temp.name) / "vocabulary.json"))

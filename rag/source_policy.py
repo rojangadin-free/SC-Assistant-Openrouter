@@ -26,6 +26,55 @@ from rag.unit_identity import (
 )
 
 DEFAULT_FALLBACK_SOURCES = ("Samar-College-2024.pdf",)
+_STUDENT_CARD = r"\b(?:(?:student|school|campus)\s+(?:ID(?:\s+card)?|identification(?:\s+card)?|card)|ID(?:\s+card)?|identification\s+card|RFID|radio\s+frequency\s+identification)\b"
+_CARD_REPLACEMENT = r"\b(?:lost|lose|loss|missing|misplaced|stolen|damaged|broken|replace(?:ment|d)?|reissu(?:e|ance)|nawawara|nawara|nawawala|nawala)\b"
+NAVIGATION_GUIDANCE = """<campus_navigation_request>
+The speaker asks about being/getting lost at school, not reporting a lost student
+ID, RFID or other possession. In Waray, 'nawawara ak ha SC' refers to the person
+being lost at SC; do not add a missing object. Preserve hypothetical 'kun/if'
+wording rather than assuming they are currently lost. Laughter does not change the topic. Respond
+naturally in the user's language without a 'Ha Waray' or translation preface.
+For specific directions when a starting landmark or destination is needed, ask briefly where
+on campus they are and where they want to go. Do not invent directions or assume
+an emergency, a particular office, or a destination. Use any supplied map/location
+facts only for the requested route. An office address alone is not evidence that
+the office handles the problem. Do not introduce ID replacement, fees, admission,
+or statements about missing documents or knowledge-base coverage.
+</campus_navigation_request>"""
+LOCATION_GUIDANCE = """<campus_location_request>
+The user asks where Samar College is located. Waray 'diin it SC' and 'diin
+mabibilngan it SC' ask the same standalone location question; 'it' is the Waray
+article here, not an English reference to an earlier topic. Answer naturally in
+the user's language using the institution's documented address/location only.
+Provide the available level of specificity: a documented city/province answers
+a broad 'where' question; do not volunteer that an unrequested street address
+cannot be confirmed. Include a street only when the selected evidence supplies
+it. Do not infer 'main campus', a separate SHS campus, directions or landmarks
+from institutional/SCTI letterhead. Keep distinct named campuses/addresses separate.
+An office floor or an old founding-site address is not the current college address.
+Never say there is no document, no available information, or that you could not
+find a location document, including equivalents such as 'waray ako makit-an nga
+dokumento'. An unselected passage proves nothing about knowledge-base coverage.
+If the requested fact is unsupported, say only that you cannot confirm that fact,
+without inventing an address, referring to external pages/contact channels, or
+offering unrelated programs/admission/help. Stop after the requested answer.
+</campus_location_request>"""
+STUDENT_ID_GUIDANCE = """<student_id_request>
+The user asks for the public procedure for a lost/replacement student identification
+card. First-person statements such as "I lost student ID" or "I lost my ID" have
+the same service intent as "lost student ID"; answer the implied request for help.
+This does not request access to an individual's ID number or account record, and
+does not require login. Use only the supplied applicable policy for steps, offices,
+documents, fees and release conditions. Preserve its documented order and cite it.
+Do not substitute first-time enrollment/ID issuance, lost property, a lost receipt,
+or admission requirements. Do not invent an affidavit, police report, fee or office
+when the selected policy does not state it. For a focused question, answer only the
+requested detail. The school's card may be called RFID (Radio Frequency
+Identification). Keep card/lace/complete-set prices distinct and do not relabel
+them as a documented replacement charge. A single report-loss instruction is not
+a multi-step replacement workflow. Do not borrow fees from lost computer equipment
+or lab property. Keep source-version boundaries and clearly label older policy.
+</student_id_request>"""
 SOURCE_SELECTION_GUIDANCE = """<source_selection>
 Current source documents have been selected for this question. Use ONLY their
 provided content for public document facts, subject to admin-verified facts.
@@ -193,6 +242,112 @@ _OTHER_LEVEL = re.compile(
     re.IGNORECASE,
 )
 _ENROLLMENT_PROBE = "college enrollment enrolment procedure admission requirements registration"
+
+
+def student_card_mentioned(query):
+    """An actual card reference is required; 'lost' alone supplies no object."""
+    return isinstance(query, str) and bool(re.search(_STUDENT_CARD, query, re.I))
+
+
+def campus_location_queries(query):
+    """Recognize a named-school address, including Waray article 'it'."""
+    if not isinstance(query, str):
+        return []
+    text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+    school = r"(?:samar\s+colleges?(?:\s+inc)?|sc|(?:the|your|our|this)\s+(?:school|campus))"
+    glue = r"(?:(?:is|can|i|we|find|exactly|mabibilngan|makikita|matatagpuan|nahimutang|an|it|ang|ng|ha|sa|the)\s+)*"
+    tail = r"(?:\s+(?:located|situated|found|mabibilngan|nahimutang|please|pls|man|gud|la|ba|po|hahaha))*"
+    where = re.search(rf"\b(?:where|diin|hain|saan|asa)\s+{glue}{school}{tail}$", text)
+    address = re.search(rf"\b(?:address|location)\s+(?:(?:of|for|han|hit|it|an|ng|sa|the)\s+)*{school}{tail}$|"
+                        rf"\b{school}\s+(?:address|location){tail}$", text)
+    if not where and not address:
+        return []
+    return ["Samar College Samar Colleges Inc campus physical address location street city province",
+            "Samar Colleges Inc institutional letterhead footer contact information address"]
+
+
+def campus_location_documents(documents):
+    """Prefer institutional address evidence over office floors and founding sites."""
+    selected = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        if (re.search(r"\b(?:histor(?:y|ical)|humble beginnings|founding|table of contents|office locations?|office of|OSAS)\b", headings, re.I)
+                or re.search(r"\btable of contents\b", text[:300], re.I)):
+            continue
+        scope = headings + "\n" + text
+        institution = re.search(r"\bsamar\s+colleges?\b", scope, re.I)
+        address = re.search(r"\b(?:street|avenue|road|barangay|brgy|city|municipality|province|postal|zip)\b|"
+                            r"\b(?:st|ave|rd)\.", text, re.I)
+        if institution and address:
+            selected.append(document)
+    return selected
+
+
+def campus_navigation_queries(query):
+    """Recognize a lost speaker at school without inventing a lost possession."""
+    if not isinstance(query, str) or student_card_mentioned(query):
+        return []
+    campus = re.search(r"\b(?:SC|Samar\s+College|campus|school|college|eskwelahan|eskuylahan)\b", query, re.I)
+    speaker = re.search(
+        r"\b(?:i\s+(?:(?:am|got|feel)\s+)?lost|i['\u2019]m\s+lost|we\s+(?:are|got)\s+lost|"
+        r"(?:nawawara|nawara|nawawala|nawala|naliligaw)\s+(?:ak|ako|kami|kita))\b|"
+        r"\blost\s+(?:on|at|in|around)\s+(?:(?:the|this)\s+)?(?:SC|Samar\s+College|campus|school|college)\b",
+        query, re.I,
+    )
+    return ["Samar College campus map layout directions buildings locations"] if campus and speaker else []
+
+
+def campus_navigation_documents(documents):
+    """Only actual campus-layout/route evidence; unrelated office facts do not suffice."""
+    selected = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        if student_card_mentioned(headings + "\n" + text):
+            continue
+        if re.search(r"\b(?:campus|school)\s+(?:map|layout|directions|navigation)\b|"
+                     r"\b(?:lost|disoriented)\s+(?:on|at|in)\s+(?:the\s+)?campus\b", headings + "\n" + text, re.I):
+            selected.append(document)
+    return selected
+
+
+def student_id_queries(query):
+    """Public card-loss help, regardless of first-person versus topic phrasing."""
+    if not isinstance(query, str) or not re.search(_STUDENT_CARD, query, re.I) or not re.search(_CARD_REPLACEMENT, query, re.I):
+        return []
+    if re.search(r"\bID\s+(?:number|no\b|#)", query, re.I) and not re.search(r"\b(?:cards?|RFID|identification)\b", query, re.I):
+        return []
+    if re.search(r"\b(?:not|never)\s+(?:been\s+)?(?:lost|lose|missing|stolen)\b", query, re.I):
+        return []
+    return ["lost student ID school RFID Radio Frequency Identification card report loss replacement procedure",
+            "school RFID identification card price complete set card lace fees lost card"]
+
+
+def student_id_documents(documents):
+    """Card-loss policy and card-specific details, not first-time enrollment issuance."""
+    selected = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        labels = "\n".join(re.findall(r"\[(?:SECTION|TABLE\s+context):\s*([^\]]+)\]", text, re.I))
+        scope = headings + "\n" + labels
+        body = re.sub(r"\[(?:SECTION|TABLE\s+context):[^\]]*\]", "", text, flags=re.I)
+        if (re.search(r"\b(?:table of contents|admission|enrollment|enrolment|curriculum)\b", scope, re.I)
+                or re.search(r"\b(?:details|requirements|information)\s+will\s+be\s+(?:posted|provided|announced)\b", body, re.I)):
+            continue
+        card_heading = bool(re.search(_STUDENT_CARD, scope, re.I))
+        loss_heading = bool(re.search(_CARD_REPLACEMENT, scope, re.I))
+        direct_loss = bool(re.search(rf"(?:{_STUDENT_CARD})[\s\S]{{0,160}}(?:{_CARD_REPLACEMENT})|"
+                                     rf"(?:{_CARD_REPLACEMENT})[\s\S]{{0,160}}(?:{_STUDENT_CARD})", body, re.I))
+        substantive = bool(re.search(r"\d|\b(?:report|notify|secure|obtain|submit|present|pay|request|complete|fill|apply|must|shall|required)\b", body, re.I))
+        card_price = bool(re.search(r"\b(?:price|prices|cost|fee|fees|lace|complete set)\b", body, re.I))
+        if substantive and (direct_loss or (card_heading and (loss_heading or card_price))):
+            selected.append(document)
+    return selected
 
 
 def family_discount_queries(query):
@@ -1116,6 +1271,12 @@ def _relevant(document, queries, unit=None):
     evidence = body_terms | heading_terms
     if queries and family_discount_queries(queries[0]) and not any(enrollment_queries(query) for query in queries):
         return bool(family_discount_documents([document]))
+    if queries and student_id_queries(queries[0]):
+        return bool(student_id_documents([document]))
+    if queries and campus_navigation_queries(queries[0]):
+        return bool(campus_navigation_documents([document]))
+    if queries and campus_location_queries(queries[0]):
+        return bool(campus_location_documents([document]))
     if queries and deans_list_queries(queries[0]):
         return bool(deans_list_documents([document]))
     if queries and curriculum_queries(queries[0]):
@@ -1230,6 +1391,12 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         documents = curriculum_documents(documents, queries[0])
     if queries and grading_queries(queries[0]):
         documents = grading_documents(documents, queries[0])
+    if queries and student_id_queries(queries[0]):
+        documents = student_id_documents(documents)
+    if queries and campus_navigation_queries(queries[0]):
+        documents = campus_navigation_documents(documents)
+    if queries and campus_location_queries(queries[0]):
+        documents = campus_location_documents(documents)
     enrollment = bool(queries and enrollment_queries(queries[0]))
     if enrollment:
         # A shared-procedure probe must also contribute to relevance, not just recall.

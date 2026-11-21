@@ -34,6 +34,74 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_campus_location_uses_letterhead_and_contact_footer_not_historical_sites_or_office_floors(self):
+        from rag.source_policy import campus_location_documents
+
+        letterhead = document("SCTI_Program.docx", "SAMAR COLLEGES, INC.\nMabini Avenue, Catbalogan City Samar",
+                              section_heading="SCTI PROGRAM OFFERED")
+        footer = document("Library_Services_2026.docx", "Samar Colleges, Inc. | Catbalogan City, Samar",
+                          section_heading="Footer & Contact Information")
+        historical = document(text="In 1949 Samar College had a main building at San Roque Street and Allen Avenue.",
+                              section_heading="The Humble Beginnings of Samar College")
+        office = document("Office_Directory_2026.docx", "OSAS: Ground Floor, New Building, Samar Colleges, Inc., Catbalogan City.",
+                          section_heading="Office Locations")
+        card = document(text="Lost RFID must be reported to Security Management Office.", section_heading="RFID")
+        docs = [historical, office, card, letterhead, footer]
+        self.assertEqual(campus_location_documents(docs), [letterhead, footer])
+        for question in ("diin it sc?", "diin mabibilngan it sc"):
+            selected = select_documents(docs, [question], dates=DATES, today=TODAY, uploads={
+                doc.metadata["source"]: UPLOADS[UPDATE] for doc in (letterhead, footer, office)
+            })
+            self.assertEqual(selected.documents, [letterhead, footer])
+
+    def test_lost_speaker_selects_campus_layout_not_id_rules_or_unrelated_office_addresses(self):
+        from rag.source_policy import campus_navigation_documents
+
+        layout = document("Campus_Layout_2026.docx", "Campus Map\nThe map labels building entrances and facilities.",
+                          section_heading="Campus Map")
+        card = document(text="Lost RFID must be reported to Security Management Office.",
+                        section_heading="Radio Frequency Identification (RFID)")
+        address = document("Office_Directory_2026.docx", "OSAS: Ground Floor, New Building.",
+                           section_heading="Office Locations")
+        docs = [card, address, layout]
+        self.assertEqual(campus_navigation_documents(docs), [layout])
+        for question in ("magaanu man ak kun nawawara ak ha SC HAHAHAHA", "I am lost on campus"):
+            self.assertEqual(select_documents(docs, [question], dates=DATES, today=TODAY,
+                                             uploads={layout.metadata["source"]: UPLOADS[UPDATE],
+                                                      address.metadata["source"]: UPLOADS[UPDATE]}).documents, [layout])
+
+    def test_lost_card_matches_rfid_policy_but_not_enrollment_or_laboratory_loss(self):
+        from rag.source_policy import student_id_documents
+
+        loss = document(text="Lost RFID must be reported to Security Management Office.",
+                        section_heading="MISTS Services Offered to Students / Radio Frequency Identification (RFID)")
+        price = document(text="Price of school RFID is Php 280.00 pesos complete set, if\n"
+                         "RFID only Php 200.00 pesos and lace only 80.00 pesos.",
+                         section_heading="Radio Frequency Identification (RFID)")
+        enrollment = document("Registrar_2026.docx", "Secure ID Information Form. Present Plotting Form for Student Number.",
+                              section_heading="Enrollment Procedure")
+        lab = document(text="Lost and damaged computer units must be replaced at a depreciated charge.",
+                       section_heading="Laboratory Lost Property")
+        placeholder = document("Registrar_2026.docx", "ID replacement information will be posted here.",
+                               section_heading="ID Replacement")
+        docs = [enrollment, lab, placeholder, loss, price]
+        self.assertEqual(student_id_documents(docs), [loss, price])
+        for query in ("i lost student ID", "lost student ID", "I lost my RFID"):
+            with self.subTest(query=query):
+                self.assertEqual(select_documents(docs, [query], dates=DATES,
+                                                 uploads={"Registrar_2026.docx": UPLOADS[UPDATE]}, today=TODAY).documents,
+                                 [loss, price])
+
+    def test_current_lost_card_update_is_not_completed_with_old_prices(self):
+        new = document("RFID_Policy_2026.docx", "Lost RFID must now be reported to the specified current office.",
+                       section_heading="Lost RFID Policy")
+        old = document(text="Lost RFID must be reported to Security Management Office. School RFID price: Php 280.00.",
+                       section_heading="Radio Frequency Identification (RFID)")
+        selected = select_documents([old, new], ["i lost student ID"], dates=DATES,
+                                    uploads={new.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY)
+        self.assertEqual(selected.documents, [new])
+        self.assertTrue(selected.restricted)
+
     def test_enrollment_requirements_means_complete_procedure_not_admission_only(self):
         query = "What arre the requiremnts for enrollemtn"
         corrected = "What are the requirements for enrollment"

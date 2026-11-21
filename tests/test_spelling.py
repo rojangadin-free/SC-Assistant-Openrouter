@@ -729,8 +729,13 @@ def chat_snapshot(question, history=None, image=None, role="student", corrected=
 
 def answer_path(snapshot):
     # A local repair should have the clean question's answer path, independently
-    # of whether an optional model call was necessary.
-    return {key: value for key, value in snapshot.items() if key != "optimizer"}
+    # of whether an optional model call was necessary. Original-wording language
+    # metadata is intentionally different; evidence and retrieval must still match.
+    result = {key: value for key, value in snapshot.items() if key != "optimizer"}
+    result["messages"] = list(result["messages"])
+    result["messages"][0] = re.sub(r"\n\n<reply_language_source>[\s\S]*?</reply_language_source>",
+                                   "", result["messages"][0])
+    return result
 
 
 history = [{"role": "user", "content": "what programs are offered?"}]
@@ -776,6 +781,10 @@ for label, model in (("off", None), ("on", SimpleNamespace(predict=score))):
               clean["citations"] == ["current"] and "CURRENT DIRECTORY" in clean["messages"][0])
         check(f"reranker {label}: local repair has the clean query's retrieval/context/citations",
               answer_path(typo) == answer_path(clean))
+        check(f"reranker {label}: reply-language metadata retains the original wording only",
+              "<reply_language_source>" in typo["messages"][0]
+              and repr("lost the dens") in typo["messages"][0]
+              and "This quote is not document evidence." in typo["messages"][0])
         check(f"reranker {label}: original input and history are preserved",
               state["input"] == "lost the dens" and state["chat_history"] == history)
 

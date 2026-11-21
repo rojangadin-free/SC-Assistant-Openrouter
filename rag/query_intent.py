@@ -19,6 +19,9 @@ INTENT_TERMS = {
     "fees": "tuition fees",
     "scholarship": "scholarship eligibility requirements",
     "calendar": "academic calendar schedule dates",
+    "student_id": "lost student ID RFID identification card replacement procedure",
+    "campus_navigation": "I am lost on campus Samar College directions",
+    "campus_location": "Samar College address",
 }
 
 
@@ -36,6 +39,8 @@ def query_needs_history(question):
     if not isinstance(question, str) or not question.strip():
         return False
     text = request_text(question)
+    if policy.campus_location_queries(text):
+        return False
     references = re.sub(r"\bthis\s+(?:school|college|semester|year|month|week)\b", "", text, flags=re.I)
     # 'IT' is also a program label. Its presence alone is not a pronoun reference.
     references = re.sub(r"\bit\b(?=\s+(?:department|program|courses?|subjects?|curriculum)\b)", "", references, flags=re.I)
@@ -93,6 +98,9 @@ def known_query_intents(question):
     from rag.unit_identity import program_dean_subject, program_overview_subject
 
     detectors = (
+        ("campus_location", policy.campus_location_queries),
+        ("campus_navigation", policy.campus_navigation_queries),
+        ("student_id", policy.student_id_queries),
         ("deans_list", policy.deans_list_queries), ("grading", policy.grading_queries),
         ("curriculum", policy.curriculum_queries), ("history", policy.institution_history_queries),
         ("honors", policy.honors_queries), ("family_discount", policy.family_discount_queries),
@@ -101,6 +109,23 @@ def known_query_intents(question):
         ("leadership", program_dean_subject), ("general", program_overview_subject),
     )
     return {name for name, detector in detectors if detector(question)}
+
+
+def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic=True):
+    """Reject subject invention independently of whether the original has a known intent."""
+    from rag.source_policy import student_card_mentioned
+
+    explicit = known_query_intents(question)
+    if preserve_topic and explicit and not explicit.intersection(known_query_intents(rewritten)):
+        return False
+    if student_card_mentioned(rewritten) and not student_card_mentioned(question):
+        # Only a real incomplete follow-up may recover the card from a USER turn.
+        previous_user = next((message["content"] for message in reversed((history or [])[-6:])
+                              if isinstance(message, dict) and message.get("role") == "user"
+                              and isinstance(message.get("content"), str)), "") if query_needs_history(question) else ""
+        if not student_card_mentioned(previous_user):
+            return False
+    return True
 
 
 def resolve_query_intent(question, intent=None, history=None):
@@ -157,6 +182,8 @@ def resolve_query_intent(question, intent=None, history=None):
     if intent.name == "curriculum":
         if not intent.subject or not policy.curriculum_program(f"{intent.subject} subjects"):
             return question
+    if intent.name == "student_id" and not policy.student_id_queries(question):
+        return question
     unit = requested_unit(question)
     constraints = re.findall(
         r"\b(?:first|second|third|fourth|[1-4](?:st|nd|rd|th)?)\s+(?:year|sem(?:ester)?)\b|"

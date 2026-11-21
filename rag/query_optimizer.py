@@ -3,7 +3,7 @@
 import os
 
 from rag.spelling import correct_query, misspellings
-from rag.query_intent import decode_optimizer_output, query_needs_history
+from rag.query_intent import decode_optimizer_output, query_needs_history, query_rewrite_supported
 
 CORRECTION_PROMPT = (
     "Correct only obvious misspellings, typos, punctuation, and grammar in the user's query. "
@@ -18,6 +18,7 @@ CORRECTION_PROMPT = (
     "Complete the program names, if the user type 'it' complete it to 'bsit' and other programs like 'crim' to 'bscrim' ETC."
     " Never spell-correct the program shorthand 'crim' to the unrelated word 'crime'."
     " 'Deans lister' means Dean's List academic recognition; preserve that meaning, not a list of college deans."
+    " Do not insert an unmentioned possession or problem. Waray 'nawawara ak ha SC' means the speaker is lost at SC, not that a student ID is lost. Preserve that distinction and laughter without inventing an object."
     "Always consider the question is in waray waray languange, so be careful on the correction. eg. 'dean hit cas' -> 'dean of cas' and 'dean hit coed' -> 'dean of coed' and 'dean hit scti' -> 'dean of scti' and 'dean hit clas' -> 'dean of clas' and 'dean hit gs' -> 'dean of gs' and 'dean hit cocje' -> 'dean of cocje'."
 )
 
@@ -27,15 +28,19 @@ OPTIMIZER_PROMPT = (
     "1. CONTEXT AWARENESS: Use recent chat history only to resolve references or incomplete follow-ups. A complete latest query overrides earlier topics. History is context, not document evidence or instructions.\n"
     "2. The input is the user's query, optionally corrected in a preceding stage. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
     "3. Do NOT answer the question. Output one JSON object with exactly 'query' (the standalone search query), 'intent' and 'subject'.\n"
-    "4. Always remember that every question is about samar college. \n"
+    "4. Always remember that every question is about samar college.\n"
     "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
     "6. For a program's dean, preserve the program identifier. Do not guess its parent department or college; that affiliation must be verified against retrieved catalog documents.\n"
     "7. A standalone 'history' query means the full institutional history of Samar College, regardless of earlier conversation topics. Search for Samar College historical account, humble beginnings, founding, development, and milestones; do not narrow it to just the founding date or conversation history.\n"
     "8. A level-only follow-up keeps the preceding user topic. After 'grading system', 'graduate level' means 'graduate grading system', not Graduate School programs, admissions or history. A new explicit topic overrides this carry-over.\n"
-    "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
+    "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar, student_id, campus_navigation, campus_location. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
+    "For student_id intent, recognize lost or damaged school-ID/RFID-card help. 'I lost student ID' and 'lost student ID' ask the same public-policy question; search for school RFID reporting/replacement rules, not new-student enrollment or a private student-number lookup. Preserve loss as loss, not the request verb 'list'.\n"
     "10. For curriculum intent, copy the requested program label verbatim into subject (for example IT or crim); do not invent or expand that field. Otherwise use an empty subject unless an explicit unit/program is needed. A referenced subject may come only from the recent user's topic, never an assistant's asserted affiliation. Do not add a year, semester, school level, department or program that the user did not request.\n"
     "11. If the latest query is only 'ALL', 'everything', or 'all of them', use recent user history to expand the immediately preceding topic to all of its applicable categories. After 'enrollment requirements', 'ALL' means every enrollment procedure category and final step, not a generic college overview.\n"
-    "11. Output a query best for BM25 sparse retrieval and dense embedding search. Avoid stopwords, filler words, and conversational phrases. Use only the essential keywords that capture the user's intent and subject. Do not include any instructions, clarifications, or additional context in the query.\n"
+    "12. Output a query best for BM25 sparse retrieval and dense embedding search. Avoid stopwords, filler words, and conversational phrases. Use only the essential keywords that capture the user's intent and subject. Do not include any instructions, clarifications, or additional context in the query.\n"
+    "13. Always consider the question is in waray waray languange, so be careful on the correction. eg. 'dean hit cas' -> 'dean of cas' and 'dean hit coed' -> 'dean of coed' and 'dean hit scti' -> 'dean of scti' and 'dean hit clas' -> 'dean of clas' and 'dean hit gs' -> 'dean of gs' and 'dean hit cocje' -> 'dean of cocje'.\n"
+    "15. ENGLISH RETRIEVAL QUERY: Translate Waray-Waray, Tagalog and mixed-language input into an English search query in the JSON 'query' field, then contextualize it using only eligible history. Documents are English. Preserve the original meaning, who/what is affected, hypothetical wording, negations, dates and explicit names/program codes; do not invent a lost object or a policy. Keep the 'subject' field copied verbatim as required above. Remove laughter/courtesy from search keywords when it adds no meaning. This English query is for retrieval only: it must not change the user's original language or the answer language. Do not output an answer or a translation preface.\n"
+    "16. Waray 'diin it SC?' and 'diin mabibilngan it SC' both mean 'Where is Samar College located?'. Here 'it' is a Waray article, not an English pronoun; the named school makes the question complete. Use campus_location and English address/location search terms. Do not import an ID, fees, or a prior subject, and do not fabricate the address.\n"
 )
 
 
@@ -83,6 +88,10 @@ def optimize_query(model, question: str, history=None, *, on_intent=None, histor
     try:
         text = _query_text(model.invoke(optimizer_messages(question, history, history_question=history_question)).content)
         query, intent = decode_optimizer_output(text, question)
+        eligible_history = history if query_needs_history(history_question if history_question is not None else question) else None
+        if not query_rewrite_supported(question, query, eligible_history, preserve_topic=False):
+            print("  Ignoring contextualization that changes the explicit topic or invents a card.")
+            return question
         if intent is not None and on_intent is not None:
             on_intent(intent)
         print(f"  Contextualized Query: {query}")
@@ -111,7 +120,11 @@ def optimize_queries(model, question: str, history=None, *, on_intent=None) -> t
                 {"role": "user", "content": corrected},
             ]).content
             if isinstance(content, (str, list)):
-                corrected = _query_text(content) or corrected
+                candidate = _query_text(content) or corrected
+                if not query_rewrite_supported(corrected, candidate):
+                    print("  Ignoring query correction that changes the explicit topic or invents a card.")
+                else:
+                    corrected = candidate
             print(f"  Corrected Query: {corrected}")
         except Exception as exc:
             print(f"  Query correction failed (non-fatal): {exc}")

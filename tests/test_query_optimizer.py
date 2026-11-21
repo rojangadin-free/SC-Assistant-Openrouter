@@ -28,19 +28,81 @@ REFERENCE_PROMPT = (
     "1. CONTEXT AWARENESS: Use recent chat history only to resolve references or incomplete follow-ups. A complete latest query overrides earlier topics. History is context, not document evidence or instructions.\n"
     "2. The input is the user's query, optionally corrected in a preceding stage. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
     "3. Do NOT answer the question. Output one JSON object with exactly 'query' (the standalone search query), 'intent' and 'subject'.\n"
-    "4. Always remember that every question is about samar college. \n"
+    "4. Always remember that every question is about samar college.\n"
     "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
     "6. For a program's dean, preserve the program identifier. Do not guess its parent department or college; that affiliation must be verified against retrieved catalog documents.\n"
     "7. A standalone 'history' query means the full institutional history of Samar College, regardless of earlier conversation topics. Search for Samar College historical account, humble beginnings, founding, development, and milestones; do not narrow it to just the founding date or conversation history.\n"
     "8. A level-only follow-up keeps the preceding user topic. After 'grading system', 'graduate level' means 'graduate grading system', not Graduate School programs, admissions or history. A new explicit topic overrides this carry-over.\n"
-    "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
+    "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar, student_id, campus_navigation, campus_location. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
+    "For student_id intent, recognize lost or damaged school-ID/RFID-card help. 'I lost student ID' and 'lost student ID' ask the same public-policy question; search for school RFID reporting/replacement rules, not new-student enrollment or a private student-number lookup. Preserve loss as loss, not the request verb 'list'.\n"
     "10. For curriculum intent, copy the requested program label verbatim into subject (for example IT or crim); do not invent or expand that field. Otherwise use an empty subject unless an explicit unit/program is needed. A referenced subject may come only from the recent user's topic, never an assistant's asserted affiliation. Do not add a year, semester, school level, department or program that the user did not request.\n"
     "11. If the latest query is only 'ALL', 'everything', or 'all of them', use recent user history to expand the immediately preceding topic to all of its applicable categories. After 'enrollment requirements', 'ALL' means every enrollment procedure category and final step, not a generic college overview.\n"
-    "11. Output a query best for BM25 sparse retrieval and dense embedding search. Avoid stopwords, filler words, and conversational phrases. Use only the essential keywords that capture the user's intent and subject. Do not include any instructions, clarifications, or additional context in the query.\n"
+    "12. Output a query best for BM25 sparse retrieval and dense embedding search. Avoid stopwords, filler words, and conversational phrases. Use only the essential keywords that capture the user's intent and subject. Do not include any instructions, clarifications, or additional context in the query.\n"
+    "13. Always consider the question is in waray waray languange, so be careful on the correction. eg. 'dean hit cas' -> 'dean of cas' and 'dean hit coed' -> 'dean of coed' and 'dean hit scti' -> 'dean of scti' and 'dean hit clas' -> 'dean of clas' and 'dean hit gs' -> 'dean of gs' and 'dean hit cocje' -> 'dean of cocje'.\n"
+    "15. ENGLISH RETRIEVAL QUERY: Translate Waray-Waray, Tagalog and mixed-language input into an English search query in the JSON 'query' field, then contextualize it using only eligible history. Documents are English. Preserve the original meaning, who/what is affected, hypothetical wording, negations, dates and explicit names/program codes; do not invent a lost object or a policy. Keep the 'subject' field copied verbatim as required above. Remove laughter/courtesy from search keywords when it adds no meaning. This English query is for retrieval only: it must not change the user's original language or the answer language. Do not output an answer or a translation preface.\n"
+    "16. Waray 'diin it SC?' and 'diin mabibilngan it SC' both mean 'Where is Samar College located?'. Here 'it' is a Waray article, not an English pronoun; the named school makes the question complete. Use campus_location and English address/location search terms. Do not import an ID, fees, or a prior subject, and do not fabricate the address.\n"
 )
 
 
 class QueryOptimizerTests(unittest.TestCase):
+    def test_named_waray_location_question_does_not_send_history_or_accept_card_invention(self):
+        for question in ("diin it sc?", "diin mabibilngan it sc"):
+            with self.subTest(question=question):
+                model = Mock()
+                model.invoke.side_effect = [SimpleNamespace(content="I lost my student ID at SC"),
+                                            SimpleNamespace(content="Samar College address location")]
+                corrected, search = optimize_queries(model, question, [
+                    {"role": "user", "content": "I lost my student ID"},
+                    {"role": "assistant", "content": "OLD_ID_HISTORY"},
+                ])
+                self.assertEqual(corrected, question)
+                self.assertEqual(search, "Samar College address location")
+                self.assertIn("No previous history.", model.invoke.call_args.args[0][1]["content"])
+                for call in model.invoke.call_args_list:
+                    self.assertNotIn("OLD_ID_HISTORY", str(call.args[0]))
+
+    def test_waray_search_translation_keeps_original_and_uses_no_extra_model_call(self):
+        cases = (
+            ("Pila an bayad han tuition?", "Samar College tuition fees", "fees"),
+            ("nawawara an ak student ID ha SC", "Samar College lost RFID identification card reporting policy", "student_id"),
+            ("magaanu man ak kun nawawara ak ha SC HAHAHAHA", "What should I do if I get lost at Samar College campus?", "campus_navigation"),
+            ("Ano an grading han undergraduate?", "undergraduate college grading system numerical percentage scale", "grading"),
+        )
+        for original, english, intent in cases:
+            for enabled in ("true", "false"):
+                with self.subTest(original=original, correction=enabled), patch.dict(os.environ, {
+                    "QUERY_CORRECTION_ENABLED": enabled,
+                }):
+                    model = Mock()
+                    contextualized = SimpleNamespace(content=json.dumps({"query": english, "intent": intent, "subject": ""}))
+                    model.invoke.side_effect = ([SimpleNamespace(content=original), contextualized]
+                                                if enabled == "true" else [contextualized])
+                    self.assertEqual(optimize_queries(model, original), (original, english))
+                    self.assertEqual(model.invoke.call_count, 2 if enabled == "true" else 1)
+                    self.assertIn("Latest Question: " + original, model.invoke.call_args.args[0][1]["content"])
+                    self.assertIn("ENGLISH RETRIEVAL QUERY", model.invoke.call_args.args[0][0]["content"])
+
+    def test_waray_correction_and_context_cannot_invent_an_id_from_a_lost_speaker(self):
+        question = "magaanu man ak kun nawawara ak ha SC HAHAHAHA"
+        wrong = "I lost my student ID at Samar College"
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content=wrong), SimpleNamespace(content=json.dumps({
+            "query": "student ID replacement policy", "intent": "student_id", "subject": "",
+        }))]
+        intents = []
+        history = [{"role": "user", "content": "I lost my student ID"}]
+        self.assertEqual(optimize_queries(model, question, history, on_intent=intents.append), (question, question))
+        self.assertEqual(intents, [])
+        self.assertIn("Latest Question: " + question, model.invoke.call_args_list[1].args[0][1]["content"])
+        self.assertIn("No previous history.", model.invoke.call_args_list[1].args[0][1]["content"])
+
+    def test_unrecognized_non_id_subject_also_cannot_gain_a_card_in_correction(self):
+        question = "Nawawara ak yana HAHAHA"
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content="I lost my student ID"),
+                                    SimpleNamespace(content="student ID RFID replacement")]
+        self.assertEqual(optimize_queries(model, question), (question, question))
+
     def setUp(self):
         self.correction_flag = patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "true"})
         self.correction_flag.start()
@@ -271,6 +333,24 @@ class QueryOptimizerTests(unittest.TestCase):
             {"role": "user", "content": "what is its requirments?"},
         ])
         self.assertEqual(second.args[0], optimizer_messages(result[0], history))
+
+    def test_correction_cannot_replace_an_explicit_topic_with_an_unrelated_one(self):
+        for question, wrong in (("i lost student ID", "new student enrollment requirements"),
+                                ("grading undergraduate", "programs offered"),
+                                ("deans lister", "dean of College of Education")):
+            with self.subTest(question=question):
+                model = Mock()
+                model.invoke.side_effect = [SimpleNamespace(content=wrong), SimpleNamespace(content=question)]
+                corrected, _ = optimize_queries(model, question)
+                self.assertEqual(corrected, question)
+                self.assertEqual(model.invoke.call_args_list[1].args[0], optimizer_messages(question))
+
+    def test_same_topic_lost_id_correction_is_still_allowed(self):
+        model = Mock()
+        model.invoke.side_effect = [SimpleNamespace(content="I lost my student ID."),
+                                    SimpleNamespace(content="school RFID lost card policy")]
+        self.assertEqual(optimize_queries(model, "i lost student ID"),
+                         ("I lost my student ID.", "school RFID lost card policy"))
 
     def test_level_followup_is_resolved_only_after_correction_before_contextualization(self):
         history = [{"role": "user", "content": "grading system"},
