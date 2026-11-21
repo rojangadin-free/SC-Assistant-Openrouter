@@ -11,7 +11,7 @@ INTENT_TERMS = {
     "deans_list": "Dean's List academic recognition",
     "honors": "Latin honors requirements",
     "history": "history of Samar College",
-    "enrollment": "enrollment procedure admission requirements",
+    "enrollment": "enrollment procedure registration documents steps",
     "family_discount": "family tuition discount",
     "program_offerings": "programs offered",
     "departments": "list of academic departments",
@@ -44,6 +44,8 @@ def query_needs_history(question):
         references = re.sub(r"\bIT\b", "", references)
     if policy.curriculum_program(text) or program_dean_subject(text):
         references = re.sub(r"\bit\b", "", references, flags=re.I)
+    if re.fullmatch(r"(?:all|everything|all\s+of\s+them|all\s+categories)", text, re.I):
+        return True
     if re.search(r"\b(?:it|its|this|that|these|those|they|them|their|he|she|him|her|his|hers)\b", references, re.I):
         return True
     # Explicit topical requests remain independent even when phrased 'what about'.
@@ -109,6 +111,24 @@ def resolve_query_intent(question, intent=None, history=None):
     if not isinstance(question, str) or not question.strip():
         return question
     history = history if query_needs_history(question) else None
+    if re.fullmatch(r"(?:all|everything|all\s+of\s+them|all\s+categories)", question.strip(), re.I):
+        previous = next((message.get("content", "") for message in reversed(history or [])
+                         if isinstance(message, dict) and message.get("role") == "user"
+                         and isinstance(message.get("content"), str)
+                         and not re.fullmatch(r"(?:all|everything|all\s+of\s+them|all\s+categories)",
+                                              message["content"].strip(), re.I)), "")
+        if previous:
+            if policy.enrollment_queries(previous):
+                return ("all enrollment requirements and complete enrollment procedure for new students, "
+                        "transferees, old students and continuing students, including every final step")
+            if policy.curriculum_queries(previous):
+                return f"{previous} all years and semesters, complete curriculum subjects"
+            if policy.grading_queries(previous):
+                return f"{previous} complete grading scale, computation rules and special marks"
+            if policy.deans_list_queries(previous):
+                return f"{previous} complete eligibility and recognition details"
+            return f"{previous} complete details for all applicable categories"
+        return question
     resolved = policy.resolve_grading_followup(question, history)
     if resolved != question or not isinstance(intent, QueryIntent) or intent.name not in INTENT_TERMS:
         return resolved

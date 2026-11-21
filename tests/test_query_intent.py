@@ -101,6 +101,27 @@ class QueryIntentTests(unittest.TestCase):
         self.assertEqual(resolve_query_intent("graduate level", None, history), "graduate grading system")
         self.assertEqual(resolve_query_intent("graduate level", QueryIntent("program_offerings"), history), "graduate grading system")
 
+    def test_all_followup_expands_the_previous_enrollment_request(self):
+        history = [{"role": "user", "content": "enrollment requirements"},
+                   {"role": "assistant", "content": "Only the new-student requirements."}]
+        resolved = resolve_query_intent("ALL", None, history)
+        self.assertIn("all enrollment requirements", resolved)
+        self.assertIn("new students", resolved)
+        self.assertIn("transferees", resolved)
+        self.assertIn("old students", resolved)
+        self.assertIn("final step", resolved)
+        self.assertNotIn("Only the new-student requirements", resolved)
+        self.assertEqual(resolve_query_intent("ALL", None, []), "ALL")
+
+    def test_all_followup_preserves_the_previous_non_enrollment_topic(self):
+        for previous, marker in (("IT subjects", "all years and semesters"),
+                                 ("grading system", "complete grading scale"),
+                                 ("deans lister", "complete eligibility"),
+                                 ("history", "complete details")):
+            with self.subTest(previous=previous):
+                self.assertIn(marker, resolve_query_intent("all of them", None,
+                                                           [{"role": "user", "content": previous}]))
+
 
 if __name__ == "__main__":
     unittest.main()

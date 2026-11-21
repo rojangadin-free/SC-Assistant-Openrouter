@@ -8,6 +8,29 @@ import test_newer_retrieval as fixtures
 
 
 class TopicOverviewTests(unittest.TestCase):
+    def test_correction_off_skips_repairs_but_still_contextualizes_and_retrieves(self):
+        h = self.harness
+        question = "what arre the requiremnts for enrollemtn"
+        policy = fixtures.document("Enrollment_Guide_2026.docx", "Enrollment requires a completed application form.", "enrollment")
+        local = Mock(side_effect=AssertionError("local correction must be disabled"))
+        model = Mock(return_value=fixtures.SimpleNamespace(content=json.dumps({
+            "query": "enrollment requirements", "intent": "enrollment", "subject": "",
+        })))
+        with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "false"}), \
+                patch.dict(h.ns, {"correct_query": local}):
+            hybrid = h.install([policy], baseline=[])
+            h.ns["query_optimizer_model"].invoke = model
+            result = h.chat(question)
+        local.assert_not_called()
+        model.assert_called_once()
+        self.assertEqual(model.call_args.args[0][0]["content"], h.optimizer.OPTIMIZER_PROMPT)
+        self.assertIn("Latest Question: " + question, model.call_args.args[0][1]["content"])
+        self.assertFalse(h.retrieval.call_args.kwargs["allow_spelling"])
+        self.assertEqual(h.retrieval.call_args.kwargs["original_question"], question)
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertEqual(result["citations"], ["enrollment"], h.output.getvalue())
+        self.assertTrue(any(query == "enrollment requirements" for _, query, _ in hybrid.calls))
+
     def test_semantic_intent_is_shared_by_retrieval_evidence_and_answer_scope(self):
         h = self.harness
         grade = fixtures.document(fixtures.BASE, "1.0 | 100 | Excellent\n1.8 | 85 | Passing\n1.9-5.0 | 84-below | Failure",

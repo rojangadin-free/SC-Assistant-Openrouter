@@ -62,7 +62,12 @@ CHAT_MODEL_NAME = "z-ai/glm-5.3-flash"
 # block on one is not a block on the other.
 FALLBACK_MODEL_NAME = "deepseek/deepseek-v4-flash-vision-exp"
 
-SUMMARIZER_MODEL_NAME = "qwen/qwen3.7-flash"
+SUMMARIZER_MODEL_NAME = "google/gemma-4-31b-it"
+
+# Query correction only; contextualization remains enabled in either mode.
+# Set False to skip correction, or override with QUERY_CORRECTION_ENABLED=false.
+QUERY_CORRECTION_ENABLED = False
+os.environ.setdefault("QUERY_CORRECTION_ENABLED", "true" if QUERY_CORRECTION_ENABLED else "false")
 
 
 if not PINECONE_API_KEY:

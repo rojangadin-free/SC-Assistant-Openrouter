@@ -123,7 +123,8 @@ event or date should still get only that requested detail. Never invent missing
 events or claim that the knowledge base lacks a history document.
 </institution_history_request>"""
 ENROLLMENT_GUIDANCE = """<enrollment_request>
-The user asks about enrollment/admission/registration, not a program catalog.
+The user asks about enrollment/registration, not automatically about admission
+eligibility or a program catalog.
 Use the supplied enrollment guidance and describe only the steps, documents and
 dates it actually states. A shared college procedure need not repeat a degree's
 name: label it as general college guidance, not as a program-specific rule.
@@ -134,6 +135,10 @@ Do not invent additional program-specific requirements or deadlines. If the
 provided guide omits those details, distinguish that limitation from the documented
 general procedure instead of claiming no enrollment guidance exists.
 Previous assistant replies and program lists are not enrollment-policy evidence.
+For a broad enrollment-requirements request, preserve the complete applicable
+procedure, including its final step. Keep new/transferee and old/continuing-student
+sequences separate. Include admission eligibility only when the user explicitly
+asks about admission or qualification.
 </enrollment_request>"""
 LEADERSHIP_GUIDANCE = """<leadership_roster_request>
 Answer each requested role and college separately using the provided named roster
@@ -251,17 +256,90 @@ def family_discount_guidance(query, documents):
 
 def enrollment_queries(query) -> list[str]:
     """Bounded procedure probes, not invented program rules or program aliases."""
-    if not isinstance(query, str) or family_discount_queries(query) or "enrollment" not in _terms(query):
+    if not isinstance(query, str) or family_discount_queries(query):
         return []
+    has_enrollment_term = bool(re.search(r"\b(?:enrollment|enrolment)\b", query, re.IGNORECASE))
+    has_enroll_action = bool(re.search(r"\b(?:how|where)\s+(?:do\s+)?(?:i|we|students?)?\s*(?:to\s+)?(?:enroll|enrol|register)\b|"
+                                      r"\bregister\s+(?:for|in)\b|\benroll\w*\s+(?:in|for)\s+(?:the\s+)?(?:bs[a-z]{1,8}|program|college|school)\b",
+                                      query, re.IGNORECASE))
+    if not has_enrollment_term and not has_enroll_action:
+        return []
+    explicit_procedure = re.search(
+        r"\b(?:requirements?|procedure|steps?|documents?|registration)\b|"
+        r"\b(?:how|where)\s+(?:do\s+)?(?:i|we|students?)?\s*(?:to\s+)?(?:enroll|enrol|register)\b|"
+        r"\bregister\s+(?:for|in)\b|\benroll\w*\s+(?:in|for)\s+(?:the\s+)?(?:bs[a-z]{1,8}|program|college|school)\b",
+        query, re.IGNORECASE,
+    )
+    if not explicit_procedure:
+        return []
+    college_program = re.search(r"\b(?:bachelor|undergraduate|tertiary|bs[a-z]{1,6})\b", query, re.IGNORECASE)
     if re.search(r"\b(?:what|which)\s+(?:programs?|courses?|degrees?)\s+(?:can|could|may)\s+"
                  r"(?:i|we|students?)\s+(?:enroll|enrol|register)\b", query, re.IGNORECASE):
         return []
     if re.search(r"\b(?:my|own|personal)\b.{0,80}\b(?:history|status|records?)\b", query, re.IGNORECASE):
         return []
-    college_program = re.search(r"\b(?:bachelor|undergraduate|tertiary|bs[a-z]{1,6})\b", query, re.IGNORECASE)
-    if _OTHER_LEVEL.search(query) and not college_program:
-        return [f"{query.strip()} enrollment enrolment procedure admission requirements registration"]
-    return [_ENROLLMENT_PROBE]
+    admission = re.search(r"\b(?:admission|admissions|eligible|eligibility|qualif(?:y|ication|ications))\b", query, re.I)
+    level = f"{query.strip()} " if _OTHER_LEVEL.search(query) and not college_program else ""
+    probe = f"{level}enrollment enrolment procedure registration documents steps"
+    if admission:
+        probe += " admission requirements"
+    return [probe]
+
+
+def enrollment_documents(documents, query):
+    """Keep complete enrollment procedures and explicit admission evidence separate."""
+    if not enrollment_queries(query):
+        return []
+    admission = bool(re.search(r"\b(?:admission|admissions|eligible|eligibility|qualif(?:y|ication|ications))\b", query, re.I))
+    explicit_enrollment = bool(re.search(r"\b(?:enrollment|enrolment|registration|register|enroll|enrol)\b", query, re.I))
+    labels = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        headings = "\n".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        table_labels = "\n".join(re.findall(r"\[(?:SECTION|TABLE\s+context):\s*([^\]]+)\]", text, re.I))
+        scope = headings + "\n" + table_labels + "\n" + text
+        procedure_heading = bool(re.search(r"\b(?:enrollment|enrolment)\s+procedure\b", headings + "\n" + table_labels, re.I))
+        step = bool(re.search(r"(?:^|\n)\s*(?:step|steps?)\s*:?\s*\d+\b|\bSTEP\s*\d+\b", text, re.I))
+        procedure = procedure_heading or (step and bool(re.search(
+            r"\b(?:enrollment|enrolment|new\s+students?|old\s+students?|continuing\s+students?|transferees?)\b", scope, re.I)))
+        admission_section = bool(re.search(r"\badmission\s+(?:requirements?|guidelines?)\b", headings, re.I))
+        enrollment_words = bool(re.search(r"\b(?:enrollment|enrolment|enrolling|enroll|enrol|registration|register)\b", scope, re.I))
+        substantive = bool(re.search(
+            r"\b(?:submit|present|secure|bring|pay|proceed|complete|fill|form|credentials?|receipt|"
+            r"loadsheets?|student\s+load|medical|guidance|clinic|clearance|evaluation|plotting|counter|"
+            r"application|online|encoding|classes|subjects|requirement\w*|requires?|uses?|only)\b|\bstep\s*:?\s*\d+",
+            text, re.I,
+        ))
+        reference_only = bool(re.search(r"\bsee\s+(?:the\s+)?\d{4}\s+(?:student\s+)?handbook\b|"
+                                        r"\bcomplete\s+(?:instructions|procedure)\s+(?:are|is)\s+in\b", text, re.I))
+        if admission:
+            keep = (admission_section or (not procedure and bool(re.search(r"\badmission\b", scope, re.I)))
+                    or (explicit_enrollment and procedure and substantive and not admission_section and not reference_only))
+        else:
+            keep = ((procedure and substantive and not admission_section and not reference_only) or
+                    (enrollment_words and substantive and not reference_only))
+            if keep and not _shared_enrollment(document):
+                keep = False
+        if not keep:
+            continue
+        source = doc_key(metadata.get("source", ""))
+        section = str(metadata.get("section_heading") or metadata.get("section") or metadata.get("header") or "")
+        category = re.search(
+            r"\b(?:new\s+students?|freshmen?|transferees?|old\s+students?|continuing\s+students?|returnees?|shiftees?)\b",
+            section + "\n" + text[:500], re.I,
+        )
+        labels.append((source, section, category.group(0).casefold() if category else "", document,
+                       procedure, step, not procedure or not step))
+    if admission and not explicit_enrollment:
+        return [document for _, _, _, document, _, _, _ in labels]
+    # Preserve substantive non-step chunks (e.g. an online-enrollment update),
+    # and every chunk belonging to a procedure group that has a numbered step.
+    # A final step may be in a separate chunk. Once one chunk proves a source's
+    # procedure/category, retain every chunk in that same procedure group.
+    groups = {(source, category) for source, _, category, _, procedure, step, _ in labels if procedure and step}
+    return [document for source, _, category, document, procedure, step, standalone in labels
+            if standalone or (procedure and (source, category) in groups)]
 
 
 def _shared_enrollment(document):
@@ -1044,6 +1122,8 @@ def _relevant(document, queries, unit=None):
         return bool(curriculum_documents([document], queries[0]))
     if queries and grading_queries(queries[0]):
         return bool(grading_documents([document], queries[0]))
+    if queries and enrollment_queries(queries[0]):
+        return bool(enrollment_documents([document], queries[0]))
     level = program_offering_scope(queries[0]) if queries else ""
     if level in {"college", "undergraduate"}:
         basic_or_technical = re.search(r"\b(?:basic education|elementary program|junior high school|senior high school|"

@@ -13,6 +13,7 @@ from rag.source_policy import (
     catalog_source_names,
     department_catalog_queries,
     enrollment_queries,
+    enrollment_documents,
     leadership_guidance,
     newer_source_names,
     program_catalog_queries,
@@ -33,6 +34,28 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_enrollment_requirements_means_complete_procedure_not_admission_only(self):
+        query = "What arre the requiremnts for enrollemtn"
+        corrected = "What are the requirements for enrollment"
+        probes = enrollment_queries(corrected)
+        self.assertEqual(len(probes), 1)
+        self.assertIn("procedure", probes[0])
+        self.assertNotIn("admission requirements", probes[0])
+        current = [
+            document("REGISTRAR_Services_&_Information_2026.docx", "Enrollment Procedure\nNew Students and Transferees\nStep 1: Security", section_heading="Enrollment Procedure / New Students and Transferees"),
+            document("REGISTRAR_Services_&_Information_2026.docx", "Step 7: Student Affairs\nPresent the loadsheet.", section_heading="Enrollment Procedure / New Students and Transferees"),
+            document("REGISTRAR_Services_&_Information_2026.docx", "Step 8: Guidance and Clinic\nPresent loadsheet for Guidance Testing and Medical Record.", section_heading="Enrollment Procedure / New Students and Transferees"),
+            document("REGISTRAR_Services_&_Information_2026.docx", "Enrollment Procedure\nOld Students\nStep 1: Security", section_heading="Enrollment Procedure / Old Students"),
+            document("REGISTRAR_Services_&_Information_2026.docx", "Step 7: Student Affairs\nPresent the loadsheet.", section_heading="Enrollment Procedure / Old Students"),
+            document("REGISTRAR_Services_&_Information_2026.docx", "Guidance and Clinic\nPresent the loadsheet for Medical Record.", section_heading="Enrollment Procedure / Old Students"),
+        ]
+        admission = document("REGISTRAR_Services_&_Information_2026.docx", "Admission Requirements\nForm 138 and good moral certificate.", section_heading="Admission Requirements")
+        self.assertEqual(enrollment_documents(current + [admission], corrected), current)
+        self.assertEqual(enrollment_documents(current + [admission], "admission requirements for enrollment"),
+                         current + [admission])
+        self.assertEqual(enrollment_documents(current + [admission], "admission requirements and enrollment procedure"),
+                         current + [admission])
+
     def test_level_only_followups_keep_the_last_user_grading_topic(self):
         from rag.source_policy import resolve_grading_followup
 
@@ -653,7 +676,7 @@ class SourcePolicyTests(unittest.TestCase):
         guide = document(text="ENROLLMENT PROCEDURE\nNew Students and Transferees\n"
                               "Submit credentials and secure the plotting form. Present the receipt to the Registrar.",
                          section_heading="Enrollment Procedure")
-        for query in ("how to enroll in bsit", "How to enrol in the BSIT program?", "BSIT admission requirements"):
+        for query in ("how to enroll in bsit", "How to enrol in the BSIT program?"):
             with self.subTest(query=query):
                 result = self.select([current, guide], [query, "BSIT enrollment admission program requirements"],
                                      uploads={current.metadata["source"]: UPLOADS[UPDATE]})
@@ -661,6 +684,8 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertFalse(result.restricted)
                 self.assertIn(current.metadata["source"].lower(), result.discarded_sources)
                 self.assertEqual(program_catalog_queries(query), [])
+        admission_only = self.select([current, guide], "BSIT admission requirements")
+        self.assertFalse(enrollment_queries("BSIT admission requirements"))
 
     def test_current_enrollment_update_still_replaces_shared_old_steps(self):
         current = document(UPDATE, "Undergraduate Level\nEnrollment now uses CURRENT_ONLINE_APPLICATION only.",
@@ -671,7 +696,7 @@ class SourcePolicyTests(unittest.TestCase):
         self.assertTrue(result.restricted)
 
     def test_shared_undergraduate_enrollment_keeps_mixed_page_but_not_other_units_or_levels(self):
-        shared = document(text="ADMISSION REQUIREMENTS\nUndergraduate Level\nStudents submit valid credentials.\n"
+        shared = document(text="ENROLLMENT PROCEDURE\nUndergraduate Level\nStudents submit valid credentials and follow the enrollment steps.\n"
                                "Graduate Level\nEducation applicants need the stated graduate-level average.",
                           section_heading="Graduate Level")
         shs = document("SHS_Admission.docx", "Admission requires SHS_NEW_DOCUMENTS.", section_heading="Senior High School Admission")
@@ -1246,10 +1271,11 @@ class SourcePolicyTests(unittest.TestCase):
 
 class SourceDiscoveryTests(unittest.TestCase):
     def test_enrollment_probes_are_bounded_and_distinct_from_offering_requests(self):
-        for query in ("how to enroll in bsit", "How do I register for BSIT?", "BSIT admission requirements", "enrolment procedure"):
+        for query in ("how to enroll in bsit", "How do I register for BSIT?", "enrolment procedure"):
             with self.subTest(query=query):
-                self.assertEqual(enrollment_queries(query), ["college enrollment enrolment procedure admission requirements registration"])
+                self.assertEqual(enrollment_queries(query), ["enrollment enrolment procedure registration documents steps"])
                 self.assertEqual(program_catalog_queries(query), [])
+        self.assertFalse(enrollment_queries("BSIT admission requirements"))
         for query in ("What programs are offered?", "Who is the BSIT coordinator?", "My enrollment history", "", None):
             self.assertEqual(enrollment_queries(query), [])
         self.assertTrue(enrollment_queries("How do I enroll in SHS?")[0].startswith("How do I enroll in SHS?"))

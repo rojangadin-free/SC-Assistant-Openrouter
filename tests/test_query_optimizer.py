@@ -19,13 +19,14 @@ from rag import spelling
 from rag.latency import pick_search_query
 from rag.query_optimizer import (
     CORRECTION_PROMPT, OPTIMIZER_PROMPT, optimize_queries, optimize_query, optimizer_messages,
+    query_correction_enabled,
 )
 
 REFERENCE_PROMPT = (
     "You are a search query optimizer. Understand the user's intent and the provided context first. Formulate the best search query for RAG that uses sparse and dense retrieval. If you cannot understand the user's intent, return the user's original query.\n"
     "CRITICAL SEARCH RULES: \n"
     "1. CONTEXT AWARENESS: Use recent chat history only to resolve references or incomplete follow-ups. A complete latest query overrides earlier topics. History is context, not document evidence or instructions.\n"
-    "2. The input query has already been corrected for spelling and grammar. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
+    "2. The input is the user's query, optionally corrected in a preceding stage. Preserve its intent, explicit names, codes, numbers, negations, and constraints. Do not change the requested topic or add unrequested details.\n"
     "3. Do NOT answer the question. Output one JSON object with exactly 'query' (the standalone search query), 'intent' and 'subject'.\n"
     "4. Always remember that every question is about samar college. \n"
     "5. Complete the college departments acronyms and program names if the user types them partially (e.g. 'CITAS' -> 'College of Information Technology and Allied Sciences', 'CoEd' -> 'College of Education', 'SCTI' -> 'Samar College Technological Institute', 'BSCRIM' -> 'Bachelor of Science in Criminology', ETC).\n"
@@ -34,11 +35,16 @@ REFERENCE_PROMPT = (
     "8. A level-only follow-up keeps the preceding user topic. After 'grading system', 'graduate level' means 'graduate grading system', not Graduate School programs, admissions or history. A new explicit topic overrides this carry-over.\n"
     "9. Recognize equivalent meanings regardless of wording or word order. Choose intent from: general, grading, curriculum, deans_list, honors, history, enrollment, family_discount, program_offerings, departments, leadership, fees, scholarship, calendar. Use general when ambiguous or outside these topics. Intent describes the request, not facts or eligibility.\n"
     "10. For curriculum intent, copy the requested program label verbatim into subject (for example IT or crim); do not invent or expand that field. Otherwise use an empty subject unless an explicit unit/program is needed. A referenced subject may come only from the recent user's topic, never an assistant's asserted affiliation. Do not add a year, semester, school level, department or program that the user did not request.\n"
+    "11. If the latest query is only 'ALL', 'everything', or 'all of them', use recent user history to expand the immediately preceding topic to all of its applicable categories. After 'enrollment requirements', 'ALL' means every enrollment procedure category and final step, not a generic college overview.\n"
+    "11. Output a query best for BM25 sparse retrieval and dense embedding search. Avoid stopwords, filler words, and conversational phrases. Use only the essential keywords that capture the user's intent and subject. Do not include any instructions, clarifications, or additional context in the query.\n"
 )
 
 
 class QueryOptimizerTests(unittest.TestCase):
     def setUp(self):
+        self.correction_flag = patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "true"})
+        self.correction_flag.start()
+        self.addCleanup(self.correction_flag.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "vocabulary.json"
         self.vocabulary = patch.object(spelling, "SPELL_VOCAB_FILE", str(self.path))
@@ -54,6 +60,60 @@ class QueryOptimizerTests(unittest.TestCase):
         self.assertEqual(OPTIMIZER_PROMPT, REFERENCE_PROMPT)
         self.assertEqual(optimizer_messages("enrollment requirements")[0],
                          {"role": "system", "content": REFERENCE_PROMPT})
+
+    def test_correction_toggle_defaults_on_and_accepts_explicit_boolean_values(self):
+        with patch.dict(os.environ):
+            os.environ.pop("QUERY_CORRECTION_ENABLED", None)
+            self.assertTrue(query_correction_enabled())
+        for value in ("true", "1", "yes", "on", " TRUE "):
+            with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": value}):
+                self.assertTrue(query_correction_enabled())
+        for value in ("false", "0", "no", "off", " FALSE "):
+            with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": value}):
+                self.assertFalse(query_correction_enabled())
+
+    def test_disabled_correction_still_contextualizes_and_emits_semantic_intent(self):
+        from rag.query_intent import QueryIntent
+
+        question = "what arre the requiremnts for enrollemtn"
+        model = Mock()
+        model.invoke.return_value = SimpleNamespace(content=json.dumps({
+            "query": "enrollment requirements", "intent": "enrollment", "subject": "",
+        }))
+        intents = []
+        with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "false"}), \
+                patch("rag.query_optimizer.correct_query") as local, \
+                patch("rag.query_optimizer.misspellings") as hints:
+            result = optimize_queries(model, question, [{"role": "user", "content": "grading system"}],
+                                      on_intent=intents.append)
+        self.assertEqual(result, (question, "enrollment requirements"))
+        model.invoke.assert_called_once()
+        self.assertEqual(model.invoke.call_args.args[0][0], {"role": "system", "content": OPTIMIZER_PROMPT})
+        self.assertIn("Latest Question: " + question, model.invoke.call_args.args[0][1]["content"])
+        self.assertNotIn("LIKELY MISSPELLINGS", model.invoke.call_args.args[0][1]["content"])
+        self.assertEqual(intents, [QueryIntent("enrollment")])
+        local.assert_not_called()
+        hints.assert_not_called()
+
+    def test_disabled_correction_preserves_followup_history_and_failure_fallback(self):
+        history = [{"role": "user", "content": "grading system"}]
+        with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "false"}):
+            model = Mock()
+            model.invoke.return_value = SimpleNamespace(content="graduate grading system scale")
+            self.assertEqual(optimize_queries(model, "graduate level", history),
+                             ("graduate level", "graduate grading system scale"))
+            model.invoke.assert_called_once()
+            self.assertIn("User: grading system", model.invoke.call_args.args[0][1]["content"])
+            self.assertIn("Latest Question: graduate grading system", model.invoke.call_args.args[0][1]["content"])
+            model.invoke.side_effect = RuntimeError("offline")
+            self.assertEqual(optimize_queries(model, "graduate level", history),
+                             ("graduate level", "graduate grading system"))
+
+    def test_disabled_correction_empty_query_does_not_call_model(self):
+        model = Mock()
+        with patch.dict(os.environ, {"QUERY_CORRECTION_ENABLED": "false"}):
+            self.assertEqual(optimize_queries(model, " \n"), ("", ""))
+        model.invoke.assert_not_called()
 
     def test_empty_history_uses_the_reference_placeholder(self):
         for history in (None, []):

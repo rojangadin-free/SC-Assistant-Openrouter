@@ -137,6 +137,92 @@ class Hybrid:
 
 
 class NewerRetrievalTests(unittest.TestCase):
+    def test_enrollment_procedure_chunks_survive_a_one_document_final_top_k(self):
+        source = "REGISTRAR_Services_&_Information_2026.docx"
+        early = document(source, "Enrollment Procedure\nOld Students\nStep 1: Clearance. Steps 2-7: continuing-student actions.",
+                         "continuing-steps", section_heading="Enrollment Procedure / Old Students")
+        # The indexed last action can be separated from its numbered label.
+        last = document(source, "Guidance and Clinic\nPresent the loadsheet (COR) for Medical Record.",
+                        "continuing-last", section_heading="Enrollment Procedure / Old Students")
+        admission = document(source, "Admission Requirements\nFreshmen need Form 138.", "admission",
+                             section_heading="Admission Requirements")
+        with patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "true"}), patch.dict(self.ns, {"FINAL_TOP_K": 1}):
+            self.install([early, last, admission])
+            result = self.retrieve("What are the requirements for enrollment?",
+                                   user_question="What are the requirements for enrollment?",
+                                   dates=self.dates, uploads=self.uploads)
+        self.assertEqual(result, [early, last])
+
+    def test_all_after_enrollment_requirements_lists_every_student_category_and_final_step(self):
+        source = "REGISTRAR_Services_&_Information_2026.docx"
+        procedure = [
+            document(source, "ENROLLMENT PROCEDURE\nNew Students and Transferees\n"
+                     "Step 1: Security Services. Steps 2-7: submit credentials, plot subjects, pay and encode.",
+                     "new-start", section_heading="Enrollment Procedure / New Students and Transferees"),
+            document(source, "New Students and Transferees\nStep 8: Guidance and Clinic. Present loadsheet for Guidance Testing and Medical Record.",
+                     "new-last", section_heading="Enrollment Procedure / New Students and Transferees"),
+            document(source, "ENROLLMENT PROCEDURE\nOld Students\n"
+                     "Step 1: Security Services. Steps 2-7: clearance, evaluation, cashier and Registrar.",
+                     "old-start", section_heading="Enrollment Procedure / Old Students"),
+            document(source, "Old Students\nGuidance and Clinic. Present the loadsheet (COR) for Medical Record.",
+                     "old-last", section_heading="Enrollment Procedure / Old Students"),
+            document(source, "Admission Requirements\nFreshmen need Form 138 and good moral certificate.",
+                     "admission-only", section_heading="Admission Requirements"),
+        ]
+        with patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": "true"}), patch.dict(self.ns, {"FINAL_TOP_K": 1}):
+            self.install(procedure)
+            self.ns["query_optimizer_model"].invoke = Mock(
+                return_value=SimpleNamespace(content="Samar College general information programs departments history leadership")
+            )
+            retrieved = []
+            original_retrieve = self.retrieval._mock_wraps
+
+            def capture(*args, **kwargs):
+                result = original_retrieve(*args, **kwargs)
+                retrieved.extend(result)
+                return result
+
+            self.retrieval.side_effect = capture
+            result = self.chat("ALL", history=[
+                {"role": "user", "content": "enrollment requirements"},
+                {"role": "assistant", "content": "The two requirements for new students are credentials and plotting."},
+            ])
+        self.assertEqual(set(result["citations"]), {"new-start", "new-last", "old-start", "old-last"},
+                         f"{self.output.getvalue()} citations={self.ns['build_citations'].call_args!r} "
+                         f"retrieved={[doc.metadata['chunk_id'] for doc in retrieved]!r}")
+        prompt = result["messages_to_llm"][0].content
+        for doc in procedure[:4]:
+            self.assertIn(doc.page_content, prompt)
+            self.assertIn(doc.metadata["section_heading"], prompt)
+        self.assertNotIn(procedure[4].page_content, prompt)
+        self.assertIn("all enrollment requirements", prompt)
+        self.assertIn("every final step", prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, "ALL")
+        self.assertTrue(all(filters is not None for _, _, filters in self.hybrid.calls))
+        self.assertTrue(any("all enrollment requirements" in query for _, query, _ in self.hybrid.calls))
+        self.assertFalse(any("general information programs" in query for _, query, _ in self.hybrid.calls))
+
+    def test_stopword_only_all_probe_is_skipped_without_aborting_valid_contextual_search(self):
+        current = document("Campus_Guide_2026.docx", "Samar College departments, programs, history and leadership.", "guide")
+        self.install([current])
+        def sparse(query, **kwargs):
+            if query.upper() == "ALL":
+                raise ValueError("Sparse vector must contain at least one value")
+            return [current]
+
+        self.hybrid.sparse.invoke.side_effect = sparse
+        metadata_filter = {"source": {"$eq": current.metadata["source"]}}
+        result = self.ns["multi_query_retrieve"](
+            "ALL", filtered_queries=[
+                ("ALL", metadata_filter),
+                ("Samar College general information programs departments history leadership", metadata_filter),
+            ]
+        )
+        self.assertIn(current, result)
+        self.assertFalse(any(call.args[0].upper() == "ALL" for call in self.hybrid.dense.invoke.call_args_list))
+        self.assertFalse(any(call.args[0].upper() == "ALL" for call in self.hybrid.sparse.invoke.call_args_list))
+        self.assertTrue(any("general information" in call[1] for call in self.hybrid.calls))
+
     def test_complete_honors_criteria_survive_ranking_and_final_context_cutoff(self):
         criteria = document(BASE, "Graduation Honors and Awards for College\n"
                             "Summa Cum Laude. GWA 1.00 to 1.20, no major/professional grade below 1.30.\n"
@@ -436,7 +522,7 @@ class NewerRetrievalTests(unittest.TestCase):
         correction.assert_called_once_with(LEADERSHIP_QUESTION)
         self.assertEqual(self.spelling.correct_query(LEADERSHIP_QUESTION), "")
         self.ns["query_optimizer_model"].invoke.assert_called_once_with(
-            self.optimizer.optimizer_messages(LEADERSHIP_QUESTION, history)
+            self.optimizer.optimizer_messages(LEADERSHIP_QUESTION)
         )
         docs = self.ns["build_citations"].call_args.args[0]
         context = self.assert_leadership_retrieval(docs, hybrid, current)
@@ -600,6 +686,7 @@ class NewerRetrievalTests(unittest.TestCase):
         self.assertEqual(self.retrieval.call_args.kwargs["user_question"], "dean of education")
         self.assertEqual(result["messages_to_llm"][-1].content, "dean of education")
         self.assertEqual(result["citations"], ["education-dean"])
+
 
     def test_contextual_query_leads_retrieval_and_ranking_without_replacing_user_text(self):
         question, companion = "enrollment requirements", "application registration form checklist"
