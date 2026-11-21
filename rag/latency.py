@@ -65,7 +65,7 @@ def overview_topic(question: str) -> str:
         "current", "latest", "today", "now", "total", "count", "number", "location", "locations", "hours",
         "requirement", "requirements", "criteria", "eligibility", "grade", "grades", "grading", "marking", "transmutation", "gwa", "gpa", "schedule", "schedules",
         "assignment", "assignments", "balance", "records", "record", "profile",
-        "admission", "admissions", "enrollment", "enrolment", "scholarship", "scholarships", "tuition", "fees",
+        "admission", "admissions", "enrollment", "enrolment", "scholarship", "scholarships", "tuition", "fees", "discount", "discounts",
         "honor", "honors", "honour", "honours", "program", "programs", "course", "courses", "degree", "degrees",
         "subject", "subjects", "curriculum", "curricula", "syllabus",
         "bachelor", "master", "doctor", "associate",

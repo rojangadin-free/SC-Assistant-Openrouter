@@ -14,6 +14,7 @@ from rag.source_policy import (
     department_catalog_queries,
     enrollment_queries,
     enrollment_documents,
+    family_discount_queries,
     leadership_guidance,
     newer_source_names,
     program_catalog_queries,
@@ -34,6 +35,20 @@ def document(source=BASE, text="Enrollment requires OLD_CHECKLIST and OLD_FEE.",
 
 
 class SourcePolicyTests(unittest.TestCase):
+    def test_unqualified_discount_is_broad_aid_but_family_discount_stays_specific(self):
+        from rag.source_policy import broad_aid_queries, _aid_categories
+
+        for query in ("is there a discount", "what financial aid is available?", "what scholarships are offered?"):
+            self.assertTrue(broad_aid_queries(query), query)
+            self.assertEqual(family_discount_queries(query), [])
+        for query in ("family discount", "discount for siblings", "academic scholarship", "sports scholarship", "government scholarship"):
+            self.assertFalse(broad_aid_queries(query), query)
+        family = document(text="Family members discount 10% with full subject load.")
+        academic = document(text="Academic Scholarship: 50% tuition discount for GWA 1.50.")
+        government = document(text="Government-Funded Scholarship Grants include TES.")
+        self.assertEqual(_aid_categories(family), {"family"})
+        self.assertIn("academic", _aid_categories(academic))
+        self.assertIn("government", _aid_categories(government))
     def test_campus_location_uses_letterhead_and_contact_footer_not_historical_sites_or_office_floors(self):
         from rag.source_policy import campus_location_documents
 

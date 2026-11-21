@@ -12,6 +12,7 @@ import re
 from copy import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from itertools import zip_longest
 
 from rag.freshness import date_from_filename, doc_key
 from rag.unit_identity import (
@@ -382,14 +383,84 @@ def family_discount_documents(documents):
     return selected
 
 
+_AID_CATEGORIES = {
+    "family": r"family\s+(?:members?|nucleus|discounts?)|siblings?\s+discounts?",
+    "academic": r"academic\s+(?:scholarships?|discounts?|grants?)",
+    "entrance": r"entrance\s+(?:scholarships?|discounts?|grants?)",
+    "athletic": r"(?:athletic|sports?)\s+(?:scholarships?|discounts?|grants?)",
+    "extracurricular": r"rayhak|dance troupe|publication editors?|extracurricular",
+    "special": r"special scholarship|physically handicapped|exceptionally gifted|music and arts",
+    "private": r"private[- ]funded|jollibee",
+    "government": r"government[- ]funded|CHED\s+(?:full|half|merit)|\b(?:ESC|TES|OWWA|CoScho|SNPLP)\b|LGU[- ]sponsored",
+}
+
+BROAD_AID_GUIDANCE = """<financial_aid_overview>
+The user asks about available education discounts or aid in general. Describe the
+distinct options supported by the evidence, including scholarships, grants and
+tuition discounts where documented. Label each option accurately and include its
+conditions or amounts where supported. Treat family discounts as one option.
+Apply a newer policy only to the option it covers. Identify older handbook terms
+by edition and avoid presenting those terms as verified current. Keep separate
+programs' amounts and eligibility rules distinct. Avoid claiming personal eligibility.
+</financial_aid_overview>"""
+
+
+def broad_aid_queries(query):
+    """An unqualified discount or financial-aid inquiry covers multiple policies."""
+    if not isinstance(query, str) or not re.search(
+        r"\b(?:discounts?|financial aid|tuition (?:assistance|reductions?|waivers?))\b|"
+        r"^\s*(?:(?:what|which)\s+|are there (?:any\s+)?)?scholarships?"
+        r"(?:\s+(?:are\s+)?(?:available|offered))?\s*[?.!]*$", query, re.I,
+    ):
+        return []
+    if family_discount_queries(query) or re.search(
+        r"\b(?:academic|entrance|athletic|sports?|government|private|employee|alumni|senior citizen|PWD|"
+        r"ESC|TES|CHED|OWWA|full[- ](?:payment|cash)|(?:enrollment|application|assessment)\s+fee)\b", query, re.I,
+    ):
+        return []
+    if re.search(r"\b(?:discounts?|financial aid)\s+for\b(?!\s+(?:college\s+)?students?\b|\s+(?:tuition|school fees)\b)", query, re.I):
+        return []
+    return ["school scholarship financial aid tuition discounts grants offered eligibility",
+            "entrance academic scholarship tuition discounts grade requirements",
+            "family members sibling tuition discount full subject load",
+            "sports Rayhak publication editors extracurricular special school funded scholarship grants",
+            "private funded government funded scholarship grants CHED TES ESC OWWA"]
+
+
+def _aid_categories(document):
+    text = getattr(document, "page_content", "") or ""
+    body = re.sub(r"\[(?:SECTION|TABLE\s+context):[^\]]*\]", "", text, flags=re.I)
+    if re.search(r"\btable of contents\b|\.{3,}\s*\d+", body, re.I):
+        return set()
+    # Service mentions and application referrals do not establish benefit terms.
+    if not re.search(r"%|\b(?:eligible|eligibility|qualif\w*|entitled|funded|grants? offered|"
+                     r"sponsored|discounts?|waiv\w*|covers?|scholars? (?:receive|get))\b", body, re.I):
+        return set()
+    metadata = getattr(document, "metadata", None) or {}
+    headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+    categories = {name for name, pattern in _AID_CATEGORIES.items() if re.search(rf"\b(?:{pattern})\b", body, re.I)}
+    if not categories and re.search(r"%|\b(?:eligible|qualif\w*|entitled|discounts?|waiv\w*)\b", body, re.I):
+        categories = {name for name, pattern in _AID_CATEGORIES.items() if re.search(rf"\b(?:{pattern})\b", headings, re.I)}
+    if not categories and re.search(r"\b(?:scholarships?|tuition (?:discounts?|assistance|waivers?)|financial aid)\b", body, re.I):
+        categories.add("other")
+    return categories
+
+
 def family_discount_guidance(query, documents):
     if not family_discount_queries(query):
         return ""
+    asks_rates = re.search(r"\bdiscount\s+rates?\b", query, re.I)
+    answer_focus = (
+        "Lead with the documented discount percentages and how they apply by number of enrolled family members. "
+        "Show a breakdown if the evidence supports one, and do not substitute the general tuition fee schedule. "
+        "Include only conditions needed to interpret the rates. " if asks_rates else
+        "State the source's family definition, full-load and other eligibility conditions, and scholarship-combination restrictions. "
+    )
     guidance = (
         "<family_discount_request>\nThe question asks about sibling/family tuition discounts, not unrelated academic, "
         "athletic, ESC, or enrollment policies. Use the supplied Family Members/Family Nucleus discount policy. "
         "A policy covering children in the same family can answer a sibling question even if its heading does not say 'siblings'. "
-        "State the source's family definition, full-load and other eligibility conditions, and scholarship-combination restrictions. "
+        f"{answer_focus}"
         "Do not assume every relative qualifies or that simultaneous enrollment alone establishes eligibility. "
         "Respect an explicit maximum number of covered family members; do not describe a stated limit as merely unspecified. "
         "Keep the Full Payment column and allocation rules as stated; do not invent how the table applies to each member. "
@@ -1387,6 +1458,43 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
     queries = [query.strip() for query in queries if isinstance(query, str) and query.strip()]
     today = today or date.today()
     original_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
+    if queries and broad_aid_queries(queries[0]):
+        question = queries[0]
+        historical = _historical(question, today)
+        baselines = _chronology(original_sources, dates=dates, uploads=uploads,
+                                today=today, fallback_sources=fallback_sources)[0]
+        exclude_handbook = re.search(r"\b(?:ignore|disregard|exclude|do not use|don't use)\b.{0,55}\b(?:2024|handbook)\b", question, re.I)
+        current_only = not historical and re.search(r"\b(?:confirmed|current|currently|latest|active|now|today|updated)\b", question, re.I)
+        grouped = {}
+        for index, doc in enumerate(documents):
+            source = doc_key((getattr(doc, "metadata", None) or {}).get("source", ""))
+            if exclude_handbook and (source in baselines or "handbook" in source):
+                continue
+            for category in sorted(_aid_categories(doc)):
+                grouped.setdefault(category, []).append(index)
+        groups = []
+        superseded = set()
+        for indexes in grouped.values():
+            source_by_index = {i: doc_key((getattr(documents[i], "metadata", None) or {}).get("source", "")) for i in indexes}
+            if not historical and (enforce_sources or current_only):
+                _, current, dated, _ = _chronology(set(source_by_index.values()), dates=dates, uploads=uploads,
+                                                   today=today, fallback_sources=fallback_sources)
+                newest = max(dated.values(), default=None)
+                preferred = current or {source for source, stamp in dated.items() if stamp == newest}
+                if preferred or current_only:
+                    superseded.update(i for i in indexes if source_by_index[i] not in preferred)
+                    indexes = [i for i in indexes if source_by_index[i] in preferred]
+            if indexes:
+                groups.append(indexes)
+        # Reserve one result per policy category before filling with continuations.
+        # Mixed chunks cannot reintroduce superseded rules through another group.
+        groups = [[i for i in group if i not in superseded] for group in groups]
+        ordered = dict.fromkeys(i for row in zip_longest(*groups) for i in row if i is not None)
+        retained = [documents[i] for i in list(ordered)[:limit]]
+        retained_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in retained}
+        # Continue discovery across editions so a current update for one category
+        # does not suppress discovery of the remaining categories.
+        return Selection(retained, False, tuple(sorted(original_sources - retained_sources)), "")
     if queries and curriculum_queries(queries[0]):
         documents = curriculum_documents(documents, queries[0])
     if queries and grading_queries(queries[0]):

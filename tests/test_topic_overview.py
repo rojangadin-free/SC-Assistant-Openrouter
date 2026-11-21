@@ -8,6 +8,104 @@ import test_newer_retrieval as fixtures
 
 
 class TopicOverviewTests(unittest.TestCase):
+    def test_general_followups_drive_search_and_keep_the_latest_question(self):
+        h = self.harness
+        cases = (
+            (["When is enrollment?", "for transferees?"], "What should I bring?", "When is enrollment",
+             "required documents for transferees"),
+            (["When is enrollment?", "What should I bring?", "Okay"], "for transferees?", "When is enrollment",
+             "required documents for transferees"),
+            (["Is there a sports scholarship?"], "How do I apply?", "Is there a sports scholarship",
+             "application or procedure steps"),
+            (["Is there a sports scholarship?"], "Am I eligible?", "Is there a sports scholarship",
+             "eligibility requirements"),
+            (["What are the BSIT tuition fees?"], "Magkano?", "What are the BSIT tuition fees", "amount or rates"),
+            (["What are the BSIT tuition fees?"], "Show me the price", "What are the BSIT tuition fees",
+             "amount or rates"),
+            (["Is there a foundation celebration?"], "When does it start?", "Is there a foundation celebration",
+             "start or opening date"),
+            (["What are the BSIT tuition fees?", "Where is the library?"], "Where do I go?", "Where is the library",
+             "location"),
+            (["Is there a sports scholarship?"], "Is it available to new students?", "Is there a sports scholarship",
+             "Is it available to new students?"),
+            (["When is enrollment?"], "And for BSIT?", "When is enrollment", "And for BSIT?"),
+        )
+        for previous, question, topic, facet in cases:
+            with self.subTest(question=question):
+                history = [{"role": "user", "content": turn} for turn in previous]
+                history.append({"role": "assistant", "content": "An earlier answer."})
+                hybrid = h.install([], baseline=[])
+                h.ns["query_optimizer_model"].invoke = Mock(return_value=fixtures.SimpleNamespace(content=json.dumps({
+                    "query": "unrelated cafeteria hours", "intent": "general", "subject": "",
+                })))
+                result = h.chat(question, history=history)
+                resolved = f"{topic} ({facet.rstrip('?')})"
+                prompt, latest = result["messages_to_llm"]
+                self.assertIn(resolved, prompt.content)
+                self.assertNotIn("unrelated cafeteria hours", prompt.content)
+                self.assertEqual(latest.content, question)
+                self.assertTrue(any(resolved.lower() in query.lower() for _, query, _ in hybrid.calls), hybrid.calls)
+
+    def test_sibling_discount_conversation_retrieves_rates_for_amount_followup(self):
+        h = self.harness
+        family = fixtures.document(fixtures.BASE, "Family Members Discount\nTwo enrolled siblings: 10% tuition discount.", "family")
+        fees = fixtures.document("Fees_2026.docx", "Tuition fee schedule: tuition costs PHP 20,000.", "fees")
+        hybrid = h.install([fees, family], baseline=[family])
+        h.ns["query_optimizer_model"].invoke = Mock(side_effect=RuntimeError("optimizer unavailable"))
+        history = [
+            {"role": "user", "content": "is there a discount?"},
+            {"role": "assistant", "content": "Academic and family tuition discounts are available."},
+        ]
+        sibling_question = "for siblings?"
+        sibling_answer = h.chat(sibling_question, history=history)
+        self.assertIn("family", sibling_answer["citations"], h.output.getvalue())
+        history += [
+            {"role": "user", "content": sibling_question},
+            {"role": "assistant", "content": "STALE_FAMILY_RATE 99%."},
+        ]
+        question = "show me how much"
+        result = h.chat(question, history=history)
+        self.assertEqual(set(result["citations"]), {"family"}, h.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn(family.page_content, prompt)
+        self.assertIn("sibling tuition discount rates", prompt)
+        self.assertIn("Lead with the documented discount percentages", prompt)
+        self.assertNotIn("STALE_FAMILY_RATE", prompt)
+        self.assertEqual(result["messages_to_llm"][-1].content, question)
+        self.assertTrue(any("sibling tuition discount rates" in query for _, query, _ in hybrid.calls))
+
+    def test_broad_discount_keeps_distinct_aid_options_despite_a_family_only_rewrite(self):
+        h = self.harness
+        family = fixtures.document("Family_Discount_2026.docx", "Family members receive a 12% tuition discount.", "family")
+        old_family = fixtures.document(fixtures.BASE, "Family members receive a 10% tuition discount.", "old-family")
+        academic = fixtures.document(fixtures.BASE, "Academic Scholarship for College: eligible scholars receive a 50% tuition discount.", "academic")
+        athletic = fixtures.document(fixtures.BASE, "Sports scholarships cover up to 75% of tuition.", "sports")
+        government = fixtures.document(fixtures.BASE, "Government-Funded Scholarship Grants include CHED Full Merit and TES.", "government")
+        service = fixtures.document("OSAS_2026.docx", "Scholarship Programs\nContact OSAS for applications.", "service")
+        history = [{"role": "user", "content": "Are there sibling discounts?"},
+                   {"role": "assistant", "content": "STALE_FAMILY_ANSWER"}]
+        for question in ("is there a discount", "discounts", "what financial aid is available?", "what scholarships are offered?"):
+            with self.subTest(question=question), patch.dict(os.environ, {
+                "QUERY_CORRECTION_ENABLED": "true", "RAG_SOURCE_FILTER_ENABLED": "true",
+            }), patch.dict(h.ns, {"FINAL_TOP_K": 1}):
+                hybrid = h.install([family, service], baseline=[old_family, academic, athletic, government])
+                # Popular policies can crowd the handbook out of unfiltered top-k.
+                hybrid.ensemble.invoke.side_effect = lambda query: [family, service]
+                h.ns["query_optimizer_model"].invoke = Mock(return_value=fixtures.SimpleNamespace(content=json.dumps({
+                    "query": "family members discount", "intent": "family_discount", "subject": "",
+                })))
+                result = h.chat(question, corrected="family members discount", history=history)
+                self.assertEqual(set(result["citations"]), {"family", "academic", "sports", "government"}, h.output.getvalue())
+                prompt = result["messages_to_llm"][0].content
+                self.assertIn("<financial_aid_overview>", prompt)
+                self.assertNotIn("<family_discount_request>", prompt)
+                self.assertNotIn("STALE_FAMILY_ANSWER", prompt)
+                self.assertNotIn(old_family.page_content, prompt)
+                self.assertEqual(result["messages_to_llm"][-1].content, question)
+                self.assertTrue(any("entrance academic scholarship" in query for _, query, _ in hybrid.calls))
+                self.assertTrue(any(filters == {"source": {"$eq": fixtures.BASE}}
+                                    for _, _, filters in hybrid.calls))
+
     def test_equivalent_waray_campus_location_queries_find_address_without_old_topic_or_document_absence_claims(self):
         h = self.harness
         letterhead = fixtures.document("SCTI_Program.docx", "SAMAR COLLEGES, INC.\nMabini Avenue, Catbalogan City Samar",

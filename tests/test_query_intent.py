@@ -69,6 +69,20 @@ class QueryIntentTests(unittest.TestCase):
                 self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
                 self.assertEqual(policy.student_id_queries(question), policy.student_id_queries("lost student ID"))
 
+    def test_broad_discount_does_not_inherit_family_scope_from_history_or_rewrite(self):
+        from rag.source_policy import broad_aid_queries, family_discount_queries
+
+        question = "is there a discount"
+        self.assertTrue(broad_aid_queries(question))
+        self.assertFalse(family_discount_queries(question))
+        self.assertEqual(resolve_query_intent(question, QueryIntent("family_discount"), [
+            {"role": "user", "content": "family discount"},
+        ]), question)
+        self.assertFalse(query_rewrite_supported(question, "family members discount", preserve_topic=False))
+        self.assertEqual(resolve_query_intent("ALL", QueryIntent("family_discount"), [
+            {"role": "user", "content": "what scholarships are offered?"},
+        ]), "what scholarships are offered?")
+
     def test_id_policy_intent_is_distinct_from_private_number_lookup_or_lost_other_items(self):
         for question in ("What is my student ID number?", "I lost my student ID number", "I lost my receipt", "I lost my phone",
                          "I lost my diploma", "my grades", "list the students", "student ID issuance for new students"):
@@ -162,6 +176,22 @@ class QueryIntentTests(unittest.TestCase):
         history = [{"role": "user", "content": "grading system"}]
         self.assertEqual(resolve_query_intent("graduate level", None, history), "graduate grading system")
         self.assertEqual(resolve_query_intent("graduate level", QueryIntent("program_offerings"), history), "graduate grading system")
+
+    def test_amount_followup_carries_family_discount_only_from_recent_user_scope(self):
+        history = [{"role": "user", "content": "is there a discount?"},
+                   {"role": "user", "content": "for siblings?"}]
+        for question in ("show me how much", "How much?", "Could you show me how much it is, please?"):
+            with self.subTest(question=question):
+                self.assertTrue(query_needs_history(question))
+                self.assertIn("discount rates", resolve_query_intent(question, QueryIntent("fees"), history))
+        for question, previous in (
+            ("How much is the tuition?", history),
+            ("show me how much", history + [{"role": "user", "content": "What is the enrollment fee?"}]),
+            ("show me how much", [{"role": "assistant", "content": "Sibling discount"}]),
+            ("show me how much", [{"role": "user", "content": "Do you offer counseling?"}, history[-1]]),
+        ):
+            with self.subTest(question=question, previous=previous):
+                self.assertEqual(resolve_query_intent(question, history=previous), question)
 
     def test_all_followup_expands_the_previous_enrollment_request(self):
         history = [{"role": "user", "content": "enrollment requirements"},
