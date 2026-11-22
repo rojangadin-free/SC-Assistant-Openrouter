@@ -258,7 +258,7 @@ class NewerRetrievalTests(unittest.TestCase):
                         self.assertNotIn("ACADEMIC_EXCELLENCE", prompt)
                         self.assertEqual(result["messages_to_llm"][-1].content, question)
 
-    def test_honors_criteria_and_eligibility_survive_across_source_ages(self):
+    def test_current_honors_update_does_not_mix_older_thresholds(self):
         old = document(BASE, "Summa Cum Laude. GWA 1.00 to 1.20; old honors thresholds.", "old-thresholds", page=52)
         update = document("Graduation_Honors_2026.docx", "Graduation honors specific guidelines and candidate requirements. "
                           "A candidate for honors must satisfy UPDATED_ELIGIBILITY and good moral character.", "update")
@@ -266,8 +266,8 @@ class NewerRetrievalTests(unittest.TestCase):
             with self.subTest(mode=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}):
                 self.install([update], baseline=[old])
                 result = self.chat("how do i become latin honot")
-                self.assertEqual(set(result["citations"]), {"update", "old-thresholds"}, self.output.getvalue())
-                self.assertIn("1.00 to 1.20", result["messages_to_llm"][0].content)
+                self.assertEqual(set(result["citations"]), {"update"}, self.output.getvalue())
+                self.assertNotIn("1.00 to 1.20", result["messages_to_llm"][0].content)
                 self.assertIn("UPDATED_ELIGIBILITY", result["messages_to_llm"][0].content)
 
     def setUp(self):
@@ -1121,7 +1121,7 @@ class NewerRetrievalTests(unittest.TestCase):
     def test_latest_general_question_controls_scope_not_a_history_enriched_rewrite(self):
         current = document(PROGRAMS, "College of Liberal Arts and Sciences\nBachelor of Arts in Sociology.",
                            "new-clas", collection_heading="Programs Offered")
-        self.install([current])
+        self.install([current], baseline=[current])
         selected = Mock()
         result = self.retrieve("College of Arts and Sciences college department",
                                user_question="college department", on_selection=selected)
@@ -1243,12 +1243,13 @@ class NewerRetrievalTests(unittest.TestCase):
                    "OLD_CAS_CLAIM. If you'd like, I can share details on the currently active colleges instead."}]
         question = "list the currently active colleges"
         result = self.chat(question, history)
-        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["citations"], ["old-college"])
         prompt = result["messages_to_llm"][0].content
         self.assertNotIn("<accepted_offer>", prompt)
         self.assertIn("<department_list_request>", prompt)
         self.assertNotIn("OLD_CAS_CLAIM", prompt)
-        self.assertNotIn("OLD_COLLEGE_LIST", prompt)
+        self.assertIn("OLD_COLLEGE_LIST", prompt)
+        self.assertIn("Campus-Handbook-2024.pdf", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
         self.assertEqual(result["messages_to_llm"][-1].content, question)
 
@@ -1280,11 +1281,11 @@ class NewerRetrievalTests(unittest.TestCase):
                    {"role": "assistant", "content": "OLD_OFFERING_IN_HISTORY"}] * 6
         self.uploads = {PROGRAMS: STAMP}
         result = self.chat("confirmed current offerings", history)
-        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["citations"], ["training"])
         prompt = result["messages_to_llm"][0].content
         self.assertIn("<program_list_request>", prompt)
-        self.assertNotIn(BASE, prompt)
-        self.assertNotIn("OLD_TRAINING_ENTRY", prompt)
+        self.assertIn(BASE, prompt)
+        self.assertIn("OLD_TRAINING_ENTRY", prompt)
         self.assertNotIn("OLD_OFFERING_IN_HISTORY", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
         self.summary.assert_not_called()
@@ -1364,11 +1365,11 @@ class NewerRetrievalTests(unittest.TestCase):
                              "history-subject", collection_heading="Curriculum")
         self.install([unrelated], baseline=[unrelated])
         result = self.chat("history of samar college")
-        self.assertEqual(result["citations"], [], self.output.getvalue())
+        self.assertEqual(result["citations"], ["history-subject"], self.output.getvalue())
         prompt = result["messages_to_llm"][0].content
         self.assertIn("<institution_history_request>", prompt)
         self.assertIn("retrieved", prompt)
-        self.assertNotIn("Readings in Philippine History", prompt)
+        self.assertIn("Readings in Philippine History", prompt)
         self.assertNotIn(self.policy.SOURCE_SELECTION_GUIDANCE, prompt)
 
     def test_history_followup_companion_does_not_replace_natural_request_text(self):
@@ -1419,9 +1420,11 @@ class NewerRetrievalTests(unittest.TestCase):
     def test_dates_only_raw_filenames_and_unknown_dates_are_honest(self):
         raw = "Enrollment_Guide (Revised).DOCX"
         current = document(raw, "Enrollment requires the CURRENT_FORM online.", "current")
+        old = document(BASE, "Enrollment requirements for 2024: OLD_FORM was required for new students.",
+                       "old-enrollment")
         for effective in ("2026-06-01", None, "not-a-date"):
             with self.subTest(effective=effective):
-                self.install([current], baseline=[self.old[0], current])
+                self.install([current], baseline=[old, current])
                 self.uploads = {}
                 self.dates[raw.lower()] = {"filename": raw, "effective_date": effective}
                 chosen = Mock()
@@ -1436,19 +1439,21 @@ class NewerRetrievalTests(unittest.TestCase):
                                         for call in self.hybrid.sparse.invoke.call_args_list))
                     self.hybrid.ensemble.invoke.assert_not_called()
                 else:
-                    self.assertEqual(result, [self.old[0], current])
+                    self.assertEqual(result, [current, old])
                     self.hybrid.sparse.invoke.assert_not_called()
                     self.assertTrue(self.hybrid.ensemble.invoke.called)
 
     def test_historical_queries_preserve_requested_baseline_and_deduplicate(self):
         current = document("Enrollment_Update.docx", "Enrollment now requires CURRENT_FORM.", "current")
+        old = document(BASE, "Enrollment requirements for 2024: OLD_FORM was required for new students.",
+                       "old-enrollment")
         for question in ("What were enrollment requirements in 2024?",
                          "Compare the 2024 and 2026 enrollment requirements"):
             with self.subTest(question=question):
-                self.install([current], baseline=[self.old[0], current])
+                self.install([current], baseline=[old, current])
                 chosen = Mock()
                 result = self.retrieve(question, on_selection=chosen)
-                self.assertEqual(result, [self.old[0], current])
+                self.assertEqual(result, [current, old])
                 self.assertEqual(sum(doc is current for doc in self.selections.call_args.args[0]), 1)
                 chosen.assert_called_once()
                 self.assertFalse(chosen.call_args.args[0].restricted)

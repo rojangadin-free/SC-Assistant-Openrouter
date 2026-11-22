@@ -245,6 +245,28 @@ _OTHER_LEVEL = re.compile(
 _ENROLLMENT_PROBE = "college enrollment enrolment procedure admission requirements registration"
 
 
+def filter_documents_or_fallback(documents, filtered, *, filter_name, query):
+    """Preserve retrieval candidates when a hard policy filter matches none."""
+    documents = list(documents)
+    filtered = list(filtered)
+    if documents and not filtered:
+        print(f"  [retrieval-filter] {filter_name} emptied the pool for {query!r}; "
+              f"retaining {len(documents)} unfiltered candidates")
+        return documents
+    return filtered
+
+
+def evidence_documents_or_ranked_fallback(documents, filtered, *, filter_name, query):
+    """Use matching extras, or leave the already-reranked pool in control."""
+    documents = list(documents)
+    filtered = list(filtered)
+    if documents and not filtered:
+        print(f"  [retrieval-filter] {filter_name} emptied the pool for {query!r}; "
+              "retaining the unfiltered candidates already passed through reranking")
+        return []
+    return filtered
+
+
 def student_card_mentioned(query):
     """An actual card reference is required; 'lost' alone supplies no object."""
     return isinstance(query, str) and bool(re.search(_STUDENT_CARD, query, re.I))
@@ -282,6 +304,141 @@ def campus_location_documents(documents):
         address = re.search(r"\b(?:street|avenue|road|barangay|brgy|city|municipality|province|postal|zip)\b|"
                             r"\b(?:st|ave|rd)\.", text, re.I)
         if institution and address:
+            selected.append(document)
+    return selected
+
+
+_REGISTRAR = r"\b(?:(?:office\s+of\s+(?:the\s+)?)?(?:school\s+)?registrar(?:['\u2019]s)?(?:\s+office)?|OSR)\b"
+
+
+def registrar_location_queries(query):
+    text = request_text(query)
+    office = rf"(?:(?:the|an|it|ang)\s+)?{_REGISTRAR}"
+    if re.search(
+        rf"\b(?:where|diin|hain|saan|asa)\s+(?:(?:is|can\s+i\s+find|do\s+i\s+find|mabibilngan|matatagpuan)\s+)?{office}"
+        rf"(?!\s+(?:services?|forms?|records?|requirements?|documents?)\b)|"
+        rf"\b(?:location|address|floor|building|directions)\s+(?:(?:is|of|to|for|han|hit|ng|sa|ha)\s+)?{office}|"
+        rf"{office}\s+(?:office\s+)?(?:location|address|floor|building|directions)\b|"
+        rf"{office}\s+(?:is\s+)?located\b", text, re.I,
+    ):
+        return ["Office of the School Registrar physical location building floor address",
+                "Enrollment Procedure Counter Registrar"]
+    return []
+
+
+def registrar_location_documents(documents):
+    """Keep only excerpts that directly attribute a location to the Registrar."""
+    place = re.compile(r"\b(?:floor|building|room|wing|street|avenue)\b", re.I)
+    direct = re.compile(
+        rf"^\s*\|?\s*(?:the\s+)?{_REGISTRAR}\s*"
+        r"(?::|\||[-\u2013\u2014]|is\s+(?:located|situated)\s+(?:at|in|on)\b)\s*([^|]+)", re.I,
+    )
+    counter = re.compile(rf"^\s*(?:step\s+\d+\s*:\s*)?counter\s+\d+\s*[-\u2013\u2014:]\s*{_REGISTRAR}\s*$", re.I)
+    label = re.compile(r"^\s*(?:office\s+)?(?:location|address)\s*:?\s*(.*)$", re.I)
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        enrollment = re.search(r"\benrol(?:l)?ment\s+procedure\b", headings + "\n" + text, re.I)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        evidence = []
+        for index, line in enumerate(lines):
+            match = direct.match(line)
+            if match and place.search(match[1]):
+                evidence.append(match[0].strip())
+            elif enrollment and counter.fullmatch(line):
+                evidence.append(f"Enrollment procedure: {line}")
+            elif re.fullmatch(rf"(?:\[SECTION:\s*)?{_REGISTRAR}\]?", line, re.I):
+                following = lines[index + 1:index + 3]
+                if following and (location := label.fullmatch(following[0])):
+                    value = location[1] or (following[1] if len(following) > 1 else "")
+                    if place.search(value):
+                        evidence.append(f"{line}\nLocation: {value}")
+        if evidence:
+            excerpt = copy(document)
+            excerpt.page_content = "\n".join(dict.fromkeys(evidence))
+            selected.append(excerpt)
+    return selected
+
+
+_PLACE_NOUN = (
+    r"office|library|clinic|canteen|cafeteria|cashier|registrar|guidance|counsel\w*|osas|gcsd|security|"
+    r"laborator\w+|lab|gym\w*|chapel|hall|building|annex|room|department|bookstore|admissions?|"
+    r"accounting|treasury|finance|research|publication|scholarship|sports|affairs|development|gender|"
+    r"dental|medical|stage|quadrangle|auditorium|comfort\s+room|cr|"
+    r"college\s+of\s+\w+|coed|citas|clas|cocje|scti"
+)
+_PLACE_WORDS = re.compile(r"\b(?:floors?|buildings?|annex(?:es)?|rooms?|wings?|streets?|avenue|beside|behind|"
+                          r"basement|rooftop|roof\s*top)\b", re.I)
+_NOT_A_PLACE = {"i", "we", "you", "my", "our", "your", "his", "her", "their", "this", "that", "it", "its",
+                "can", "do", "does", "did", "will", "should", "would", "could", "to", "much", "many", "long",
+                "often", "samar", "school", "campus", "sc", "college", "colleges"}
+_OFFICE_FILLER = {"the", "a", "an", "of", "for", "and", "office", "offices", "located", "situated", "found",
+                  "please", "pls", "po", "ba", "man", "gud", "samar", "college", "colleges", "inc", "at", "in"}
+
+
+def office_location_subject(query):
+    """The named office/place of a 'where is X?' question, or '' when X is not a specific place.
+
+    Handles any office (library, clinic, cashier, OSAS ...). The registrar and
+    the school's own address have dedicated handlers and are excluded here.
+    """
+    text = request_text(query) if isinstance(query, str) else ""
+    if not text or campus_location_queries(text) or registrar_location_queries(text):
+        return ""
+    flat = " ".join(re.findall(r"[a-z0-9']+", text.lower()))
+    subject = ""
+    for pattern in (
+        r"\b(?:where|diin|hain|saan|asa)\s+(?:(?:is|are|can\s+i\s+find|do\s+i\s+find|mabibilngan|matatagpuan|nahimutang)\s+)?(?P<s>.+)$",
+        r"\b(?:location|address|floor|building|directions?)\s+(?:(?:is|of|to|for|han|hit|ng|sa|ha)\s+)+(?P<s>.+)$",
+        r"^(?P<s>.+?)\s+(?:office\s+)?(?:location|address)$",
+        r"^(?P<s>.+?)\s+(?:office\s+)?(?:is\s+)?located$",
+    ):
+        match = re.search(pattern, flat)
+        if match:
+            subject = match["s"]
+            break
+    words = [w for w in subject.split() if w not in {"the", "a", "an", "ang", "an"}]
+    words = [w for w in words if w not in {"located", "situated", "found", "please", "pls", "po", "ba", "man", "gud"}]
+    if not words or len(words) > 6 or words[0] in _NOT_A_PLACE or any(w in {"my", "our", "your"} for w in words):
+        return ""
+    cleaned = " ".join(words)
+    if not re.search(rf"\b(?:{_PLACE_NOUN})\b", cleaned):
+        return ""
+    return cleaned
+
+
+def office_location_queries(query):
+    subject = office_location_subject(query)
+    if not subject:
+        return []
+    return [f"{subject} location building floor address", f"{subject} office hours location"]
+
+
+def office_location_documents(documents, subject):
+    """Keep only passages that name the office AND place it, near each other."""
+    tokens = [t for t in re.findall(r"[a-z0-9]+", (subject or "").lower()) if t not in _OFFICE_FILLER]
+    if not tokens:
+        return []
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        scope = " ".join(str(metadata.get(key) or "") for key in _HEADINGS) + "\n" + text
+        low = scope.lower()
+        if not all(re.search(rf"\b{re.escape(t)}", low) for t in tokens):
+            continue
+        # (a) the place words sit right next to the office's name, or
+        near = any(
+            _PLACE_WORDS.search(scope[max(0, match.start() - 90):match.end() + 90])
+            for match in re.finditer(rf"\b{re.escape(tokens[0])}", low)
+        )
+        # (b) the office OWNS the section the address sits in (heading names it).
+        heading = " ".join(str(metadata.get(key) or "") for key in _HEADINGS).lower()
+        owns = (all(re.search(rf"\b{re.escape(t)}", heading) for t in tokens)
+                and re.search(r"\blocation\b", low) and _PLACE_WORDS.search(text))
+        if near or owns:
             selected.append(document)
     return selected
 
@@ -1468,22 +1625,36 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         grouped = {}
         for index, doc in enumerate(documents):
             source = doc_key((getattr(doc, "metadata", None) or {}).get("source", ""))
-            if exclude_handbook and (source in baselines or "handbook" in source):
-                continue
             for category in sorted(_aid_categories(doc)):
                 grouped.setdefault(category, []).append(index)
         groups = []
         superseded = set()
         for indexes in grouped.values():
+            category_indexes = indexes
+            if exclude_handbook:
+                indexes = [i for i in indexes if (source_by_index := doc_key(
+                    (getattr(documents[i], "metadata", None) or {}).get("source", "")
+                )) not in baselines and "handbook" not in source_by_index]
+                if category_indexes and not indexes:
+                    print(f"  [retrieval-filter] handbook exclusion emptied an aid category for {question!r}; "
+                          f"retaining {len(category_indexes)} unfiltered category candidates")
+                    indexes = category_indexes
             source_by_index = {i: doc_key((getattr(documents[i], "metadata", None) or {}).get("source", "")) for i in indexes}
             if not historical and (enforce_sources or current_only):
+                category_pool = indexes
                 _, current, dated, _ = _chronology(set(source_by_index.values()), dates=dates, uploads=uploads,
                                                    today=today, fallback_sources=fallback_sources)
                 newest = max(dated.values(), default=None)
                 preferred = current or {source for source, stamp in dated.items() if stamp == newest}
                 if preferred or current_only:
-                    superseded.update(i for i in indexes if source_by_index[i] not in preferred)
-                    indexes = [i for i in indexes if source_by_index[i] in preferred]
+                    eligible_indexes = [i for i in indexes if source_by_index[i] in preferred]
+                    if category_pool and not eligible_indexes:
+                        print(f"  [retrieval-filter] current-source aid filter emptied a category for {question!r}; "
+                              f"retaining {len(category_pool)} unfiltered category candidates")
+                        indexes = category_pool
+                    else:
+                        superseded.update(i for i in indexes if source_by_index[i] not in preferred)
+                        indexes = eligible_indexes
             if indexes:
                 groups.append(indexes)
         # Reserve one result per policy category before filling with continuations.
@@ -1491,16 +1662,29 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         groups = [[i for i in group if i not in superseded] for group in groups]
         ordered = dict.fromkeys(i for row in zip_longest(*groups) for i in row if i is not None)
         retained = [documents[i] for i in list(ordered)[:limit]]
+        retained = filter_documents_or_fallback(
+            documents, retained, filter_name="financial-aid category/source", query=question,
+        )
         retained_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in retained}
         # Continue discovery across editions so a current update for one category
         # does not suppress discovery of the remaining categories.
         return Selection(retained, False, tuple(sorted(original_sources - retained_sources)), "")
     if queries and curriculum_queries(queries[0]):
-        documents = curriculum_documents(documents, queries[0])
+        documents = filter_documents_or_fallback(
+            documents, curriculum_documents(documents, queries[0]), filter_name="curriculum", query=queries[0],
+        )
     if queries and grading_queries(queries[0]):
-        documents = grading_documents(documents, queries[0])
+        documents = filter_documents_or_fallback(
+            documents, grading_documents(documents, queries[0]), filter_name="grading", query=queries[0],
+        )
     if queries and student_id_queries(queries[0]):
-        documents = student_id_documents(documents)
+        documents = filter_documents_or_fallback(
+            documents, student_id_documents(documents), filter_name="student-ID", query=queries[0],
+        )
+    # Location/navigation are EVIDENCE gates, not scoping filters. If no passage
+    # actually states the address, the right outcome is "cannot confirm", not
+    # the unfiltered pool: that let any chunk containing the word LOCATION (the
+    # dental clinic's) stand in as the school's address.
     if queries and campus_navigation_queries(queries[0]):
         documents = campus_navigation_documents(documents)
     if queries and campus_location_queries(queries[0]):
@@ -1509,7 +1693,10 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
     if enrollment:
         # A shared-procedure probe must also contribute to relevance, not just recall.
         queries = list(dict.fromkeys([*queries, *enrollment_queries(queries[0])]))
-    unit = requested_unit(queries[0]) if queries else None
+    # School-level labels in grading questions (e.g. "graduate school") are
+    # policy scope, not a named department whose catalog identity should filter
+    # the already level-scoped grading passages.
+    unit = requested_unit(queries[0]) if queries and not grading_queries(queries[0]) else None
     # Keep proven unit captions on qualifications tables for broad listings too.
     catalog_headings = {}
     for document in documents:
@@ -1533,6 +1720,7 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
             document.metadata = {**metadata, "collection_heading": heading}
         linked.append(document)
     documents = linked
+    unit_filter_failed = False
     if unit:
         matching = [doc for doc in documents if document_matches_unit(doc, unit)
                     or (enrollment and _shared_enrollment(doc))]
@@ -1541,29 +1729,45 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
             document_unit_names(doc) for doc in documents
         )
         if named or matching or conflicting_units:
-            documents = matching
+            documents = filter_documents_or_fallback(
+                documents, matching, filter_name=f"unit {unit.name}", query=queries[0],
+            )
+            if not matching:
+                unit = None
+                unit_filter_failed = True
         else:
             unit = None
     if ((enrollment and not any(program_catalog_queries(query) or department_catalog_queries(query) for query in queries))
             or (queries and deans_list_queries(queries[0]))):
-        documents = [doc for doc in documents if _relevant(doc, queries, unit)]
+        filter_name = "enrollment relevance" if enrollment else "Dean's List relevance"
+        documents = filter_documents_or_fallback(
+            documents, [doc for doc in documents if _relevant(doc, queries, unit)],
+            filter_name=filter_name, query=queries[0] if queries else "",
+        )
     sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in documents}
     ordinary = Selection(documents[:limit], False, tuple(sorted(original_sources - sources)),
                          unit.name if unit else "")
+    if unit_filter_failed:
+        # Preserve candidates without claiming that a current source established
+        # the requested identity; the broader pass may find a matching old unit.
+        return ordinary
     if queries and institution_history_queries(queries[0]):
         # Past events need relevant historical evidence, not the newest upload.
         # Filter before limits so curriculum subjects named History cannot crowd
         # the institutional narrative out of the reranker candidate budget.
-        historical = [doc for doc in documents if _relevant(doc, queries, unit)]
+        historical = filter_documents_or_fallback(
+            documents, [doc for doc in documents if _relevant(doc, queries, unit)],
+            filter_name="historical relevance", query=queries[0],
+        )
         if not _historical(queries[0], today):
             # An explicit instruction to exclude the handbook still applies to
             # a history question; the historical subject does not override it.
             baselines = _chronology(sources, dates=dates, uploads=uploads, today=today,
                                     fallback_sources=fallback_sources)[0]
-            historical = [doc for doc in historical if (
+            historical = filter_documents_or_fallback(historical, [doc for doc in historical if (
                 (source := doc_key((getattr(doc, "metadata", None) or {}).get("source", ""))) not in baselines
                 and "handbook" not in source
-            )]
+            )], filter_name="historical handbook exclusion", query=queries[0])
         retained_sources = {doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) for doc in historical}
         return Selection(historical[:limit], False, tuple(sorted(original_sources - retained_sources)), unit.name if unit else "")
     if not enforce_sources or not queries or _historical(queries[0], today):
@@ -1593,16 +1797,32 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         ):
             # A historical fallback cannot establish explicitly requested current
             # offerings. Historical/version requests returned above stay intact.
-            return Selection([], False, tuple(sorted(original_sources)), unit.name if unit else "")
+            print(f"  [retrieval-filter] current catalog source filter emptied the pool for {queries[0]!r}; "
+                  f"retaining {len(documents)} unfiltered candidates")
+            return Selection(documents[:limit], False, tuple(sorted(original_sources)), unit.name if unit else "")
+        if documents:
+            print(f"  [retrieval-filter] eligible-source filter emptied the pool for {queries[0]!r}; "
+                  f"retaining {len(documents)} unfiltered candidates")
         return ordinary
     department_list = bool(department_catalog_queries(queries[0]))
     if department_list:
         catalogs = {doc_key((getattr(doc, "metadata", None) or {}).get("source", ""))
                     for doc, rank in zip(documents, relevance) if rank == 2}
-        selected = selected & catalogs or selected
+        catalog_sources = selected & catalogs
+        if selected and not catalog_sources:
+            print(f"  [retrieval-filter] department-catalog source filter emptied the pool for {queries[0]!r}; "
+                  f"retaining {len(selected)} source candidates")
+        else:
+            selected = catalog_sources
     retained = [doc for doc, rank in zip(documents, relevance)
                 if doc_key((getattr(doc, "metadata", None) or {}).get("source", "")) in selected
                 and (not department_list or rank)]
+    filtered_retained = retained
+    retained = filter_documents_or_fallback(
+        documents, retained, filter_name="eligible-source relevance", query=queries[0],
+    )
+    if documents and not filtered_retained:
+        return Selection(retained[:limit], False, tuple(sorted(original_sources)), unit.name if unit else "")
     return Selection(retained[:limit], True, tuple(sorted(original_sources - selected)), unit.name if unit else "")
 
 

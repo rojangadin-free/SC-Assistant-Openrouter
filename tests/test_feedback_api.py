@@ -65,6 +65,7 @@ _fake_chain.stream_answer = lambda *a, **k: iter(())
 sys.modules["rag.chain"] = _fake_chain
 
 _fake_s3 = types.ModuleType("aws.s3")
+_fake_s3.read_s3_file = lambda *a, **k: b""
 _fake_s3.get_s3_presigned_url = lambda *a, **k: None
 _fake_s3.upload_file_to_s3 = lambda *a, **k: None
 _fake_s3.delete_file_from_s3 = lambda *a, **k: None

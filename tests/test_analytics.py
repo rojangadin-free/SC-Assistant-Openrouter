@@ -77,6 +77,7 @@ _fake_chain.embeddings = None
 sys.modules["rag.chain"] = _fake_chain
 
 _fake_s3 = types.ModuleType("aws.s3")
+_fake_s3.read_s3_file = lambda *a, **k: b""
 for _n in ("get_s3_presigned_url", "upload_file_to_s3", "delete_file_from_s3"):
     setattr(_fake_s3, _n, lambda *a, **k: None)
 _fake_s3.list_s3_files = lambda *a, **k: []

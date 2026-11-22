@@ -39,11 +39,14 @@ from src.helper import (
     is_low_value_chunk,
     is_heading_line,
     is_major_heading,
+    drop_toc_text,
+    build_chunk_context_header,
     get_vision_client,
     encode_image
 )
 
 from aws.s3 import upload_file_to_s3
+from rag.unit_identity import unit_context_alias
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -439,6 +442,8 @@ def process_pdf(filepath: str, filename: str,
                 )
 
             if page_text.strip():
+                page_text = drop_toc_text(page_text)
+            if page_text.strip():
                 docs.append(
                     Document(
                         page_content=page_text,
@@ -759,7 +764,10 @@ def process_docx_linear(filepath: str, filename: str) -> List[Document]:
         
     documents = []
     for sec in sections:
-        content = "\n\n".join(sec["lines"]).strip()
+        if re.fullmatch(r"\s*(?:#{1,6}\s*)?(?:table\s+of\s+contents?|contents)\s*[:.]?\s*",
+                        sec["heading"], re.I):
+            continue
+        content = drop_toc_text("\n\n".join(sec["lines"]).strip())
         if content:
             documents.append(
                 Document(
@@ -936,6 +944,16 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
     Chunk a list of Documents with cross-page continuation merging,
     bidirectional stitching, and persistent section headers.
     """
+    cleaned_docs = []
+    for doc in raw_docs:
+        heading = str(doc.metadata.get("section_heading") or "")
+        if re.fullmatch(r"\s*(?:#{1,6}\s*)?(?:table\s+of\s+contents?|contents)\s*[:.]?\s*", heading, re.I):
+            continue
+        doc.page_content = drop_toc_text(doc.page_content or "")
+        if doc.page_content.strip():
+            cleaned_docs.append(doc)
+    raw_docs = cleaned_docs
+
     # Merge cross-page continuations FIRST so lists are not cut at page breaks.
     raw_docs = merge_continuation_pages(raw_docs)
 
@@ -1004,8 +1022,20 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
             ):
                 section_path = f"{collection} / {section_match.group(1).strip()}"
                 text = f"[SECTION: {section_path}]" + text[section_match.end():]
+                section_match = re.match(r"^\[SECTION:\s*([^\]]*)\]", text)
             if is_low_value_chunk(text):
                 continue
+
+            section_heading = (
+                doc.metadata.get("section_heading")
+                if is_docx_section and section_match and section_match.group(1).strip() == "General College Information"
+                else section_match.group(1).strip() if section_match else
+                doc.metadata.get("section_heading") or current_header
+            )
+            context_header = build_chunk_context_header(
+                section_heading, collection or "", source, alias_lookup=unit_context_alias,
+            )
+            text = f"{context_header}\n{text}"
 
             cid = generate_chunk_id(
                 doc.metadata.get("source", ""),
@@ -1022,9 +1052,7 @@ def _chunk_and_dedup(raw_docs: List[Document]) -> List[Document]:
             meta["chunk_index"] = idx
             meta["chunk_id"] = cid
             # Persist the detected section so retrieval/debugging can use it.
-            sec = re.match(r"^\[SECTION:\s*([^\]]*)\]", text)
-            if sec:
-                meta["section"] = sec.group(1).strip()[:200]
+            meta["section"] = section_heading[:200]
             final_chunks.append(Document(page_content=text, metadata=meta))
 
     return final_chunks

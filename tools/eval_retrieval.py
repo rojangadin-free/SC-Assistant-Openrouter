@@ -24,7 +24,9 @@ Usage
 import _bootstrap  # noqa: F401
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -85,13 +87,31 @@ CASES = [
 ]
 
 
-def check(docs, markers):
+def load_paraphrase_cases():
+    path = Path(__file__).resolve().parents[1] / "evaluation" / "paraphrase_cases.jsonl"
+    with path.open(encoding="utf-8") as cases_file:
+        return [json.loads(line) for line in cases_file if line.strip()]
+
+
+def check(docs, markers, expected_source=None, expected_section=None):
     """Return {marker: rank or None} for the given ranking."""
     found = {}
     for m in markers:
         found[m] = next(
             (i + 1 for i, d in enumerate(docs) if m.lower() in d.page_content.lower()),
             None,
+        )
+    if expected_source or expected_section:
+        found["expected source + section"] = next(
+            (i + 1 for i, document in enumerate(docs)
+             if (not expected_source or Path(str((getattr(document, "metadata", None) or {}).get("source", "")
+                                                    ).replace("\\", "/")).name.casefold() == expected_source.casefold())
+             and (not expected_section or expected_section.casefold() in (
+                 (getattr(document, "page_content", "") or "") + " " + " ".join(
+                     str((getattr(document, "metadata", None) or {}).get(key) or "")
+                     for key in ("collection_heading", "section_heading", "section", "header")
+                 )
+             ).casefold())), None,
         )
     return found
 
@@ -107,7 +127,8 @@ def main():
     total = 0
     passed = 0
 
-    for case in CASES:
+    cases = [*CASES, *load_paraphrase_cases()]
+    for case in cases:
         print("\n" + "=" * 78)
         print(f"CASE: {case['name']}")
         print(f"  question: {case['question']}")
@@ -119,6 +140,11 @@ def main():
         variants += [
             (f"rewrite: {r[:52]}", r, case["question"]) for r in case["rewrites"]
         ]
+        if case.get("expected_source"):
+            # Paraphrases must stand on their own, without the canonical
+            # question supplying the topic or academic level during routing.
+            variants = [(f"paraphrase: {query[:52]}", query, None)
+                        for query in [case["question"], *case["rewrites"]]]
 
         for label, query, user_question in variants:
             docs = retrieve_documents(
@@ -127,7 +153,7 @@ def main():
                 verbose=args.verbose,
                 user_question=user_question,
             )
-            found = check(docs, case["must_include"])
+            found = check(docs, case["must_include"], case.get("expected_source"), case.get("expected_section"))
             ok = all(v is not None for v in found.values())
 
             total += 1

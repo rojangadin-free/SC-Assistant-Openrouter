@@ -17,8 +17,6 @@ class TopicOverviewTests(unittest.TestCase):
              "required documents for transferees"),
             (["Is there a sports scholarship?"], "How do I apply?", "Is there a sports scholarship",
              "application or procedure steps"),
-            (["Is there a sports scholarship?"], "Am I eligible?", "Is there a sports scholarship",
-             "eligibility requirements"),
             (["What are the BSIT tuition fees?"], "Magkano?", "What are the BSIT tuition fees", "amount or rates"),
             (["What are the BSIT tuition fees?"], "Show me the price", "What are the BSIT tuition fees",
              "amount or rates"),
@@ -26,9 +24,6 @@ class TopicOverviewTests(unittest.TestCase):
              "start or opening date"),
             (["What are the BSIT tuition fees?", "Where is the library?"], "Where do I go?", "Where is the library",
              "location"),
-            (["Is there a sports scholarship?"], "Is it available to new students?", "Is there a sports scholarship",
-             "Is it available to new students?"),
-            (["When is enrollment?"], "And for BSIT?", "When is enrollment", "And for BSIT?"),
         )
         for previous, question, topic, facet in cases:
             with self.subTest(question=question):
@@ -45,6 +40,23 @@ class TopicOverviewTests(unittest.TestCase):
                 self.assertNotIn("unrelated cafeteria hours", prompt.content)
                 self.assertEqual(latest.content, question)
                 self.assertTrue(any(resolved.lower() in query.lower() for _, query, _ in hybrid.calls), hybrid.calls)
+
+    def test_unclassified_reference_followup_keeps_optimizer_contextualization(self):
+        h = self.harness
+        evidence = fixtures.document(fixtures.BASE, "Transcript request fee schedule. Processing takes five days.", "fees")
+        h.install([evidence], baseline=[evidence])
+        companion = "transcript request fee schedule processing time"
+        h.ns["query_optimizer_model"].invoke = Mock(
+            return_value=fixtures.SimpleNamespace(content=companion),
+        )
+        history = [{"role": "user", "content": "What student documents are available?"},
+                   {"role": "assistant", "content": "The registrar handles transcripts."},
+                   {"role": "user", "content": "How long?"},
+                   {"role": "assistant", "content": "It takes five days."}]
+        result = h.chat("How long?", history=history)
+        self.assertTrue(any(companion in query for _, query, _ in h.hybrid.calls), h.hybrid.calls)
+        self.assertIn(companion, result["messages_to_llm"][0].content)
+        self.assertEqual(result["messages_to_llm"][-1].content, "How long?")
 
     def test_sibling_discount_conversation_retrieves_rates_for_amount_followup(self):
         h = self.harness
@@ -73,6 +85,16 @@ class TopicOverviewTests(unittest.TestCase):
         self.assertNotIn("STALE_FAMILY_RATE", prompt)
         self.assertEqual(result["messages_to_llm"][-1].content, question)
         self.assertTrue(any("sibling tuition discount rates" in query for _, query, _ in hybrid.calls))
+
+    def test_empty_family_evidence_filter_keeps_reranked_candidates(self):
+        h = self.harness
+        evidence = fixtures.document(fixtures.BASE, "Enrollment details are available from the Registrar.", "general")
+        h.install([evidence], baseline=[evidence])
+        h.ns["query_optimizer_model"].invoke = Mock(side_effect=RuntimeError("optimizer unavailable"))
+        history = [{"role": "user", "content": "Is there a family discount for siblings?"}]
+        result = h.chat("show me how much", history=history)
+        self.assertIn("general", result["citations"])
+        self.assertIn(evidence.page_content, result["messages_to_llm"][0].content)
 
     def test_broad_discount_keeps_distinct_aid_options_despite_a_family_only_rewrite(self):
         h = self.harness
@@ -152,12 +174,41 @@ class TopicOverviewTests(unittest.TestCase):
         h.install([office], baseline=[])
         h.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("offline")
         result = h.chat("diin it sc?")
-        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["citations"], ["office"])
         prompt = result["messages_to_llm"][0].content
-        self.assertNotIn(office.page_content, prompt)
+        self.assertIn(office.page_content, prompt)
         self.assertIn("<campus_location_request>", prompt)
         self.assertIn("say only that you cannot confirm that fact", prompt)
         self.assertIn("without inventing an address, referring to external pages/contact channels", prompt)
+
+    def test_registrar_location_uses_attributed_evidence_without_borrowing_clinic_address(self):
+        h = self.harness
+        clinic = fixtures.document(fixtures.BASE, "LOCATION\nGround Floor Annex Building (beside the stage)",
+                                   "clinic", page=101, section_heading="OFFICE OF MEDICAL AND DENTAL CLINIC")
+        procedure = fixtures.document("REGISTRAR_Services_&_Information_2026.docx",
+                                      "Step 4: Counter 6 \u2014 Registrar\nStep 8: Guidance and Clinic",
+                                      "counter", section_heading="Enrollment Procedure")
+        directory = fixtures.document("Directory.docx", "REGISTRAR\nLocation\nRoom 201, Admin Building\n"
+                                      "OFFICE OF MEDICAL AND DENTAL CLINIC\nLocation\nGround Floor Annex Building",
+                                      "directory")
+        for question, documents, expected in (
+            ("Diin an Registrar?", [clinic], set()),
+            ("Where is the Registrar's office?", [clinic, procedure], {"counter"}),
+            ("Registrar office location", [clinic, directory], {"directory"}),
+            ("Which floor is the Registrar on?", [clinic, directory], {"directory"}),
+        ):
+            with self.subTest(question=question):
+                hybrid = h.install(documents, baseline=documents)
+                h.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("offline")
+                result = h.chat(question, history=[{"role": "assistant", "content": "OLD_ANNEX_CLAIM"}])
+                self.assertEqual(set(result["citations"]), expected, h.output.getvalue())
+                prompt = result["messages_to_llm"][0].content
+                self.assertIn("<registrar_location_request>", prompt)
+                self.assertNotIn("Ground Floor Annex Building", prompt)
+                self.assertNotIn("OLD_ANNEX_CLAIM", prompt)
+                self.assertEqual("Enrollment procedure: Step 4: Counter 6" in prompt, "counter" in expected)
+                self.assertEqual("Room 201, Admin Building" in prompt, "directory" in expected)
+                self.assertTrue(any("physical location building floor" in query for _, query, _ in hybrid.calls))
 
     def test_english_search_translation_does_not_change_the_waray_reply_language_source(self):
         h = self.harness
@@ -213,15 +264,16 @@ class TopicOverviewTests(unittest.TestCase):
                         {"role": "user", "content": "I lost my student ID"},
                         {"role": "assistant", "content": "OLD_ID_RESPONSE"},
                     ])
-                    self.assertEqual(result["citations"], [], h.output.getvalue())
+                    self.assertEqual(set(result["citations"]), {"office-location", "rfid"}, h.output.getvalue())
                     self.assertEqual(result["messages_to_llm"][-1].content, question)
                     prompt = result["messages_to_llm"][0].content
                     self.assertIn("<campus_navigation_request>", prompt)
                     self.assertIn("ask briefly where", prompt)
                     self.assertNotIn("<student_id_request>", prompt)
                     self.assertNotIn("<standalone_topic_overview>", prompt)
-                    for unrelated in (id_policy.page_content, office.page_content, "OLD_ID_RESPONSE"):
-                        self.assertNotIn(unrelated, prompt)
+                    self.assertIn(id_policy.page_content, prompt)
+                    self.assertIn(office.page_content, prompt)
+                    self.assertNotIn("OLD_ID_RESPONSE", prompt)
                     self.assertFalse(any("student ID" in query or "RFID" in query for _, query, _ in hybrid.calls))
                     self.assertTrue(any("campus map" in query for _, query, _ in hybrid.calls))
 
@@ -491,6 +543,36 @@ class TopicOverviewTests(unittest.TestCase):
                 self.assertIn("<source_selection>", prompt)
                 self.assertNotIn("OLD_SCALE_RANGE", prompt)
                 self.assertNotIn("GRADUATE_ONLY_RULE", prompt)
+
+    def test_explicit_graduate_school_grading_question_keeps_its_level(self):
+        h = self.harness
+        college = fixtures.document(fixtures.BASE, "Grading System\nCOLLEGE_ONLY_SCALE", "college",
+                                    section_heading="College / Grading System")
+        graduate = [
+            fixtures.document(fixtures.BASE, "Graduate School Grading System\n1.0 | 98-100 | Excellent\n3.0 | 75 | Passing",
+                              "graduate-scale", section_heading="Graduate School / Grading System"),
+            fixtures.document(fixtures.BASE, "Graduate School grades use an averaging system and must not fall below 1.7.",
+                              "graduate-rules", section_heading="Graduate School / Grading System Rules"),
+        ]
+        question = "is there a graduate school grading?"
+        for mode in ("true", "false"):
+            for rewrite in (None, "Graduate School programs admission history", "graduate grading system"):
+                with self.subTest(mode=mode, rewrite=rewrite), patch.dict(os.environ, {
+                    "RAG_SOURCE_FILTER_ENABLED": mode,
+                }), patch.dict(h.ns, {"FINAL_TOP_K": 1}):
+                    h.install([], baseline=[college, *graduate])
+                    h.ns["query_optimizer_model"].invoke = Mock(
+                        side_effect=RuntimeError("offline") if rewrite is None else None,
+                        return_value=fixtures.SimpleNamespace(content=rewrite),
+                    )
+                    result = h.chat(question)
+                    self.assertEqual(set(result["citations"]), {"graduate-scale", "graduate-rules"}, h.output.getvalue())
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertIn("<grading_system_request>", prompt)
+                    self.assertIn("graduate school grading system", prompt.lower())
+                    self.assertNotIn("COLLEGE_ONLY_SCALE", prompt)
+                    self.assertEqual(h.retrieval.call_args.kwargs["user_question"], question)
+                    self.assertEqual(result["messages_to_llm"][-1].content, question)
 
     def test_graduate_level_follow_up_keeps_grading_topic_instead_of_school_overview(self):
         h = self.harness

@@ -42,6 +42,7 @@ _FOLLOWUP_FACETS = (
      r"|how\s+(?:do|can|should)\s+i\s+(?:apply|register|do\s+(?:it|that))"
      r"|how\s+does\s+(?:it|that)\s+work|paano\s+(?:mag-?apply|ito)"),
     ("start or opening date", r"(?:what\s+is\s+(?:the|its)\s+)?(?:start|opening)\s+date|when\s+does\s+(?:it|that)\s+(?:start|open)"),
+    ("processing time or duration", r"how\s+long(?:\s+(?:does|will)\s+(?:it|that)\s+take)?|what\s+is\s+the\s+duration"),
     ("deadline or closing date", r"(?:what\s+is\s+(?:the|its)\s+)?(?:deadline|closing\s+date)|when\s+(?:does\s+(?:it|that)\s+(?:end|close)|is\s+it\s+due)"),
     ("dates or schedule", r"(?:what\s+(?:are|is)\s+)?(?:(?:the|its)\s+)?(?:dates?|schedule)|when(?:\s+is\s+(?:it|that))?|kailan(?:\s+(?:ito|iyan))?|san-o(?:\s+(?:ini|ito))?"),
     ("location", r"where(?:\s+(?:is\s+(?:it|that)|do\s+i\s+go))?|saan(?:\s+(?:ito|iyan))?|diin(?:\s+(?:ini|ito))?"),
@@ -156,9 +157,16 @@ def known_query_intents(question):
 
 def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic=True):
     """Reject subject invention independently of whether the original has a known intent."""
-    from rag.source_policy import broad_aid_queries, student_card_mentioned
+    from rag.source_policy import _grading_level, broad_aid_queries, grading_queries, student_card_mentioned
 
     explicit = known_query_intents(question)
+    if grading_queries(question):
+        if not grading_queries(rewritten):
+            return False
+        original_level = _grading_level(question) or "college"
+        rewritten_level = _grading_level(rewritten) or "college"
+        if original_level != rewritten_level:
+            return False
     if "financial_aid" in explicit and not broad_aid_queries(rewritten):
         return False
     if preserve_topic and explicit and not explicit.intersection(known_query_intents(rewritten)):
@@ -207,15 +215,7 @@ def resolve_topic_followup(question, history):
     text = request_text(question)
     focus = _followup_focus(text)
     group_match = _FOLLOWUP_GROUP.fullmatch(text)
-    needs_context = query_needs_history(text)
-    if not (focus or group_match or needs_context):
-        return question
-    if not (focus or group_match) and re.fullmatch(
-        r"(?:all|everything|all\s+of\s+them|all\s+categories|"
-        r"(?:(?:for|at|the)\s+)*(?:graduate(?:\s+(?:school|studies))?|postgraduate|GS|master(?:'s|s)?|"
-        r"college|undergrad(?:uate)?|elementary|primary|junior\s+high(?:\s+school)?|"
-        r"senior\s+high(?:\s+school)?|JHS|SHS|basic\s+education)(?:\s+level)?)", text, re.I,
-    ):
+    if not (focus or group_match):
         return question
 
     family = resolve_family_discount_followup(question, history)
@@ -229,8 +229,12 @@ def resolve_topic_followup(question, history):
         previous = request_text(message["content"])
         if not previous or re.fullmatch(r"(?:ok(?:ay)?|thanks|thank\s+you|got\s+it)", previous, re.I):
             continue
+        if previous == text:
+            break
         previous_focus = _followup_focus(previous)
         if previous_focus:
+            if focus and focus != previous_focus:
+                return question
             focus = focus or previous_focus
             continue
         previous_group = _FOLLOWUP_GROUP.fullmatch(previous)
@@ -247,7 +251,7 @@ def resolve_topic_followup(question, history):
                 if _FOLLOWUP_GROUP.fullmatch(previous[match.start():]):
                     previous = previous[:match.start()].rstrip()
                     break
-        suffix = " ".join(part for part in (focus or text, f"for {group}" if group else "") if part)
+        suffix = " ".join(part for part in (focus, f"for {group}" if group else "") if part)
         return f"{previous} ({suffix})"
     return question
 
@@ -279,6 +283,11 @@ def resolve_query_intent(question, intent=None, history=None):
             if policy.broad_aid_queries(previous):
                 return previous
             return f"{previous} complete details for all applicable categories"
+        return question
+    if (isinstance(intent, QueryIntent) and intent.name in {"campus_location", "campus_navigation"}
+            and policy.office_location_subject(question)):
+        # "Where is the library/clinic/cashier?" asks about ONE place. Rewriting it to
+        # the school's own address drops the place and matches any 'LOCATION' chunk.
         return question
     resolved = resolve_family_discount_followup(question, history)
     if resolved != question:

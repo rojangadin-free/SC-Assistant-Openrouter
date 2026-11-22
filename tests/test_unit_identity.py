@@ -10,7 +10,7 @@ from rag.source_policy import Selection, unit_selection_guidance
 from rag.spelling import correct_query, is_known_acronym
 from rag.unit_identity import (
     document_matches_unit, program_affiliations, program_dean_subject, program_overview_subject,
-    requested_unit, same_unit, unit_query_variants,
+    requested_unit, same_unit, unit_context_alias, unit_query_variants,
 )
 
 
@@ -367,6 +367,37 @@ class UnitIdentityTests(unittest.TestCase):
                 self.assertEqual(request.name, name)
                 self.assertTrue(document_matches_unit(document(name), request))
                 self.assertFalse(document_matches_unit(document(other), request))
+
+    def test_policy_topics_are_not_absorbed_into_unit_names(self):
+        for question, expected_name, expected_remainder in (
+            ("is there a graduate school grading?", "Graduate School", "is there a grading"),
+            ("College of Education grading system", "College of Education", "grading system"),
+            ("Graduate School tuition", "Graduate School", "tuition"),
+            ("Graduate School fees and requirements", "Graduate School", "fees and requirements"),
+            ("College of Education curriculum", "College of Education", "curriculum"),
+        ):
+            with self.subTest(question=question):
+                request = requested_unit(question)
+                self.assertIsNotNone(request)
+                self.assertEqual(request.name.casefold(), expected_name.casefold())
+                self.assertEqual(" ".join(request.remainder.split()), expected_remainder)
+        for question in ("Office of Graduate Programs", "Department of Curriculum Studies",
+                         "Department of Curriculum and Instruction"):
+            with self.subTest(question=question):
+                self.assertEqual(requested_unit(question).name, question)
+
+    def test_index_context_aliases_expand_known_acronyms_from_unit_and_spelling_tables(self):
+        for acronym, expanded in (
+            ("GS", "Graduate School"),
+            ("CITAS", "College of Information Technology and Allied Sciences"),
+            ("CoEd", "College of Education"),
+            ("CLAS", "College of Liberal Arts and Sciences"),
+            ("SCTI", "Samar College Technological Institute"),
+            ("COCJE", "College of Criminal Justice Education"),
+        ):
+            with self.subTest(acronym=acronym):
+                self.assertEqual(unit_context_alias(f"{acronym} - Programs Offered"), (expanded, acronym))
+                self.assertTrue(is_known_acronym(acronym))
 
     def test_only_independent_single_unit_requests_are_bound(self):
         for question in ("college department", "which college units exist?", "and for BSIT", "and for art",

@@ -119,7 +119,7 @@ _CONTEXT_AFTER: Dict[str, Tuple[str, ...]] = {
 # the real documents contain. Entries here are the terms whose misspelling is
 # most expensive — the ones that decide WHICH page is the right page.
 _SEED_ACRONYMS = (
-    "cas", "clas", "scti", "citas", "coed", "bsit", "bsed", "beed", "bsba", "bscs",
+    "cas", "clas", "scti", "citas", "coed", "cocje", "gs", "bsit", "bsed", "beed", "bsba", "bscs",
     "bsais", "bmma", "bscrim", "maed", "shs", "jhs",
 )
 

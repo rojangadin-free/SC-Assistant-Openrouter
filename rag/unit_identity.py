@@ -17,6 +17,11 @@ _TAIL = re.compile(
     r"when|why|how|which|at)\b|"
     r"\b(?:in|during|as of|from|for(?:\s+(?:the\s+)?(?:school|academic)\s+year)?)\s+20\d{2}\b", re.IGNORECASE,
 )
+_POLICY_TOPIC = r"(?:grading|grades?|tuition|fees?|curriculum|schedule|policy|requirements?|admission|enrollment|registration|scholarships?|discounts?|subjects?|courses?)"
+_TOPIC_TAIL = re.compile(
+    rf"\b{_POLICY_TOPIC}\b(?:\s+(?:and|or)\s+\b{_POLICY_TOPIC}\b)*"
+    r"(?:\s+(?:systems?|scales?|tables?|guidelines?|process(?:es)?|procedures?))*", re.IGNORECASE,
+)
 _CONNECTORS = {"of", "for", "and", "the", "a", "an"}
 _GENERIC = {"it", "me", "us", "we", "my", "what", "which", "who", "where", "when", "how", "why",
             "college", "school", "campus", "office", "faculty", "unit", "dean", "head", "staff",
@@ -32,6 +37,11 @@ _UNIT_ALIASES = {
     "clas": "College of Liberal Arts and Sciences",
     "college of liberal arts": "College of Liberal Arts and Sciences",
     "scti": "Samar College Technological Institute",
+}
+_INDEX_CONTEXT_ALIASES = {
+    "gs": "Graduate School",
+    "citas": "College of Information Technology and Allied Sciences",
+    "cocje": "College of Criminal Justice Education",
 }
 _ROLE_PREFIX = (
     r"(?:the\s+)?(?:(?:oic|acting|interim|assistant|associate)[\s-]+)*"
@@ -135,6 +145,9 @@ def _names(text):
             if tail.start() > 0:
                 end = head.end() + tail.start()
                 break
+        topic = _TOPIC_TAIL.search(body)
+        if topic and topic.start() > 0 and not body[topic.end():].strip(" ?.!,;:"):
+            end = min(end, head.end() + topic.start())
         name = text[head.start():end].strip(" ,\t")
         name = re.sub(r"(?:\s+(?:and|or|the|a|an))+$", "", name, flags=re.IGNORECASE)
         if len(_tokens(name)) >= 2 and len(name) <= 180:
@@ -153,7 +166,11 @@ def requested_unit(question):
     if len(names) == 1:
         name, start, end = names[0]
         remainder = question[:start] + " " + question[end:]
-        if not re.search(r"\b(?:and|or|versus|vs)\b|;", remainder, re.IGNORECASE):
+        compound = re.search(r"\b(?:and|or|versus|vs)\b|;", remainder, re.IGNORECASE)
+        topic_suffix = _TOPIC_TAIL.search(question)
+        topic_compound = (compound and topic_suffix and topic_suffix.start() >= end
+                          and re.search(r"\b(?:and|or)\b", topic_suffix[0], re.IGNORECASE))
+        if not compound or topic_compound:
             return UnitRequest(name, remainder)
     if names:
         return None
@@ -229,6 +246,20 @@ def unit_query_variants(question):
     if not name:
         return []
     return [re.sub(rf"\b{re.escape(request.name)}\b", name, question, flags=re.IGNORECASE)]
+
+
+def unit_context_alias(text):
+    """Return the canonical unit name and recognized acronym for indexed context."""
+    from rag.spelling import is_known_acronym
+
+    text = str(text or "").replace("_", " ")
+    for code, name in (*_INDEX_CONTEXT_ALIASES.items(), *_UNIT_ALIASES.items()):
+        if " " in code or not is_known_acronym(code):
+            continue
+        if re.search(rf"\b{re.escape(code)}\b|\b{re.escape(name)}\b", text, re.I):
+            display = {"coed": "CoEd"}.get(code, code.upper())
+            return name, display
+    return None
 
 
 def document_matches_unit(document, request):

@@ -271,6 +271,63 @@ class SourcePolicyTests(unittest.TestCase):
         self.assertEqual(selection.documents, [college])
         self.assertFalse(selection.restricted)
 
+    def test_graduate_grading_scope_keeps_handbook_scale_despite_unit_names_and_newer_docx(self):
+        graduate_pdf = document(BASE, "Numerical Rating | Percentage Equivalent | Adjective Rating\n"
+                                "1.0 | 100 | Excellent\n1.9-5.0 | 84-below | Failure",
+                                section_heading="GRADING SYSTEM OF THE GS")
+        graduate_docx = document("Graduate_School_2026.docx", "Graduate School admission requirements and enrollment.",
+                                 section_heading="Graduate School")
+        for query in ("is there a graduate school grading?", "is there grading in graduate school?"):
+            with self.subTest(query=query):
+                selection = select_documents(
+                    [graduate_docx, graduate_pdf], [query], dates=DATES,
+                    uploads={graduate_docx.metadata["source"]: UPLOADS[UPDATE]}, today=TODAY,
+                )
+                self.assertEqual(selection.documents, [graduate_pdf])
+
+    def test_hard_scope_filters_fall_back_only_when_they_match_nothing(self):
+        college_grading = document(text="Grading System\nGrade 3.0 is passing.",
+                                   section_heading="College Grading System")
+        graduate_grading = document(text="Graduate School Grading System\nGrade 2.0 is passing.",
+                                    section_heading="Graduate School / Grading System")
+        education = document(text="College of Education policies.", section_heading="College of Education")
+        engineering = document(text="College of Engineering policies.", section_heading="College of Engineering")
+
+        with patch("builtins.print") as log:
+            level_fallback = select_documents([college_grading], ["graduate grading system"], dates=DATES,
+                                              uploads={}, today=TODAY, enforce_sources=False)
+        self.assertEqual(level_fallback.documents, [college_grading])
+        self.assertTrue(any("grading emptied the pool" in str(call) for call in log.call_args_list))
+        level_match = select_documents([college_grading, graduate_grading], ["graduate grading system"], dates=DATES,
+                                       uploads={}, today=TODAY, enforce_sources=False)
+        self.assertEqual(level_match.documents, [graduate_grading])
+
+        unit_fallback = select_documents([engineering], ["College of Education"], dates=DATES,
+                                         uploads={}, today=TODAY, enforce_sources=False)
+        self.assertEqual(unit_fallback.documents, [engineering])
+        unit_match = select_documents([engineering, education], ["College of Education"], dates=DATES,
+                                      uploads={}, today=TODAY, enforce_sources=False)
+        self.assertEqual(unit_match.documents, [education])
+
+    def test_policy_evidence_filters_keep_the_candidate_pool_when_no_doc_matches(self):
+        unrelated = document(text="Unrelated office contact details.", section_heading="Office Directory")
+        for query in (
+            "BSIT subjects", "What do I need to enroll?", "I lost my student ID",
+            "Where is Samar College located?", "I got lost at Samar College",
+            "Who are the college deans?", "Dean's List requirements", "history of Samar College",
+        ):
+            with self.subTest(query=query):
+                result = select_documents([unrelated], [query], dates=DATES, uploads={}, today=TODAY,
+                                          enforce_sources=False)
+                self.assertEqual(result.documents, [unrelated])
+
+    def test_current_catalog_source_filter_falls_back_when_no_current_source_matches(self):
+        old = document(text="College Departments\nCollege of Education", section_heading="College Departments")
+        result = select_documents([old], ["current college departments"], dates=DATES, uploads={},
+                                  today=TODAY, enforce_sources=True)
+        self.assertEqual(result.documents, [old])
+        self.assertFalse(result.restricted)
+
     def test_criminology_subject_queries_are_not_offerings_or_personal_records(self):
         from rag.latency import overview_topic
         from rag.source_policy import curriculum_queries
@@ -493,7 +550,7 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertEqual(docs, before)
         unproven = select_documents([table], ["What programs does SCTI offer?"], dates=DATES, uploads={},
                                     today=TODAY, enforce_sources=False)
-        self.assertEqual(unproven.documents, [])
+        self.assertEqual(unproven.documents, [table])
 
     def test_generic_dean_lists_get_roster_probes_not_other_role_or_named_unit_questions(self):
         from rag.source_policy import leadership_guidance, leadership_roster_queries, roster_source_names
@@ -639,10 +696,10 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertEqual(result.documents, [current])
                 self.assertTrue(result.restricted)
                 missing = self.select([old], query, uploads={})
-                self.assertEqual(missing.documents, [])
+                self.assertEqual(missing.documents, [old])
                 self.assertFalse(missing.restricted)
 
-    def test_confirmed_current_offerings_cannot_fall_back_to_unverified_old_lists(self):
+    def test_confirmed_current_offerings_fall_back_when_no_eligible_list_exists(self):
         old = document(text="SCTI Training Offerings\nCookery NC II\nOLD_TRAINING_ENTRY")
         for body, uploads in (("Programs Offered 2026", {"Programs_Offered.docx": UPLOADS[UPDATE]}),
                               ("Programs Offered\nSee the handbook for the list.", {"Programs_Offered.docx": UPLOADS[UPDATE]}),
@@ -650,9 +707,9 @@ class SourcePolicyTests(unittest.TestCase):
             with self.subTest(body=body, uploads=uploads):
                 current = document("Programs_Offered.docx", body, collection_heading="Programs Offered")
                 result = self.select([old, current], "confirmed current offerings", uploads=uploads)
-                self.assertEqual(result.documents, [])
+                self.assertEqual(result.documents, [old, current])
                 self.assertFalse(result.restricted, "Do not claim a verified current source was found")
-        self.assertEqual(self.select([old], "current offerings", uploads={}).documents, [])
+        self.assertEqual(self.select([old], "current offerings", uploads={}).documents, [old])
 
     def test_current_offering_request_keeps_explicit_unit_identity(self):
         old = document(text="College of Arts and Sciences\nBachelor of OLD_CAS_FIELD",
@@ -661,7 +718,7 @@ class SourcePolicyTests(unittest.TestCase):
                          "Bachelor of CURRENT_CLAS_FIELD", collection_heading="Programs Offered")
         uploads = {other.metadata["source"]: UPLOADS[UPDATE]}
         current = self.select([old, other], "Current offerings for College of Arts and Sciences", uploads=uploads)
-        self.assertEqual(current.documents, [])
+        self.assertEqual(current.documents, [old])
         self.assertEqual(current.requested_unit, "College of Arts and Sciences")
         self.assertEqual(self.select([old, other], "cas", uploads=uploads).documents, [old])
 
@@ -691,7 +748,7 @@ class SourcePolicyTests(unittest.TestCase):
                 self.assertEqual(result.documents, [old, newer_history])
                 self.assertFalse(result.restricted, "Older historical facts are not superseded by a newer curriculum")
 
-    def test_history_heading_cross_reference_or_course_list_is_not_historical_evidence(self):
+    def test_history_relevance_filter_falls_back_when_candidates_do_not_match(self):
         for body, heading in (
             ("History of Samar College", "History of Samar College"),
             ("Historical account\nSee the handbook for the full story.", "Historical Account"),
@@ -704,7 +761,7 @@ class SourcePolicyTests(unittest.TestCase):
             with self.subTest(body=body):
                 unrelated = document("Current.docx", body, section_heading=heading)
                 self.assertEqual(self.select([unrelated], "history of samar college",
-                                             uploads={"Current.docx": UPLOADS[UPDATE]}).documents, [])
+                                             uploads={"Current.docx": UPLOADS[UPDATE]}).documents, [unrelated])
 
     def test_institution_history_intent_is_not_history_classes_or_student_records(self):
         from rag.source_policy import institution_history_queries

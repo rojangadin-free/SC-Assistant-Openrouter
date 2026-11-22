@@ -83,6 +83,16 @@ class QueryIntentTests(unittest.TestCase):
             {"role": "user", "content": "what scholarships are offered?"},
         ]), "what scholarships are offered?")
 
+    def test_grading_query_rewrites_must_preserve_the_explicit_school_level(self):
+        question = "is there a graduate school grading?"
+        for rewrite in ("Graduate School programs admission history", "college grading system",
+                        "elementary grading scale", "fees and scholarships"):
+            with self.subTest(rewrite=rewrite):
+                self.assertFalse(query_rewrite_supported(question, rewrite, preserve_topic=False))
+        self.assertTrue(query_rewrite_supported(question, "graduate grading system scale", preserve_topic=False))
+        self.assertTrue(query_rewrite_supported("is there a grading system?", "college grading system",
+                                                preserve_topic=False))
+
     def test_id_policy_intent_is_distinct_from_private_number_lookup_or_lost_other_items(self):
         for question in ("What is my student ID number?", "I lost my student ID number", "I lost my receipt", "I lost my phone",
                          "I lost my diploma", "my grades", "list the students", "student ID issuance for new students"):

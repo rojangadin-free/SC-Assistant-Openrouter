@@ -1,4 +1,5 @@
 # src/helper.py
+import os
 import re
 import io
 import base64
@@ -175,9 +176,34 @@ def split_inline_bold_steps(text: str) -> str:
 
 
 
+# Labels for a FIELD of the section above them, not sections of their own.
+# "LOCATION" under "OFFICE OF MEDICAL AND DENTAL CLINIC" used to become the
+# heading "[SECTION: LOCATION]", which cut the clinic's name off its own address.
+# The chunk then looked like the school's location and answered every
+# "where is ...?" question. Structural-by-vocabulary on purpose: these are the
+# same few words in every office page.
+_FIELD_LABEL = re.compile(
+    r"^(?:(?:office|clinic|library|operating|service|consultation|opening)\s+hours?|"
+    r"(?:dental|medical|clinic|office)?\s*schedules?|"
+    r"(?:office\s+)?locations?|addresses|address|"
+    r"contacts?(?:\s+(?:us|information|details|numbers?))?|"
+    r"telephone(?:\s+nos?\.?)?|landline(?:\s+nos?\.?)?|e-?mail(?:\s+address)?|"
+    r"services?\s+offered|services)$",
+    re.I,
+)
+
+
+def is_field_label(line: str) -> bool:
+    """True for a bare label like LOCATION / OFFICE HOURS / CONTACT INFORMATION."""
+    s = (line or "").strip().strip("*#:•▪- \t")
+    return bool(s) and bool(_FIELD_LABEL.fullmatch(s))
+
+
 def is_heading_line(line: str) -> bool:
     """True when a single line looks like a section heading."""
     s = (line or "").strip().strip("*#:•▪- \t")
+    if is_field_label(s):
+        return False
     if _MD_TABLE_ROW.match(s):
         return False
     if not s or len(s) < 4 or len(s) > 120:
@@ -457,6 +483,39 @@ def clean_text(raw: str) -> str:
     # cannot silently truncate a 10-step procedure to 6.
     t = normalize_step_grids(t)
     return t.strip()
+
+
+def drop_toc_text(text: str) -> str:
+    """Remove table-of-contents pages and dotted-leader page references."""
+    lines = (text or "").splitlines()
+    if any(re.fullmatch(r"\s*(?:#{1,6}\s*)?(?:table\s+of\s+contents?|contents)\s*[:.]?\s*", line, re.I)
+           for line in lines):
+        return ""
+    entry_pattern = re.compile(
+        r"^\s*.+?(?:\.{2,}|(?:\.\s*){2,}|…{2,}|·{2,})\s*(?:\d{1,4}|[ivxlcdm]{1,10})\s*$", re.I,
+    )
+    return "\n".join(line for line in lines if not entry_pattern.fullmatch(line))
+
+
+def build_chunk_context_header(section_heading: str, collection_heading: str = "",
+                               source: str = "", alias_lookup=None) -> str:
+    """Prefix a chunk with a canonical unit/acronym and its section heading."""
+    if alias_lookup is None:
+        from rag.unit_identity import unit_context_alias
+
+        alias_lookup = unit_context_alias
+
+    section = str(section_heading or collection_heading or "General College Information").strip()
+    if is_field_label(section):
+        # A bare "LOCATION" must never be the whole identity of a chunk.
+        owner = str(collection_heading or "").strip()
+        if not owner or is_field_label(owner):
+            owner = re.sub(r"[_\-]+", " ", os.path.splitext(os.path.basename(str(source or "")))[0]).strip()
+        section = f"{owner} / {section}" if owner else section
+    context = " ".join((str(collection_heading or ""), section, str(source or "")))
+    unit = alias_lookup(context)
+    scope = f"{unit[0]} ({unit[1]})" if unit else "Samar Colleges, Inc."
+    return f"{scope} - {section}"
 
 
 

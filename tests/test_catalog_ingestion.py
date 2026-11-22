@@ -288,7 +288,7 @@ class PDFTextFallbackTests(unittest.TestCase):
             "ocr_column": Mock(return_value=""),
             "_extract_and_append_tables": Mock(side_effect=lambda page, text, *args: text),
         }
-        extract_definitions("src/helper.py", ("clean_text",), self.ns)
+        extract_definitions("src/helper.py", ("clean_text", "drop_toc_text"), self.ns)
         extract_definitions("store_index.py", ("process_pdf",), self.ns)
 
     def read_pdf(self, native, column_texts=None):
@@ -336,6 +336,14 @@ class PDFTextFallbackTests(unittest.TestCase):
         for effect in ("ocr_page_image", "ocr_column", "render_page_image", "render_region_image"):
             self.ns[effect].assert_not_called()
         self.ns["_extract_and_append_tables"].assert_called_once()
+
+    def test_pdf_table_of_contents_page_is_dropped_during_extraction(self):
+        native = "\n".join((
+            "TABLE OF CONTENTS", "Chapter 1 Introduction ........ 1", "Admission Requirements ........ 5",
+            "Enrollment Procedure ........ 9", "Student Services ........ 17", "Appendices ........ 32",
+            "This table lists the organization of the handbook and the page number of every section.",
+        ))
+        self.assertEqual(self.read_pdf(native), [])
 
     def test_blank_page_ocr_retains_native_text_and_native_type(self):
         native = "Bachelor of Science in Coastal Mapping with a major in Survey Design."

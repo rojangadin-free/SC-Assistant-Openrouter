@@ -104,7 +104,7 @@ retriever = EnsembleRetriever(
 # The cross-encoder reorders the pool, so we can afford to keep the pool wide
 # (recall) while sending only the genuinely relevant docs to the LLM (precision).
 RERANK_CANDIDATES = 40  # how many candidates the cross-encoder scores
-FINAL_TOP_K = 15        # documents actually sent to the LLM
+FINAL_TOP_K = 20        # documents actually sent to the LLM
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +586,10 @@ def retrieve_documents(
         student_id_queries, student_id_documents,
         campus_navigation_queries,
         campus_location_queries,
+        registrar_location_queries,
+        office_location_queries,
+        evidence_documents_or_ranked_fallback,
+        filter_documents_or_fallback,
     )
     from rag.unit_identity import (
         is_unit_reference, requested_unit, unit_query_variants, program_dean_subject, program_overview_subject,
@@ -748,6 +752,10 @@ def retrieve_documents(
                 on_program_resolution(resolved_question, "\n".join(program_messages))
         elif program_messages and on_program_resolution is not None:
             on_program_resolution("", "\n".join(program_messages))
+    parent_roster_queries = [query for query in program_queries if query.casefold().startswith("dean of ")]
+    roster_search_queries = list(dict.fromkeys([*roster_queries, *parent_roster_queries]))
+    if parent_roster_queries:
+        roster_sources = roster_source_names(current_sources)
     ranking_aspects = [(unit_query_variants(resolved_parts.get(aspect, aspect))
                         or [resolved_parts.get(aspect, aspect)])[0] for aspect in aspects]
     identity_queries = list(dict.fromkeys(
@@ -760,7 +768,11 @@ def retrieve_documents(
         " and ".join(resolved_parts.get(part, part) for part in aspects) if resolved_parts and aspects
         else resolved_parts.get(split_source, split_source)
     )
-    from rag.query_intent import known_query_intents
+    from rag.query_intent import known_query_intents, query_needs_history
+
+    if (not requested_unit(split_source) and query_needs_history(split_source)
+            and requested_unit(primary)):
+        scope_question = primary
 
     explicit_policy = known_query_intents(split_source) & {"grading", "curriculum", "deans_list", "honors", "history", "campus_location", "campus_navigation", "student_id", "financial_aid"}
     resolved_semantics = original_question is not None and original_question != split_source
@@ -778,7 +790,8 @@ def retrieve_documents(
     grade_queries = grading_queries(scope_question)
     id_queries = student_id_queries(scope_question)
     navigation_queries = campus_navigation_queries(scope_question)
-    location_queries = campus_location_queries(scope_question)
+    location_queries = (registrar_location_queries(scope_question) or office_location_queries(scope_question)
+                        or campus_location_queries(scope_question))
     enrollment_evidence = []
     if grade_queries and not aspects:
         source_filter_enabled = True
@@ -794,7 +807,7 @@ def retrieve_documents(
         for probe in enrollment_queries(phrasing)
     ))
     relevance_queries = list(dict.fromkeys([
-        scope_question, *phrasings, *aspects, *identity_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries,
+        scope_question, *phrasings, *aspects, *identity_queries, *program_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries,
     ]))
 
     if verbose:
@@ -827,7 +840,7 @@ def retrieve_documents(
             allow_spelling=allow_spelling,
         )
     elif current_sources:
-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *procedure_queries, *catalog_queries, *roster_queries, *discount_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries]))
+        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *program_queries, *procedure_queries, *catalog_queries, *roster_search_queries, *discount_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries]))
         source_filter = {"source": {"$in": current_sources}}
         jobs = aid_reference_jobs + [(probe, source_filter) for probe in dict.fromkeys([*aid_queries, *probes])]
         if subject_queries:
@@ -845,8 +858,8 @@ def retrieve_documents(
                 (catalog_queries[0], {"source": {"$eq": source}})
                 for source in catalogs
             ] + jobs
-        if roster_sources:
-            jobs = [(roster_queries[0], {"source": {"$eq": source}}) for source in roster_sources] + jobs
+        if roster_sources and roster_search_queries:
+            jobs = [(roster_search_queries[0], {"source": {"$eq": source}}) for source in roster_sources] + jobs
         preferred_docs = multi_query_retrieve(
             primary, filtered_queries=jobs,
             timeout=request_budget.remaining(30) if request_budget else None,
@@ -905,18 +918,32 @@ def retrieve_documents(
         print(f"  Retrieval failed (non-fatal): {e}")
         initial_docs = []
 
+    roster_candidate_docs = initial_docs
     if topic:
-        initial_docs = overview_documents(initial_docs, topic)
+        initial_docs = filter_documents_or_fallback(
+            initial_docs, overview_documents(initial_docs, topic),
+            filter_name=f"overview topic {topic}", query=scope_question,
+        )
     if aid_queries:
         # Selection already reserves evidence by policy. Global reranking would
         # let several chunks of the same policy displace other options again.
         if on_selection is not None:
             on_selection(selection)
         return initial_docs[:max(top_k, RERANK_CANDIDATES)]
-    catalog_evidence = offering_catalog_documents(initial_docs, scope_question)
-    discount_evidence = family_discount_documents(initial_docs) if discount_queries else []
-    honor_evidence = honors_documents(initial_docs) if honor_queries else []
-    academic_list_evidence = deans_list_documents(initial_docs) if academic_list_queries else []
+    catalog_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, offering_catalog_documents(initial_docs, scope_question),
+        filter_name="offering catalog", query=scope_question,
+    ) if catalog_queries else []
+    discount_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, family_discount_documents(initial_docs),
+        filter_name="family discount", query=scope_question,
+    ) if discount_queries else []
+    honor_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, honors_documents(initial_docs), filter_name="honors policy", query=scope_question,
+    ) if honor_queries else []
+    academic_list_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, deans_list_documents(initial_docs), filter_name="Dean's List", query=scope_question,
+    ) if academic_list_queries else []
     semester_queries = curriculum_semester_queries(scope_question)
     if semester_queries:
         # A term-specific ask may initially retrieve only OTHER semesters of its
@@ -994,7 +1021,10 @@ def retrieve_documents(
             if key not in seen:
                 seen.add(key)
                 initial_docs.append(doc)
-    subject_evidence = curriculum_documents(initial_docs, scope_question) if subject_queries else []
+    subject_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, curriculum_documents(initial_docs, scope_question),
+        filter_name="curriculum evidence", query=scope_question,
+    ) if subject_queries else []
     if grade_queries and initial_docs:
         sources = list(dict.fromkeys((doc.metadata or {}).get("source", "") for doc in initial_docs))
         extra_grading = multi_query_retrieve(
@@ -1013,13 +1043,24 @@ def retrieve_documents(
         selection = select_documents(combined, relevance_queries, dates=dates, uploads=uploads,
                                      limit=max(1, len(combined)), enforce_sources=source_filter_enabled)
         initial_docs = selection.documents
-    grading_evidence = grading_documents(initial_docs, scope_question) if grade_queries else []
-    id_evidence = student_id_documents(initial_docs) if id_queries else []
-    enrollment_evidence = enrollment_documents(initial_docs, scope_question) if procedure_structure else []
+    grading_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, grading_documents(initial_docs, scope_question),
+        filter_name="grading evidence", query=scope_question,
+    ) if grade_queries else []
+    id_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, student_id_documents(initial_docs), filter_name="student-ID evidence", query=scope_question,
+    ) if id_queries else []
+    enrollment_evidence = evidence_documents_or_ranked_fallback(
+        initial_docs, enrollment_documents(initial_docs, scope_question),
+        filter_name="enrollment evidence", query=scope_question,
+    ) if procedure_structure else []
     if on_selection is not None:
         on_selection(selection)
-    roster_evidence = [doc for doc in initial_docs if (doc.metadata or {}).get("source") in roster_sources
-                       and re.search(r"\b(?:oic\s+)?dean\s*(?:,|of\b)\s*\w", doc.page_content, re.IGNORECASE)]
+    roster_evidence = evidence_documents_or_ranked_fallback(
+        roster_candidate_docs, [doc for doc in roster_candidate_docs if (doc.metadata or {}).get("source") in roster_sources
+                       and re.search(r"\b(?:oic\s+)?dean\s*(?:,|of\b)\s*\w", doc.page_content, re.IGNORECASE)],
+        filter_name="leadership roster", query=scope_question,
+    ) if roster_search_queries else []
     roster_evidence.sort(key=lambda doc: len(set(document_unit_names(doc))), reverse=True)
     if selection.restricted or catalog_queries or history_queries or subject_queries or grade_queries or id_queries or enrollment_evidence or not source_filter_enabled:
         # Reserve space for each source and catalog/history section
@@ -1550,6 +1591,10 @@ def create_graph():
                     request_text = contextual_query = followup
                 else:
                     request_text = resolve_query_intent(user_text, semantic_intent, history)
+                from rag.source_policy import office_location_subject, registrar_location_queries
+
+                if registrar_location_queries(reply_language_source) or office_location_subject(reply_language_source):
+                    request_text = user_text = reply_language_source
                 if request_text != user_text:
                     # Use one resolved intent for evidence and answer routing.
                     # Keep the corrected user's wording for the final message.
@@ -1606,7 +1651,9 @@ def create_graph():
             from rag.source_policy import (
                 BROAD_AID_GUIDANCE, broad_aid_queries, campus_location_queries, campus_navigation_queries,
                 curriculum_queries, enrollment_queries, family_discount_documents, family_discount_queries,
-                grading_queries, student_id_queries,
+                filter_documents_or_fallback, grading_queries, student_id_queries,
+                registrar_location_documents, registrar_location_queries,
+                office_location_documents, office_location_subject,
             )
 
             curriculum_request = bool(curriculum_queries(request_text))
@@ -1614,6 +1661,9 @@ def create_graph():
             id_request = bool(student_id_queries(request_text))
             navigation_request = bool(campus_navigation_queries(request_text))
             location_request = bool(campus_location_queries(request_text))
+            registrar_location_request = bool(registrar_location_queries(request_text))
+            office_subject = "" if registrar_location_request else office_location_subject(request_text)
+            office_location_request = bool(office_subject)
             broad_aid_request = bool(broad_aid_queries(request_text))
             family_discount_followup = request_text != user_text and bool(family_discount_queries(request_text))
             enrollment_request = bool(enrollment_queries(request_text))
@@ -1623,7 +1673,16 @@ def create_graph():
             ))
             context_limit = max(FINAL_TOP_K, RERANK_CANDIDATES) if curriculum_request or grading_request or enrollment_all_request or id_request or broad_aid_request else FINAL_TOP_K
             if family_discount_followup:
-                final_docs = family_discount_documents(final_docs)
+                final_docs = filter_documents_or_fallback(
+                    final_docs, family_discount_documents(final_docs),
+                    filter_name="family-discount evidence", query=request_text,
+                )
+            if registrar_location_request:
+                final_docs = registrar_location_documents(final_docs)
+            if office_location_request:
+                # Only passages that name THIS office and place it. No fallback to the
+                # unfiltered pool: another office's address must never answer for it.
+                final_docs = office_location_documents(final_docs, office_subject)
             if source_selections:
                 # Do not reclassify a reduced ranked pool: that could forget that
                 # obsolete sources were excluded before scoring and restore history.
@@ -1659,7 +1718,7 @@ def create_graph():
             ))
             academic_list_request = bool(deans_list_queries(request_text))
             curriculum_request = bool(curriculum_queries(request_text))
-            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic) or curriculum_request or grading_request or enrollment_all_request or id_request or navigation_request or location_request or broad_aid_request or family_discount_followup
+            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic) or curriculum_request or grading_request or enrollment_all_request or id_request or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup
             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
                 try:
                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
@@ -1674,7 +1733,7 @@ def create_graph():
 
             # Keep the stored conversation intact, but do not feed obsolete
             # assistant facts or summaries back into a scoped document answer.
-            if grading_request or curriculum_request or enrollment_all_request or id_request or navigation_request or location_request or broad_aid_request or family_discount_followup or department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
+            if grading_request or curriculum_request or enrollment_all_request or id_request or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup or department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
                 prompt_history = []
             else:
                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
@@ -1778,6 +1837,22 @@ def create_graph():
                 from rag.source_policy import LOCATION_GUIDANCE
 
                 final_system_prompt += "\n\n" + LOCATION_GUIDANCE
+            if registrar_location_request:
+                final_system_prompt += (
+                    "\n\n<registrar_location_request>Use only evidence that explicitly identifies the Registrar's "
+                    "physical office location. If the building or floor is unconfirmed, say so. An enrollment counter "
+                    "may be mentioned as an enrollment service point only. Do not infer the office location from a "
+                    "counter, another office, or earlier conversation.</registrar_location_request>"
+                )
+            if office_location_request:
+                final_system_prompt += (
+                    f"\n\n<office_location_request>The user asks where '{office_subject}' is. Use only a selected "
+                    "passage that names that exact office or place together with its building, floor or room. "
+                    "A location listed for any OTHER office (for example the clinic, canteen or library) is not "
+                    "this office's location, and a shared word such as 'Location' is not evidence. If no selected "
+                    "passage places it, say you cannot confirm where it is and suggest asking the school directly. "
+                    "Do not guess from a nearby office.</office_location_request>"
+                )
             if request_text != user_text:
                 final_system_prompt += (
                     f"\n\n<resolved_followup>\nResolved request for routing: {request_text!r}. "

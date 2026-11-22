@@ -207,9 +207,20 @@ class IngestionTestCase(unittest.TestCase):
             "ensure_index_exists": Mock(name="ensure_index"),
             "BM25Encoder": Mock(return_value=encoder),
             "PineconeHybridSearchRetriever": Mock(return_value=self.retriever),
+            "unit_context_alias": lambda text: next((
+                (name, acronym) for acronym, name in (
+                    ("GS", "Graduate School"),
+                    ("CITAS", "College of Information Technology and Allied Sciences"),
+                    ("CoEd", "College of Education"),
+                    ("CLAS", "College of Liberal Arts and Sciences"),
+                    ("SCTI", "Samar College Technological Institute"),
+                    ("COCJE", "College of Criminal Justice Education"),
+                ) if re.search(rf"\b(?:{acronym}|{re.escape(name)})\b", text.replace("_", " "), re.I)
+            ), None),
         }
         extract_definitions("src/helper.py", (
             "smart_chunking", "generate_chunk_id", "is_low_value_chunk",
+            "drop_toc_text", "build_chunk_context_header",
         ), self.ns)
         extract_definitions("store_index.py", (
             "_docx_table_to_markdown", "process_docx_linear", "_chunk_and_dedup",
@@ -522,6 +533,56 @@ class NativeExtractionTests(IngestionTestCase):
 
 
 class SectionIdentityTests(IngestionTestCase):
+    def test_indexed_chunks_have_canonical_unit_context_headers(self):
+        cases = (
+            ("Graduate School", "GRADING SYSTEM OF THE GS", "Averaging system table includes grades and rating ranges."),
+            ("Academic Calendar", "CITAS CALENDAR OF ACTIVITIES A.Y. 2026-2027", "Opening of 2nd Semester is scheduled for December."),
+            ("Curriculum", "College of Education / BEEd", "Course subjects and units are listed for every semester."),
+            ("SCTI_Program.docx", "Training Offerings", "Cookery NC II and Computer System Servicing are offered."),
+            ("CLAS.docx", "College of Liberal Arts and Sciences", "The CLAS department offers student courses."),
+            ("COCJE.docx", "College of Criminal Justice Education", "COCJE publishes the program requirements."),
+        )
+        expected_scopes = ("Graduate School (GS)", "College of Information Technology and Allied Sciences (CITAS)",
+                           "College of Education (CoEd)", "Samar College Technological Institute (SCTI)",
+                           "College of Liberal Arts and Sciences (CLAS)",
+                           "College of Criminal Justice Education (COCJE)")
+        for (source, heading, body), scope in zip(cases, expected_scopes):
+            with self.subTest(heading=heading):
+                chunk, = self.ns["_chunk_and_dedup"]([Document(
+                    page_content=body,
+                    metadata={"source": source, "type": "docx_section", "section_heading": heading},
+                )])
+                self.assertTrue(chunk.page_content.startswith(f"{scope} - {heading}\n"), chunk.page_content[:200])
+
+    def test_toc_headings_and_dotted_leader_entries_are_removed_before_chunking(self):
+        self.assertEqual(self.ns["drop_toc_text"]("TABLE OF CONTENTS\nChapter 1 ........ 1\nChapter 2 ...... 15"), "")
+        self.assertEqual(self.ns["drop_toc_text"]("Useful policy\nChapter 1 ........ 1\nKeep this paragraph."),
+                         "Useful policy\nKeep this paragraph.")
+        self.assertEqual(self.ns["drop_toc_text"]("Chapter 1 ........ 1\nChapter 2 ........ 5\nKeep this paragraph."),
+                         "Keep this paragraph.")
+        chunks = self.ns["_chunk_and_dedup"]([
+            Document("TABLE OF CONTENTS\nChapter 1 ........ 1\nChapter 2 ...... 15",
+                     {"source": "Handbook.pdf", "page": 1, "type": "pdf"}),
+            Document("Chapter 1 ........ 1\nUseful policy details remain here for students and staff.",
+                     {"source": "Handbook.pdf", "page": 2, "type": "pdf"}),
+        ])
+        self.assertEqual(len(chunks), 1)
+        self.assertNotIn("TABLE OF CONTENTS", chunks[0].page_content)
+        self.assertNotIn("Chapter 1 ........ 1", chunks[0].page_content)
+        self.assertIn("Useful policy details", chunks[0].page_content)
+
+    def test_docx_table_of_contents_section_is_not_emitted(self):
+        document = docx.Document()
+        document.add_heading("TABLE OF CONTENTS", level=1)
+        document.add_paragraph("Graduate School ........ 16")
+        document.add_paragraph("Grading System ........ 18")
+        document.add_heading("ADMISSION REQUIREMENTS", level=1)
+        document.add_paragraph("Applicants submit their complete academic records.")
+        sections = self.ns["process_docx_linear"](self.save_docx(document), "Handbook.docx")
+        self.assertEqual(len(sections), 1, [(section.metadata, section.page_content) for section in sections])
+        self.assertEqual(sections[0].metadata["section_heading"], "ADMISSION REQUIREMENTS")
+        self.assertNotIn("Graduate School ........ 16", sections[0].page_content)
+
     def test_docx_section_metadata_controls_heading_without_cross_section_stitching(self):
         docs = [
             Document(
@@ -541,7 +602,7 @@ class SectionIdentityTests(IngestionTestCase):
             own, other = (("STAFF ALPHA", "STAFF BETA") if heading == "Primary contacts"
                           else ("STAFF BETA", "STAFF ALPHA"))
             self.assertEqual(chunk.metadata["section"], heading)
-            self.assertTrue(chunk.page_content.startswith(f"[SECTION: {heading}]\n"))
+            self.assertTrue(chunk.page_content.startswith(f"Samar Colleges, Inc. - {heading}\n[SECTION: {heading}]\n"))
             self.assertIn(own, chunk.page_content)
             self.assertNotIn(other, chunk.page_content)
 
