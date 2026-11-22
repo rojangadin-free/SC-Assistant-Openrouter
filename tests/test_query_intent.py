@@ -3,7 +3,9 @@
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
@@ -13,6 +15,217 @@ from rag.query_intent import QueryIntent, decode_optimizer_output, known_query_i
 
 
 class QueryIntentTests(unittest.TestCase):
+    def test_received_dropped_subject_status_keeps_its_public_policy_intent(self):
+        variants = (
+            "what do i do if i get drop on a subject?",
+            "What should I do if I get dropped in a subject?",
+            "I was dropped from a class", "My course was dropped",
+            "My instructor dropped me", "The teacher dropped my subject",
+            "I was dropped by my professor", "My grade is Dropped (DR)",
+            "What does a DR remark mean?", "Dropped subject",
+            "na-drop ako", "nadrop ako sa subject", "na drop ako sa subject ko",
+            "na-drop ak", "gin-drop ak ha subject", "ma-drop ako sa subject",
+            "na-drop ang subject ko", "gin-drop an akon subject",
+        )
+        probes = policy.dropped_subject_queries(variants[0])
+        self.assertTrue(any("attendance" in probe for probe in probes))
+        self.assertTrue(any("final rating remarks" in probe for probe in probes))
+        self.assertTrue(any("Graduate School" in probe for probe in probes))
+        self.assertTrue(any("UAQTEA TES" in probe for probe in probes))
+        for question in variants:
+            with self.subTest(question=question):
+                self.assertIn("dropped_subject", known_query_intents(question))
+                self.assertFalse(policy.enrollment_queries(question))
+                self.assertFalse(query_needs_history(question))
+                self.assertEqual(policy.dropped_subject_queries(question), probes)
+                self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
+                self.assertFalse(query_rewrite_supported(question, "how do I drop a subject", preserve_topic=False))
+
+    def test_voluntary_dropping_and_nonacademic_drops_do_not_receive_the_status_intent(self):
+        variants = (
+            "how do I drop a subject", "I want to drop", "can I drop after 15 days",
+            "how can I get a subject dropped",
+            "deadline for dropping, changing and adding subjects",
+            "I was dropped off at the gate", "cancel my registration",
+            "I want to drop a subject", "how can I have my course dropped",
+            "I was not dropped in a subject", "The instructor dropped a pen",
+            "I got dropped from the team", "The stock price dropped",
+            "Dr. Santos assigned my grade", "What is Dr. Reyes's grading policy?",
+            "gusto ko mag-drop ng subject", "mag-drop ako", "na-drop ko ang subject",
+            "drop ako", "DR", None, 42, "",
+        )
+        for question in variants:
+            with self.subTest(question=question):
+                self.assertFalse(policy.dropped_subject_queries(question))
+                self.assertEqual(resolve_query_intent(question, QueryIntent("dropped_subject")), question)
+                if isinstance(question, str):
+                    self.assertNotIn("dropped_subject", known_query_intents(question))
+                    if question:
+                        self.assertFalse(query_rewrite_supported(question, "Dropped subject DR remark", preserve_topic=False))
+
+    def test_registry_migrates_only_the_two_new_intents_and_student_id(self):
+        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location"})
+        for name, question, guidance in (
+            ("student_id", "I lost my ID", policy.STUDENT_ID_GUIDANCE),
+            ("dropped_subject", "I was dropped from a subject", policy.DROPPED_SUBJECT_GUIDANCE),
+            ("classroom_location", "classroom location", policy.CLASSROOM_LOCATION_GUIDANCE),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(set(policy.matching_policy_intents(question)), {name})
+                intent = policy.INTENT_REGISTRY[name]
+                self.assertEqual(intent.guidance, guidance)
+                self.assertTrue(all(isinstance(probe, str) and probe for probe in intent.queries(question)))
+                self.assertEqual(decode_optimizer_output(json.dumps({
+                    "query": question, "intent": name, "subject": "",
+                }), "fallback"), (question, QueryIntent(name)))
+        self.assertTrue(policy.INTENT_REGISTRY["student_id"].complete_context)
+        self.assertTrue(policy.INTENT_REGISTRY["dropped_subject"].fallback_search)
+        self.assertTrue(policy.INTENT_REGISTRY["dropped_subject"].strict_evidence)
+        self.assertTrue(policy.INTENT_REGISTRY["classroom_location"].strict_evidence)
+
+    def test_dropped_guidance_scopes_consequences_and_forbids_invented_recovery(self):
+        guidance = " ".join(policy.DROPPED_SUBJECT_GUIDANCE.split())
+        for required in (
+            "maximum 6 accumulated absences", "3 in summer", "Passed, Failed and Dropped",
+            "Do not claim exceeding the absence limit automatically causes a Dropped remark",
+            "Graduate School Academic Excellence Award", "Academic Achievers Award",
+            "collegiate graduation honors", "Academic Achievement Award",
+            "Special Citation Award for Commendable Academic Achievement",
+            "Academic Scholarship for College", "transferee/health/financial exceptions",
+            "Diploma Programs / UAQTEA-TES", "TESDA FY 2022", "more-than-one-dropped-course",
+            "One dropped course alone is not that condition", "2024 handbook fallback",
+            "do NOT explain how to retake, appeal or recover", "State that verified coverage gap explicitly",
+            "Registrar's Office and their college dean", "Do not invent a remedy",
+            "Do not substitute voluntary dropping/changing/adding procedures",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guidance)
+
+    def test_classroom_location_and_personal_room_phrasings_keep_their_subject(self):
+        for question in (
+            "classroom location", "classroom locations", "Where is my classroom?", "my classroom",
+            "classroom location of Samar College", "my classroom location at Samar College",
+            "what room is my class in", "Which room are my classes in?",
+            "saan ang classroom ko?", "diin an akon classroom?", "diin it classroom?",
+            "hain an classroom ko?", "ano ang room ng klase ko?",
+        ):
+            with self.subTest(question=question):
+                self.assertIn("classroom_location", known_query_intents(question))
+                self.assertFalse(query_needs_history(question))
+                self.assertFalse(policy.campus_navigation_queries(question))
+                self.assertFalse(policy.campus_location_queries(question))
+                self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
+
+    def test_dropped_evidence_does_not_promote_corporate_or_doctor_names(self):
+        handbook = SimpleNamespace(
+            page_content="Academic Excellence Award: a candidate shall have no Incomplete (INC), Dropped (DR), or Failing grade in any subject.",
+            metadata={"source": "Samar-College-2024.pdf", "section_heading": "Academic Excellence Award"},
+        )
+        for text in (
+            "Samar Colleges, Inc. - Academic Scholarships\n[SECTION: Academic Scholarships]\nScholarship application forms are available at the Registrar office.",
+            "Academic Scholarship Committee: Dr. A. Santos is the chairperson.",
+            "Incomplete scholarship application forms have no grades attached.",
+        ):
+            with self.subTest(text=text):
+                incidental = SimpleNamespace(page_content=text, metadata={
+                    "source": "Scholarship_Service_2026.docx", "section_heading": "Academic Scholarship Services",
+                })
+                self.assertEqual(policy.dropped_subject_documents([incidental, handbook]), [handbook])
+                selection = policy.select_documents(
+                    [incidental, handbook], ["what do i do if i get drop on a subject?"],
+                    dates={"samar-college-2024.pdf": {"effective_date": "2024-06-01"}},
+                    uploads={"Scholarship_Service_2026.docx": "2026-11-19"}, today=date(2026, 11, 22),
+                )
+                self.assertEqual(selection.documents, [handbook])
+                self.assertFalse(selection.restricted)
+
+    def test_tes_scope_and_each_continuation_condition_survive_separate_chunks(self):
+        def passage(text, page, heading):
+            return SimpleNamespace(page_content=text, metadata={
+                "source": "Samar-College-2024.pdf", "page": page, "section_heading": heading,
+            })
+        scope = passage("TESDA Circular No. 027, Series 2022. These guidelines shall cover the selection of scholars "
+                        "for Diploma Programs under the UAQTEA-TES for FY 2022.", 39, "Scope and Coverage")
+        competency = passage("Learners who did not pass or achieve a competent rating in all technology courses "
+                             "in the previous semester;", 41, "Prioritization of UAQTEA-TES Scholars")
+        dropped = passage("Learners who have more than one dropped course (technology courses and/or academic courses "
+                          "including general education courses);", 41, "Prioritization of UAQTEA-TES Scholars")
+        self.assertEqual(policy.dropped_subject_documents([scope, competency, dropped]), [scope, competency, dropped])
+        coverage = policy.INTENT_REGISTRY["dropped_subject"].coverage
+        self.assertEqual(coverage([scope, competency, dropped]), [competency, dropped])
+        current_scope = SimpleNamespace(page_content=scope.page_content, metadata={**scope.metadata, "source": "TES_Scope_2026.docx"})
+        selection = policy.select_documents(
+            [current_scope, dropped], ["I was dropped from a subject"],
+            dates={"samar-college-2024.pdf": {"effective_date": "2024-06-01"}},
+            uploads={"TES_Scope_2026.docx": "2026-11-19"}, today=date(2026, 11, 22),
+        )
+        self.assertFalse(selection.restricted)
+        self.assertIn(dropped, selection.documents)
+
+    def test_both_optimizer_campus_labels_cannot_rewrite_specific_places(self):
+        for question in (
+            "classroom location", "my classroom", "what room is my class in",
+            "classroom location of Samar College", "library location of Samar College",
+            "where is room 101", "where is room 101 for my class?", "Where is room 101 (classroom)?",
+            "where is room101 for classes?", "room location", "lab location", "where is the laboratory",
+            "gym location", "comfort room location", "restroom location", "building location",
+            "floor location", "hall location", "where is the library", "where is the Registrar",
+            "where is the gate",
+            "classroom preparation schedule",
+        ):
+            for name in ("campus_navigation", "campus_location"):
+                with self.subTest(question=question, intent=name):
+                    self.assertEqual(resolve_query_intent(question, QueryIntent(name)), question)
+                    self.assertFalse(query_rewrite_supported(question, "I am lost on campus Samar College directions",
+                                                            preserve_topic=False))
+                    self.assertFalse(query_rewrite_supported(question, "Samar College address", preserve_topic=False))
+
+    def test_actual_lost_speakers_still_use_navigation_even_with_a_room_destination(self):
+        for question in ("I am lost on campus", "I am lost on campus looking for my classroom",
+                         "I am lost on campus near room 101", "I am lost near the library",
+                         "I am lost looking for my classroom", "What if I get lost near room 101?",
+                         "nawawara ak ha SC"):
+            with self.subTest(question=question):
+                self.assertIn("campus_navigation", known_query_intents(question))
+                self.assertNotIn("classroom_location", known_query_intents(question))
+                self.assertTrue(policy.campus_navigation_queries(question))
+                self.assertEqual(resolve_query_intent(question, QueryIntent("campus_location")), question)
+
+    def test_named_rooms_calendar_preparation_and_library_are_not_generic_classrooms(self):
+        for question in ("where is room 101", "classroom preparation schedule", "where is the library",
+                         "where is room 101 for my class?", "Where is room 101 (classroom)?",
+                         "Where is room 101 for classes?", "where is room101 for classes?",
+                         "Classroom Preparation May 18 and 25", "classroom rules", "library floors"):
+            with self.subTest(question=question):
+                self.assertFalse(policy.classroom_location_queries(question))
+                self.assertNotIn("classroom_location", known_query_intents(question))
+        self.assertEqual(policy.office_location_subject("where is room 101"), "room 101")
+        self.assertEqual(policy.office_location_subject("where is room 101 for my class?"), "room 101")
+        self.assertEqual(policy.office_location_subject("Where is room 101 (classroom)?"), "room 101")
+        self.assertEqual(policy.office_location_subject("where is room101 for classes?"), "room 101")
+        self.assertEqual(policy.office_location_subject("where is the library"), "library")
+
+    def test_room_correction_cannot_remove_personal_ownership(self):
+        for question in ("my classroom", "what room is my class in", "saan ang classroom ko?"):
+            with self.subTest(question=question):
+                self.assertFalse(query_rewrite_supported(question, "classroom location"))
+                self.assertTrue(query_rewrite_supported(question, "classroom locations", preserve_topic=False))
+        self.assertTrue(query_rewrite_supported("what room is my class in", "Where is my classroom?"))
+
+    def test_classroom_guidance_forbids_asking_user_location_and_uses_room_column(self):
+        guidance = " ".join(policy.CLASSROOM_LOCATION_GUIDANCE.split())
+        for required in (
+            "NEVER ask where the user is or their current location",
+            "Room column", "consented STUDENT PERSONAL RECORD", "Name the subject and its room",
+            "list each enrolled subject", "Blank or N/A Room values are not room assignments",
+            "room assignments come from the student's enrollment record",
+            "Registrar's Office or their college dean", "Do not demand login or a starting landmark",
+            "available documents do not list classroom locations", "Do not guess or use the college address",
+            "a library floor", "a classroom-preparation calendar entry",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guidance)
+
     def test_waray_campus_location_questions_are_equivalent_and_history_independent(self):
         variants = ("diin it sc?", "diin mabibilngan it sc", "Hain an Samar College?",
                     "Where is Samar College located?", "What is the address of Samar Colleges, Inc.?",

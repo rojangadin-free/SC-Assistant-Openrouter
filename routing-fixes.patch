@@ -1,0 +1,1054 @@
+--- a/rag/chain.py
++++ b/rag/chain.py
+@@ -583,7 +583,7 @@
+         honors_queries, honors_documents, deans_list_queries, deans_list_documents,
+         overview_documents, curriculum_queries, curriculum_documents, curriculum_semester_queries, curriculum_program,
+         grading_queries, grading_documents,
+-        student_id_queries, student_id_documents,
++        INTENT_REGISTRY, matching_policy_intents,
+         campus_navigation_queries,
+         campus_location_queries,
+         registrar_location_queries,
+@@ -774,7 +774,7 @@
+             and requested_unit(primary)):
+         scope_question = primary
+ 
+-    explicit_policy = known_query_intents(split_source) & {"grading", "curriculum", "deans_list", "honors", "history", "campus_location", "campus_navigation", "student_id", "financial_aid"}
++    explicit_policy = known_query_intents(split_source) & {"grading", "curriculum", "deans_list", "honors", "history", "campus_location", "campus_navigation", "financial_aid", *INTENT_REGISTRY}
+     resolved_semantics = original_question is not None and original_question != split_source
+     if not requested_unit(split_source) and is_unit_reference(split_source) and not explicit_policy and not resolved_semantics:
+         for phrasing in (primary, late_phrasing):
+@@ -788,7 +788,9 @@
+     academic_list_queries = deans_list_queries(scope_question)
+     subject_queries = curriculum_queries(scope_question)
+     grade_queries = grading_queries(scope_question)
+-    id_queries = student_id_queries(scope_question)
++    policy_intents = matching_policy_intents(scope_question)
++    intent_queries = [probe for intent in policy_intents.values() for probe in intent.queries(scope_question)]
++    complete_intent = any(intent.complete_context for intent in policy_intents.values())
+     navigation_queries = campus_navigation_queries(scope_question)
+     location_queries = (registrar_location_queries(scope_question) or office_location_queries(scope_question)
+                         or campus_location_queries(scope_question))
+@@ -802,12 +804,14 @@
+     if honor_queries and not aspects:
+         # Completeness must not mix an old honors policy into a current update.
+         source_filter_enabled = True
++    if any(intent.strict_evidence for intent in policy_intents.values()) and not aspects:
++        source_filter_enabled = True
+     procedure_queries = list(dict.fromkeys(
+         probe for phrasing in [scope_question, *phrasings, *aspects, *language_variants(split_source)]
+         for probe in enrollment_queries(phrasing)
+     ))
+     relevance_queries = list(dict.fromkeys([
+-        scope_question, *phrasings, *aspects, *identity_queries, *program_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries,
++        scope_question, *phrasings, *aspects, *identity_queries, *program_queries, *language_variants(split_source), *procedure_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *intent_queries, *navigation_queries, *location_queries,
+     ]))
+ 
+     if verbose:
+@@ -829,7 +833,13 @@
+                                  enforce_sources=source_filter_enabled)
+     aid_reference_jobs = [(probe, {"source": {"$eq": source}})
+                           for source in history_source_names(dates=dates, uploads=uploads)
+-                          for probe in aid_queries] if aid_queries else []
++                           for probe in aid_queries] if aid_queries else []
++    reference_jobs = aid_reference_jobs + [
++        (probe, {"source": {"$eq": source}})
++        for intent in policy_intents.values() if intent.fallback_search
++        for source in history_source_names(dates=dates, uploads=uploads)
++        for probe in intent.queries(scope_question)
++    ]
+     if history_queries:
+         # Do not let current-source hits decide whether the handbook is searched.
+         # The unfiltered pass below still discovers history in any other source.
+@@ -840,9 +850,9 @@
+             allow_spelling=allow_spelling,
+         )
+     elif current_sources:
+-        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *program_queries, *procedure_queries, *catalog_queries, *roster_search_queries, *discount_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *id_queries, *navigation_queries, *location_queries]))
++        probes = list(dict.fromkeys([primary, *phrasings[1:], *aspects, *identity_queries, *program_queries, *procedure_queries, *catalog_queries, *roster_search_queries, *discount_queries, *honor_queries, *academic_list_queries, *subject_queries, *grade_queries, *intent_queries, *navigation_queries, *location_queries]))
+         source_filter = {"source": {"$in": current_sources}}
+-        jobs = aid_reference_jobs + [(probe, source_filter) for probe in dict.fromkeys([*aid_queries, *probes])]
++        jobs = reference_jobs + [(probe, source_filter) for probe in dict.fromkeys([*aid_queries, *probes])]
+         if subject_queries:
+             # Search curriculum/program files individually so unrelated degree
+             # catalogs cannot consume the current-source candidate allowance.
+@@ -875,9 +885,9 @@
+                 counts = {source: sum((doc.metadata or {}).get("source") == source for doc in preferred_docs)
+                           for source in catalogs}
+                 print(f"  Catalog sources checked (retrieved chunks): {counts}")
+-    elif aid_reference_jobs:
++    elif reference_jobs:
+         preferred_docs = multi_query_retrieve(
+-            primary, filtered_queries=aid_reference_jobs,
++            primary, filtered_queries=reference_jobs,
+             timeout=request_budget.remaining(30) if request_budget else None,
+             allow_spelling=allow_spelling,
+         )
+@@ -888,7 +898,7 @@
+         else:
+             initial_docs = multi_query_retrieve(
+                 primary,
+-                extra_queries=aid_queries + phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries + academic_list_queries + subject_queries + grade_queries + id_queries + navigation_queries + location_queries,
++                extra_queries=aid_queries + phrasings[1:] + aspects + identity_queries + procedure_queries + catalog_queries + history_queries + roster_queries + discount_queries + honor_queries + academic_list_queries + subject_queries + grade_queries + intent_queries + navigation_queries + location_queries,
+                 timeout=request_budget.remaining(30) if request_budget else None,
+                 allow_spelling=allow_spelling,
+             )
+@@ -1047,9 +1057,9 @@
+         initial_docs, grading_documents(initial_docs, scope_question),
+         filter_name="grading evidence", query=scope_question,
+     ) if grade_queries else []
+-    id_evidence = evidence_documents_or_ranked_fallback(
+-        initial_docs, student_id_documents(initial_docs), filter_name="student-ID evidence", query=scope_question,
+-    ) if id_queries else []
++    intent_evidence = [doc for name, intent in policy_intents.items() for doc in evidence_documents_or_ranked_fallback(
++        initial_docs, intent.documents(initial_docs), filter_name=f"{name} evidence", query=scope_question,
++    )]
+     enrollment_evidence = evidence_documents_or_ranked_fallback(
+         initial_docs, enrollment_documents(initial_docs, scope_question),
+         filter_name="enrollment evidence", query=scope_question,
+@@ -1062,13 +1072,13 @@
+         filter_name="leadership roster", query=scope_question,
+     ) if roster_search_queries else []
+     roster_evidence.sort(key=lambda doc: len(set(document_unit_names(doc))), reverse=True)
+-    if selection.restricted or catalog_queries or history_queries or subject_queries or grade_queries or id_queries or enrollment_evidence or not source_filter_enabled:
++    if selection.restricted or catalog_queries or history_queries or subject_queries or grade_queries or complete_intent or enrollment_evidence or not source_filter_enabled:
+         # Reserve space for each source and catalog/history section
+         # before the reranker's fixed scoring budget, not after it has cut them.
+         groups = {}
+         for doc in initial_docs:
+             md = doc.metadata or {}
+-            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries or history_queries or subject_queries or grade_queries or id_queries or enrollment_evidence else ""
++            section = (md.get("section_heading") or md.get("section") or md.get("header") or "") if catalog_queries or history_queries or subject_queries or grade_queries or complete_intent or enrollment_evidence else ""
+             groups.setdefault((doc_key(md.get("source", "")), str(section)), []).append(doc)
+         initial_docs = [
+             documents[rank]
+@@ -1111,7 +1121,7 @@
+             initial_docs,
+             top_k=top_k,
+             max_pairs=RERANK_CANDIDATES,
+-            queries=[f"{topic} overview description"] if topic else phrasings[1:] + identity_queries + procedure_queries + catalog_queries + subject_queries + grade_queries + id_queries,
++            queries=[f"{topic} overview description"] if topic else phrasings[1:] + identity_queries + procedure_queries + catalog_queries + subject_queries + grade_queries + intent_queries,
+             request_budget=request_budget,
+             preferred_query=preferred_query,
+         )
+@@ -1142,10 +1152,10 @@
+             snippet = doc.page_content.replace("\n", " ")[:70]
+             print(f"  [{i+1}] score={score_s} | {src} (Pg {pg}){aspect_s}: {snippet}...")
+ 
+-    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence or academic_list_evidence or subject_evidence or grading_evidence or enrollment_evidence or id_evidence:
++    if roster_evidence or catalog_evidence or discount_evidence or honor_evidence or academic_list_evidence or subject_evidence or grading_evidence or enrollment_evidence or intent_evidence:
+         seen = set()
+         ordered = []
+-        for doc in [*id_evidence, *enrollment_evidence, *grading_evidence, *subject_evidence, *academic_list_evidence, *roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
++        for doc in [*intent_evidence, *enrollment_evidence, *grading_evidence, *subject_evidence, *academic_list_evidence, *roster_evidence, *catalog_evidence, *discount_evidence, *honor_evidence, *final_docs]:
+             metadata = doc.metadata or {}
+             key = metadata.get("chunk_id") or (metadata.get("source"), metadata.get("page"), doc.page_content)
+             if key not in seen:
+@@ -1153,7 +1163,7 @@
+                 ordered.append(doc)
+         # Complete curricula are small structured lists; reserve the eligible
+         # rows even when a generic reranker/context top-k would omit a semester.
+-        context_limit = max(top_k, min(len(subject_evidence) + len(grading_evidence) + len(enrollment_evidence) + len(id_evidence), RERANK_CANDIDATES))
++        context_limit = max(top_k, min(len(subject_evidence) + len(grading_evidence) + len(enrollment_evidence) + (len(intent_evidence) if complete_intent else 0), RERANK_CANDIDATES))
+         final_docs = ordered[:context_limit]
+     if program_evidence and top_k > 1:
+         seen = set()
+@@ -1591,9 +1601,10 @@
+                     request_text = contextual_query = followup
+                 else:
+                     request_text = resolve_query_intent(user_text, semantic_intent, history)
+-                from rag.source_policy import office_location_subject, registrar_location_queries
++                from rag.source_policy import office_location_subject, registrar_location_queries, specific_place_mentioned, campus_navigation_queries
+ 
+-                if registrar_location_queries(reply_language_source) or office_location_subject(reply_language_source):
++                if (registrar_location_queries(reply_language_source) or office_location_subject(reply_language_source)
++                        or (specific_place_mentioned(reply_language_source) and not campus_navigation_queries(reply_language_source))):
+                     request_text = user_text = reply_language_source
+                 if request_text != user_text:
+                     # Use one resolved intent for evidence and answer routing.
+@@ -1651,18 +1662,19 @@
+             from rag.source_policy import (
+                 BROAD_AID_GUIDANCE, broad_aid_queries, campus_location_queries, campus_navigation_queries,
+                 curriculum_queries, enrollment_queries, family_discount_documents, family_discount_queries,
+-                filter_documents_or_fallback, grading_queries, student_id_queries,
++                filter_documents_or_fallback, grading_queries, matching_policy_intents,
+                 registrar_location_documents, registrar_location_queries,
+                 office_location_documents, office_location_subject,
+             )
+ 
+             curriculum_request = bool(curriculum_queries(request_text))
+             grading_request = bool(grading_queries(request_text))
+-            id_request = bool(student_id_queries(request_text))
++            answer_intents = matching_policy_intents(request_text)
++            complete_intent = any(intent.complete_context for intent in answer_intents.values())
+             navigation_request = bool(campus_navigation_queries(request_text))
+             location_request = bool(campus_location_queries(request_text))
+             registrar_location_request = bool(registrar_location_queries(request_text))
+-            office_subject = "" if registrar_location_request else office_location_subject(request_text)
++            office_subject = "" if registrar_location_request or "classroom_location" in answer_intents else office_location_subject(request_text)
+             office_location_request = bool(office_subject)
+             broad_aid_request = bool(broad_aid_queries(request_text))
+             family_discount_followup = request_text != user_text and bool(family_discount_queries(request_text))
+@@ -1671,7 +1683,9 @@
+                 r"\ball\b.{0,80}\b(?:enrollment|enrolment)\b|\b(?:enrollment|enrolment)\b.{0,80}\ball\b",
+                 request_text, re.I,
+             ))
+-            context_limit = max(FINAL_TOP_K, RERANK_CANDIDATES) if curriculum_request or grading_request or enrollment_all_request or id_request or broad_aid_request else FINAL_TOP_K
++            context_limit = max(FINAL_TOP_K, RERANK_CANDIDATES) if curriculum_request or grading_request or enrollment_all_request or complete_intent or broad_aid_request else FINAL_TOP_K
++            if any(intent.strict_evidence for intent in answer_intents.values()):
++                final_docs = [doc for doc in final_docs if any(intent.documents([doc]) for intent in answer_intents.values())]
+             if family_discount_followup:
+                 final_docs = filter_documents_or_fallback(
+                     final_docs, family_discount_documents(final_docs),
+@@ -1718,7 +1732,7 @@
+             ))
+             academic_list_request = bool(deans_list_queries(request_text))
+             curriculum_request = bool(curriculum_queries(request_text))
+-            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic) or curriculum_request or grading_request or enrollment_all_request or id_request or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup
++            scoped_answer = selection.restricted or bool(selection.requested_unit) or academic_list_request or bool(topic) or curriculum_request or grading_request or enrollment_all_request or bool(answer_intents) or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup
+             if len(history) > 10 and not scoped_answer and not department_listing and not program_listing and not institution_history:
+                 try:
+                     summary_future = optimizer_pool.submit(summarize_history, history[:-6])
+@@ -1733,7 +1747,7 @@
+ 
+             # Keep the stored conversation intact, but do not feed obsolete
+             # assistant facts or summaries back into a scoped document answer.
+-            if grading_request or curriculum_request or enrollment_all_request or id_request or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup or department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
++            if grading_request or curriculum_request or enrollment_all_request or answer_intents or navigation_request or location_request or registrar_location_request or office_location_request or broad_aid_request or family_discount_followup or department_listing or academic_list_request or topic or ((program_listing or institution_history) and not is_unit_reference(request_text)):
+                 prompt_history = []
+             else:
+                 prompt_history = [m for m in history if m.get("role") == "user"] if scoped_answer or program_listing or institution_history else history
+@@ -1825,10 +1839,8 @@
+                 from rag.source_policy import GRADING_GUIDANCE
+ 
+                 final_system_prompt += "\n\n" + GRADING_GUIDANCE
+-            if id_request:
+-                from rag.source_policy import STUDENT_ID_GUIDANCE
+-
+-                final_system_prompt += "\n\n" + STUDENT_ID_GUIDANCE
++            for intent in answer_intents.values():
++                final_system_prompt += "\n\n" + intent.guidance
+             if navigation_request:
+                 from rag.source_policy import NAVIGATION_GUIDANCE
+ 
+@@ -1897,6 +1909,8 @@
+                 "chronological account of the documented events, not a short overview. "
+                 "Do not append follow-up offers, login reminders, or inventories of unrequested missing details. "
+                 "Never discuss retrieved documents, document access, retrieval limitations, or claim you lack a document. "
++                "Active dropped-subject and classroom-location guidance may state their verified coverage gaps and school referrals; "
++                "those request-specific instructions take precedence over the generic document-gap restriction. "
+                 "If an explicitly requested fact cannot be established, say only that you cannot confirm that fact; "
+                 "do not guess. Do not volunteer an inability to confirm facts the user did not ask for.\n</answer_scope>"
+             )
+--- a/rag/query_intent.py
++++ b/rag/query_intent.py
+@@ -21,6 +21,8 @@
+     "scholarship": "scholarship eligibility requirements",
+     "calendar": "academic calendar schedule dates",
+     "student_id": "lost student ID RFID identification card replacement procedure",
++    "dropped_subject": "Dropped DR subject remark attendance academic awards TES",
++    "classroom_location": "classroom location room assignments enrolled subjects",
+     "campus_navigation": "I am lost on campus Samar College directions",
+     "campus_location": "Samar College address",
+ }
+@@ -81,7 +83,8 @@
+     if not isinstance(question, str) or not question.strip():
+         return False
+     text = request_text(question)
+-    if policy.campus_location_queries(text):
++    if (policy.campus_location_queries(text) or policy.dropped_subject_queries(text)
++            or policy.classroom_location_queries(text)):
+         return False
+     references = re.sub(r"\bthis\s+(?:school|college|semester|year|month|week)\b", "", text, flags=re.I)
+     # 'IT' is also a program label. Its presence alone is not a pronoun reference.
+@@ -143,7 +146,6 @@
+     detectors = (
+         ("campus_location", policy.campus_location_queries),
+         ("campus_navigation", policy.campus_navigation_queries),
+-        ("student_id", policy.student_id_queries),
+         ("deans_list", policy.deans_list_queries), ("grading", policy.grading_queries),
+         ("curriculum", policy.curriculum_queries), ("history", policy.institution_history_queries),
+         ("honors", policy.honors_queries), ("family_discount", policy.family_discount_queries),
+@@ -152,14 +154,29 @@
+         ("program_offerings", policy.program_catalog_queries), ("leadership", policy.leadership_roster_queries),
+         ("leadership", program_dean_subject), ("general", program_overview_subject),
+     )
+-    return {name for name, detector in detectors if detector(question)}
++    return {name for name, detector in detectors if detector(question)} | set(policy.matching_policy_intents(question))
+ 
+ 
+ def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic=True):
+     """Reject subject invention independently of whether the original has a known intent."""
+     from rag.source_policy import _grading_level, broad_aid_queries, grading_queries, student_card_mentioned
++    from rag import source_policy as policy
+ 
+     explicit = known_query_intents(question)
++    if (policy.specific_place_mentioned(question) and not policy.campus_navigation_queries(question)
++            and (policy.campus_navigation_queries(rewritten) or policy.campus_location_queries(rewritten))):
++        return False
++    if "dropped_subject" in explicit and not policy.dropped_subject_queries(rewritten):
++        return False
++    if (policy.dropped_subject_queries(rewritten) and "dropped_subject" not in explicit
++            and not query_needs_history(question)):
++        return False
++    if "classroom_location" in explicit and not policy.classroom_location_queries(rewritten):
++        return False
++    if (preserve_topic and "classroom_location" in explicit
++            and re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", question, re.I)
++            and not re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", rewritten, re.I)):
++        return False
+     if grading_queries(question):
+         if not grading_queries(rewritten):
+             return False
+@@ -285,9 +302,9 @@
+             return f"{previous} complete details for all applicable categories"
+         return question
+     if (isinstance(intent, QueryIntent) and intent.name in {"campus_location", "campus_navigation"}
+-            and policy.office_location_subject(question)):
+-        # "Where is the library/clinic/cashier?" asks about ONE place. Rewriting it to
+-        # the school's own address drops the place and matches any 'LOCATION' chunk.
++            and policy.specific_place_mentioned(question) and not policy.campus_navigation_queries(question)):
++        # A specific place (even a fragment or personal classroom) is not an
++        # unmentioned lost-speaker request or the institution's own address.
+         return question
+     resolved = resolve_family_discount_followup(question, history)
+     if resolved != question:
+@@ -320,7 +337,7 @@
+     if intent.name == "curriculum":
+         if not intent.subject or not policy.curriculum_program(f"{intent.subject} subjects"):
+             return question
+-    if intent.name == "student_id" and not policy.student_id_queries(question):
++    if intent.name in policy.INTENT_REGISTRY and not policy.INTENT_REGISTRY[intent.name].queries(question):
+         return question
+     unit = requested_unit(question)
+     constraints = re.findall(
+--- a/rag/source_policy.py
++++ b/rag/source_policy.py
+@@ -9,6 +9,7 @@
+ from __future__ import annotations
+ 
+ import re
++from collections.abc import Callable
+ from copy import copy
+ from dataclasses import dataclass
+ from datetime import date, datetime, timezone
+@@ -76,6 +77,60 @@
+ a multi-step replacement workflow. Do not borrow fees from lost computer equipment
+ or lab property. Keep source-version boundaries and clearly label older policy.
+ </student_id_request>"""
++DROPPED_SUBJECT_GUIDANCE = """<dropped_subject_request>
++The user describes receiving a Dropped/DR subject remark or being dropped by an
++instructor, not choosing to drop a subject. Answer that implied request for help.
++Do not substitute voluntary dropping/changing/adding procedures, a Registrar form,
++dean approval steps, or the 15-school-day deadline.
++For a broad request, explain the supplied attendance rule (maximum 6 accumulated
++absences in a regular semester, 3 in summer) and the final rating remarks Passed,
++Failed and Dropped. Do not claim exceeding the absence limit automatically causes
++a Dropped remark; the handbook does not state that causal rule.
++Explain only documented INC, Dropped (DR) or failing-grade consequences, naming the
++specific award or program for EACH condition. Keep Graduate School Academic
++Excellence Award and Academic Achievers Award separate from collegiate graduation
++honors, Academic Excellence Award, Academic Achievement Award, Special Citation
++Award for Commendable Academic Achievement, and Academic Scholarship for College. Preserve any supplied
++transferee/health/financial exceptions; do not assert permanent or universal
++disqualification from all awards, scholarships or enrollment.
++The more-than-one-dropped-course TES ineligibility rule is specifically under
++Diploma Programs / UAQTEA-TES (TESDA FY 2022 guidelines reproduced in the handbook):
++technology and/or academic courses, including
++general education. One dropped course alone is not that condition. Do not apply
++it to every student, every TES/CHED scholarship, or an unrelated award. Keep the
++previous-semester technology-course passing/competency condition separate.
++Use only supplied policy evidence and cite it. When using Samar-College-2024.pdf,
++visibly label the policy as the 2024 handbook fallback; a year inside a citation
++tag alone is not enough, and these terms are not verified current policy.
++The documents do NOT explain how to retake, appeal or recover after a subject is
++dropped. State that verified coverage gap explicitly and refer the student to the
++Registrar's Office and their college dean for case-specific advice. Do not invent
++a remedy, deadline, reinstatement, automatic retake, or a grade-appeal procedure;
++a disciplinary appeal is not a grade-recovery policy. These request-specific gap
++and referral instructions are an exception to generic document-gap restrictions.
++For a focused question, give only the requested policy detail and relevant limits.
++</dropped_subject_request>"""
++CLASSROOM_LOCATION_GUIDANCE = """<classroom_location_request>
++This asks about classroom/room assignments or locations, NOT being lost on campus
++or the school's street address. NEVER ask where the user is or their current
++location, even when no record or classroom location evidence is supplied.
++For 'my classroom' or 'what room is my class in', use ONLY the Room column of the
++consented STUDENT PERSONAL RECORD's currently enrolled subjects. Name the subject
++and its room, keeping any supplied course code. For an unscoped personal request,
++list each enrolled subject with its Room value; for a named subject, give its row.
++Do not cite personal records, expose another student's data, or infer a room's
++building/floor from its code. Blank or N/A Room values are not room assignments.
++If no enrollment record or requested Room value is supplied, say room assignments
++come from the student's enrollment record and refer them to the Registrar's
++Office or their college dean. Do not demand login or a starting landmark.
++For general 'classroom location', use only an explicit classroom location entry
++if supplied. Otherwise say the available documents do not list classroom
++locations. Do not guess or use the college address, a library floor, a historical
++building description, or a classroom-preparation calendar entry as a classroom
++location. A general question does not request the student's personal schedule.
++The verified classroom coverage gap and school referral are permitted here despite
++generic restrictions on discussing document gaps. Keep the answer direct.
++</classroom_location_request>"""
+ SOURCE_SELECTION_GUIDANCE = """<source_selection>
+ Current source documents have been selected for this question. Use ONLY their
+ provided content for public document facts, subject to admin-verified facts.
+@@ -274,7 +329,7 @@
+ 
+ def campus_location_queries(query):
+     """Recognize a named-school address, including Waray article 'it'."""
+-    if not isinstance(query, str):
++    if not isinstance(query, str) or specific_place_mentioned(query):
+         return []
+     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+     school = r"(?:samar\s+colleges?(?:\s+inc)?|sc|(?:the|your|our|this)\s+(?:school|campus))"
+@@ -364,7 +419,7 @@
+ 
+ _PLACE_NOUN = (
+     r"office|library|clinic|canteen|cafeteria|cashier|registrar|guidance|counsel\w*|osas|gcsd|security|"
+-    r"laborator\w+|lab|gym\w*|chapel|hall|building|annex|room|department|bookstore|admissions?|"
++    r"laborator\w+|labs?|gym\w*|chapel|halls?|buildings?|annex|class\s*rooms?|rooms?|floors?|department|bookstore|admissions?|"
+     r"accounting|treasury|finance|research|publication|scholarship|sports|affairs|development|gender|"
+     r"dental|medical|stage|quadrangle|auditorium|comfort\s+room|cr|"
+     r"college\s+of\s+\w+|coed|citas|clas|cocje|scti"
+@@ -376,6 +431,12 @@
+                 "often", "samar", "school", "campus", "sc", "college", "colleges"}
+ _OFFICE_FILLER = {"the", "a", "an", "of", "for", "and", "office", "offices", "located", "situated", "found",
+                   "please", "pls", "po", "ba", "man", "gud", "samar", "college", "colleges", "inc", "at", "in"}
++_NUMBERED_ROOM = r"\b(?P<kind>class\s*rooms?|rooms?)\s*(?:(?:number|no)\.?\s*)?(?P<code>(?:[a-z]{1,6}[- ]?)?\d+[a-z]?)\b"
++
++
++def specific_place_mentioned(query):
++    """A room/place noun cannot supply an unmentioned lost-speaker or school-address intent."""
++    return isinstance(query, str) and bool(re.search(rf"\b(?:{_PLACE_NOUN}|restrooms?|toilets?|gates?|entrances?|exits?)\b|{_NUMBERED_ROOM}", query, re.I))
+ 
+ 
+ def office_location_subject(query):
+@@ -399,6 +460,8 @@
+         if match:
+             subject = match["s"]
+             break
++    if numbered := re.search(_NUMBERED_ROOM, subject, re.I):
++        return f"{numbered.group('kind').lower()} {numbered.group('code').lower()}"
+     words = [w for w in subject.split() if w not in {"the", "a", "an", "ang", "an"}]
+     words = [w for w in words if w not in {"located", "situated", "found", "please", "pls", "po", "ba", "man", "gud"}]
+     if not words or len(words) > 6 or words[0] in _NOT_A_PLACE or any(w in {"my", "our", "your"} for w in words):
+@@ -449,12 +512,12 @@
+         return []
+     campus = re.search(r"\b(?:SC|Samar\s+College|campus|school|college|eskwelahan|eskuylahan)\b", query, re.I)
+     speaker = re.search(
+-        r"\b(?:i\s+(?:(?:am|got|feel)\s+)?lost|i['\u2019]m\s+lost|we\s+(?:are|got)\s+lost|"
++        r"\b(?:i\s+(?:(?:am|get|got|feel)\s+)?lost|i['\u2019]m\s+lost|we\s+(?:are|got)\s+lost|"
+         r"(?:nawawara|nawara|nawawala|nawala|naliligaw)\s+(?:ak|ako|kami|kita))\b|"
+         r"\blost\s+(?:on|at|in|around)\s+(?:(?:the|this)\s+)?(?:SC|Samar\s+College|campus|school|college)\b",
+         query, re.I,
+     )
+-    return ["Samar College campus map layout directions buildings locations"] if campus and speaker else []
++    return ["Samar College campus map layout directions buildings locations"] if speaker and (campus or specific_place_mentioned(query)) else []
+ 
+ 
+ def campus_navigation_documents(documents):
+@@ -508,6 +571,142 @@
+     return selected
+ 
+ 
++def dropped_subject_queries(query):
++    """Received academic status, not a voluntary drop request or 'dropped off'."""
++    if not isinstance(query, str):
++        return []
++    if re.search(r"\bdrop(?:ped|ping|s)?\s+off\b|"
++                 r"\b(?:want|wish|plan|intend)\s+(?:to\s+)?drop\b|"
++                 r"\bhow\s+(?:can|could|do|to)\s+(?:(?:i|we)\s+)?(?:get|have|make)\b.{0,40}"
++                 r"\b(?:subjects?|courses?|class(?:es)?)\b.{0,20}\bdropped\b|"
++                 r"\b(?:not|never|hindi|diri)\s+(?:been\s+)?dropped\b", query, re.I):
++        return []
++    academic = re.search(r"\b(?:subjects?|courses?|class(?:es)?|grades?|marks?|remarks?|ratings?)\b", query, re.I)
++    received = re.search(
++        r"\b(?:i|we|you|students?)\s+(?:(?:might|may|will|would|could|can)\s+)?"
++        r"(?:get|got|gets|am|are|was|were|have\s+been|has\s+been|be)\s+(?:being\s+)?drop(?:ped)?\b|"
++        r"\b(?:subjects?|courses?|class(?:es)?)\b.{0,35}\b(?:is|was|were|got|has\s+been|had\s+been)\s+dropped\b|"
++        r"\bdropped\s+(?:subjects?|courses?|class(?:es)?)\b", query, re.I,
++    )
++    remark = re.search(r"\bdropped\b|\bDR\b(?!\.\s*[a-z])", query, re.I) and re.search(
++        r"\b(?:grades?|marks?|remarks?|ratings?|status|marked)\b", query, re.I,
++    )
++    instructor = re.search(
++        r"\b(?:instructor|teacher|professor|prof)\b.{0,60}\bdrop(?:ped|s|ping)?\s+"
++        r"(?:(?:me|us|students?)\b|(?:(?:my|the|a|our)\s+)?(?:subjects?|courses?|class(?:es)?)\b)|"
++        r"\bdropped\s+(?:me\s+)?by\s+(?:(?:my|the|an)\s+)?(?:instructor|teacher|professor|prof)\b",
++        query, re.I,
++    )
++    local_received = re.search(
++        r"\b(?:na|ma|gin)[ -]?drop(?:ped)?\s+(?:(?:po|man|gud)\s+)*(?:ako|ak|kami|kita)\b|"
++        r"\b(?:na|ma|gin)[ -]?drop(?:ped)?\s+(?:an|ang|it)\s+(?:(?:akon|aking|my)\s+)?"
++        r"(?:subjects?|courses?|klase)\b", query, re.I,
++    )
++    if not ((academic and received) or remark or instructor or local_received):
++        return []
++    return [
++        "attendance maximum accumulated absences six regular semester three summer",
++        "grading system acceptable final rating remarks Passed Failed Dropped",
++        "Graduate School Academic Excellence Academic Achievers incomplete INC Dropped DR failing grades",
++        "College graduation honors Summa Cum Laude Magna Cum Laude Cum Laude INC Failed DR transferees",
++        "College Academic Excellence Academic Achievement Special Citation Commendable Academic Achievement INC Failed DR transferees health financial problems",
++        "TESDA Circular 027 Series 2022 scope coverage selection scholars Diploma Programs UAQTEA TES FY 2022",
++        "Diploma Programs UAQTEA TES eligibility technology courses more than one dropped course general education",
++        "Academic Scholarship for College transferee INC Failed grades 2.50",
++    ]
++
++
++def dropped_subject_documents(documents, *, include_scope=True):
++    """Attendance, rating remarks and named benefit conditions, not voluntary-drop forms."""
++    selected = []
++    for document in documents:
++        text = getattr(document, "page_content", "") or ""
++        metadata = getattr(document, "metadata", None) or {}
++        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
++        if re.search(r"\btable of contents\b|\.{3,}\s*\d+|"
++                     r"\bdetails\s+will\s+be\s+(?:posted|provided)\b", text, re.I):
++            continue
++        # Indexed context headers are identity hints, not INC/DR grade evidence.
++        body = re.sub(r"^Samar Colleges?,\s*Inc\.(?:\s*-\s*[^\n]*)?\s*\n", "", text, flags=re.I)
++        body = re.sub(r"^\[SECTION:[^\]]*\]\s*", "", body)
++        attendance = re.search(r"\b(?:maximum|accumulated)\b.{0,120}\babsences?\b|"
++                               r"\babsences?\b.{0,120}\b(?:regular\s+semester|summer)\b", body, re.I | re.S)
++        remarks = re.search(r"\bfinal\s+rating\s+remarks?\b.{0,100}\bdropped\b", body, re.I | re.S)
++        status = re.search(r"\b(?:incomplete|dropped)\b(?!\s+(?:(?:scholarship|enrollment)\s+)?"
++                           r"(?:applications?|forms?|documents?|requirements?|requests?))|"
++                           r"\bINC\b(?!\.)|\bDR\b(?!\.\s*[a-z])|"
++                           r"\b(?:failed|failing)\s+(?:grades?|marks?|courses?)\b|\bdid\s+not\s+pass\b", body, re.I)
++        grade_context = re.search(r"\b(?:grades?|marks?|remarks?|ratings?|subjects?|courses?)\b", body, re.I)
++        condition = re.search(r"\b(?:no|not|must|shall|candidates?|qualif\w*|eligib\w*|grounds)\b|"
++                              r"\bmore\s+than\s+(?:one|1)\b", body, re.I)
++        benefit = re.search(r"\b(?:academic\s+excellence|academic\s+achiev\w*|commendable\s+academic|"
++                            r"honors?|summa|magna|cum\s+laude|scholarships?|TES|UAQTEA)\b", headings + "\n" + body, re.I)
++        tes_scope = (include_scope and re.search(r"\b(?:scope and coverage|selection of scholars|guidelines shall cover)\b", body, re.I)
++                     and re.search(r"\bDiploma Programs\b", body, re.I)
++                     and re.search(r"\b(?:UAQTEA[ -]?TES|TESDA)\b", body, re.I))
++        if attendance or remarks or (status and grade_context and condition and benefit) or tes_scope:
++            selected.append(document)
++    return selected
++
++
++def classroom_location_queries(query):
++    """Classroom assignments/locations, not named rooms or calendar preparation."""
++    if not isinstance(query, str) or campus_navigation_queries(query):
++        return []
++    if re.search(r"\b(?:preparation|prepare|preparing|calendar)\b", query, re.I) or re.search(_NUMBERED_ROOM, query, re.I):
++        return []
++    classroom = re.search(r"\bclass\s*rooms?\b", query, re.I)
++    class_room = re.search(r"\brooms?\b", query, re.I) and re.search(r"\b(?:class(?:es)?|subjects?|klase)\b", query, re.I)
++    location = re.search(r"\b(?:where|diin|hain|saan|asa|locations?|located|assigned)\b|"
++                         r"\b(?:what|which|ano)\s+(?:(?:ang|an|the)\s+)?rooms?\b", query, re.I)
++    personal = re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", query, re.I)
++    if not ((classroom and (location or personal)) or (class_room and location)):
++        return []
++    return ["classroom locations room assignments enrolled subjects enrollment record Room"]
++
++
++def classroom_location_documents(documents):
++    """Only explicit numbered classroom placement, never generic building mentions."""
++    selected = []
++    for document in documents:
++        text = getattr(document, "page_content", "") or ""
++        if re.search(r"\bclassroom\s+preparation\b", text, re.I):
++            continue
++        for room in re.finditer(r"\bclass\s*rooms?\s+(?:(?:number|no)\.?\s*)?(?:[a-z]-?)?\d+\w*\b", text, re.I):
++            if re.search(r"\b(?:floor|building|annex|wing)\b", text[max(0, room.start() - 60):room.end() + 100], re.I):
++                selected.append(document)
++                break
++    return selected
++
++
++@dataclass(frozen=True)
++class PolicyIntent:
++    """A detector returns bounded search probes, or [] when the request does not match."""
++
++    queries: Callable[[str], list[str]]
++    documents: Callable[[list], list]
++    guidance: str
++    complete_context: bool = False
++    fallback_search: bool = False
++    strict_evidence: bool = False
++    coverage: Callable[[list], list] | None = None
++
++
++# Only these handlers are migrated; other policy routes retain their existing wiring.
++INTENT_REGISTRY = {
++    "student_id": PolicyIntent(student_id_queries, student_id_documents, STUDENT_ID_GUIDANCE, complete_context=True),
++    "dropped_subject": PolicyIntent(dropped_subject_queries, dropped_subject_documents, DROPPED_SUBJECT_GUIDANCE,
++                                    complete_context=True, fallback_search=True, strict_evidence=True,
++                                    coverage=lambda docs: dropped_subject_documents(docs, include_scope=False)),
++    "classroom_location": PolicyIntent(classroom_location_queries, classroom_location_documents, CLASSROOM_LOCATION_GUIDANCE,
++                                       strict_evidence=True),
++}
++
++
++def matching_policy_intents(query):
++    return {name: intent for name, intent in INTENT_REGISTRY.items() if intent.queries(query)}
++
++
+ def family_discount_queries(query):
+     """Recognize family-benefit wording without asserting personal eligibility."""
+     if not isinstance(query, str):
+@@ -1499,8 +1698,8 @@
+     evidence = body_terms | heading_terms
+     if queries and family_discount_queries(queries[0]) and not any(enrollment_queries(query) for query in queries):
+         return bool(family_discount_documents([document]))
+-    if queries and student_id_queries(queries[0]):
+-        return bool(student_id_documents([document]))
++    if intents := matching_policy_intents(queries[0]) if queries else {}:
++        return any((intent.coverage or intent.documents)([document]) for intent in intents.values())
+     if queries and campus_navigation_queries(queries[0]):
+         return bool(campus_navigation_documents([document]))
+     if queries and campus_location_queries(queries[0]):
+@@ -1677,9 +1876,11 @@
+         documents = filter_documents_or_fallback(
+             documents, grading_documents(documents, queries[0]), filter_name="grading", query=queries[0],
+         )
+-    if queries and student_id_queries(queries[0]):
+-        documents = filter_documents_or_fallback(
+-            documents, student_id_documents(documents), filter_name="student-ID", query=queries[0],
++    intents = matching_policy_intents(queries[0]) if queries else {}
++    if intents:
++        matching = [doc for doc in documents if any(intent.documents([doc]) for intent in intents.values())]
++        documents = matching if all(intent.strict_evidence for intent in intents.values()) else filter_documents_or_fallback(
++            documents, matching, filter_name="registered policy", query=queries[0],
+         )
+     # Location/navigation are EVIDENCE gates, not scoping filters. If no passage
+     # actually states the address, the right outcome is "cannot confirm", not
+--- a/src/prompt.py
++++ b/src/prompt.py
+@@ -21,7 +21,7 @@
+ 
+ 2. **Source-Based Reasoning & STRICT GROUNDING (CRITICAL):** Base your answers **EXCLUSIVELY** on the documents in the <context> section below and, when relevant, the student's personal record.
+    - **NO INVENTED ANSWERS:** If the exact requested fact cannot be established, briefly say that you cannot confirm it. Do NOT guess, infer, assume, or use outside knowledge.
+-   - Never claim that a document or information is absent from the knowledge base merely because a passage was not selected. Do not describe retrieval limitations, document access, or missing passages in the visible answer.
++   - Never claim that a document or information is absent from the knowledge base merely because a passage was not selected. Do not describe retrieval limitations, document access, or missing passages in the visible answer. Exception: follow the verified coverage-gap and school-referral instructions in an active dropped-subject or classroom-location guidance block; these are known content limits, not a failed search.
+    - This rule applies in every reply language: do not say 'I could not find a document', 'no document is available', or the Waray equivalent 'waray ako makit-an nga dokumento'. State uncertainty only about an explicitly requested fact. If a city/province is documented for a broad location question, give that supported location without volunteering that a more exact address is unknown. Do not append referrals to external pages/contact channels or offers about unrelated topics.
+    - Preserve who or what the user describes. A person being lost on campus is not a lost-ID report; do not invent an ID or other possession. If their current landmark or destination is needed, ask for it briefly in their language. An office address establishes its location, not that it handles the user's problem; recommend a service/office action only when the selected policy supports that action.
+    - **NO GUESSING OR INVENTING DEPARTMENTS:** When listing programs, you MUST place them under their exact College or Department name as explicitly written in the retrieved text. **Do NOT invent or hallucinate department names like "College of Liberal Arts (CoLA)".**
+--- a/tests/test_query_intent.py
++++ b/tests/test_query_intent.py
+@@ -3,7 +3,9 @@
+ import json
+ import tempfile
+ import unittest
++from datetime import date
+ from pathlib import Path
++from types import SimpleNamespace
+ from unittest.mock import patch
+ 
+ import _bootstrap  # noqa: F401
+@@ -13,6 +15,217 @@
+ 
+ 
+ class QueryIntentTests(unittest.TestCase):
++    def test_received_dropped_subject_status_keeps_its_public_policy_intent(self):
++        variants = (
++            "what do i do if i get drop on a subject?",
++            "What should I do if I get dropped in a subject?",
++            "I was dropped from a class", "My course was dropped",
++            "My instructor dropped me", "The teacher dropped my subject",
++            "I was dropped by my professor", "My grade is Dropped (DR)",
++            "What does a DR remark mean?", "Dropped subject",
++            "na-drop ako", "nadrop ako sa subject", "na drop ako sa subject ko",
++            "na-drop ak", "gin-drop ak ha subject", "ma-drop ako sa subject",
++            "na-drop ang subject ko", "gin-drop an akon subject",
++        )
++        probes = policy.dropped_subject_queries(variants[0])
++        self.assertTrue(any("attendance" in probe for probe in probes))
++        self.assertTrue(any("final rating remarks" in probe for probe in probes))
++        self.assertTrue(any("Graduate School" in probe for probe in probes))
++        self.assertTrue(any("UAQTEA TES" in probe for probe in probes))
++        for question in variants:
++            with self.subTest(question=question):
++                self.assertIn("dropped_subject", known_query_intents(question))
++                self.assertFalse(policy.enrollment_queries(question))
++                self.assertFalse(query_needs_history(question))
++                self.assertEqual(policy.dropped_subject_queries(question), probes)
++                self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
++                self.assertFalse(query_rewrite_supported(question, "how do I drop a subject", preserve_topic=False))
++
++    def test_voluntary_dropping_and_nonacademic_drops_do_not_receive_the_status_intent(self):
++        variants = (
++            "how do I drop a subject", "I want to drop", "can I drop after 15 days",
++            "how can I get a subject dropped",
++            "deadline for dropping, changing and adding subjects",
++            "I was dropped off at the gate", "cancel my registration",
++            "I want to drop a subject", "how can I have my course dropped",
++            "I was not dropped in a subject", "The instructor dropped a pen",
++            "I got dropped from the team", "The stock price dropped",
++            "Dr. Santos assigned my grade", "What is Dr. Reyes's grading policy?",
++            "gusto ko mag-drop ng subject", "mag-drop ako", "na-drop ko ang subject",
++            "drop ako", "DR", None, 42, "",
++        )
++        for question in variants:
++            with self.subTest(question=question):
++                self.assertFalse(policy.dropped_subject_queries(question))
++                self.assertEqual(resolve_query_intent(question, QueryIntent("dropped_subject")), question)
++                if isinstance(question, str):
++                    self.assertNotIn("dropped_subject", known_query_intents(question))
++                    if question:
++                        self.assertFalse(query_rewrite_supported(question, "Dropped subject DR remark", preserve_topic=False))
++
++    def test_registry_migrates_only_the_two_new_intents_and_student_id(self):
++        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location"})
++        for name, question, guidance in (
++            ("student_id", "I lost my ID", policy.STUDENT_ID_GUIDANCE),
++            ("dropped_subject", "I was dropped from a subject", policy.DROPPED_SUBJECT_GUIDANCE),
++            ("classroom_location", "classroom location", policy.CLASSROOM_LOCATION_GUIDANCE),
++        ):
++            with self.subTest(name=name):
++                self.assertEqual(set(policy.matching_policy_intents(question)), {name})
++                intent = policy.INTENT_REGISTRY[name]
++                self.assertEqual(intent.guidance, guidance)
++                self.assertTrue(all(isinstance(probe, str) and probe for probe in intent.queries(question)))
++                self.assertEqual(decode_optimizer_output(json.dumps({
++                    "query": question, "intent": name, "subject": "",
++                }), "fallback"), (question, QueryIntent(name)))
++        self.assertTrue(policy.INTENT_REGISTRY["student_id"].complete_context)
++        self.assertTrue(policy.INTENT_REGISTRY["dropped_subject"].fallback_search)
++        self.assertTrue(policy.INTENT_REGISTRY["dropped_subject"].strict_evidence)
++        self.assertTrue(policy.INTENT_REGISTRY["classroom_location"].strict_evidence)
++
++    def test_dropped_guidance_scopes_consequences_and_forbids_invented_recovery(self):
++        guidance = " ".join(policy.DROPPED_SUBJECT_GUIDANCE.split())
++        for required in (
++            "maximum 6 accumulated absences", "3 in summer", "Passed, Failed and Dropped",
++            "Do not claim exceeding the absence limit automatically causes a Dropped remark",
++            "Graduate School Academic Excellence Award", "Academic Achievers Award",
++            "collegiate graduation honors", "Academic Achievement Award",
++            "Special Citation Award for Commendable Academic Achievement",
++            "Academic Scholarship for College", "transferee/health/financial exceptions",
++            "Diploma Programs / UAQTEA-TES", "TESDA FY 2022", "more-than-one-dropped-course",
++            "One dropped course alone is not that condition", "2024 handbook fallback",
++            "do NOT explain how to retake, appeal or recover", "State that verified coverage gap explicitly",
++            "Registrar's Office and their college dean", "Do not invent a remedy",
++            "Do not substitute voluntary dropping/changing/adding procedures",
++        ):
++            with self.subTest(required=required):
++                self.assertIn(required, guidance)
++
++    def test_classroom_location_and_personal_room_phrasings_keep_their_subject(self):
++        for question in (
++            "classroom location", "classroom locations", "Where is my classroom?", "my classroom",
++            "classroom location of Samar College", "my classroom location at Samar College",
++            "what room is my class in", "Which room are my classes in?",
++            "saan ang classroom ko?", "diin an akon classroom?", "diin it classroom?",
++            "hain an classroom ko?", "ano ang room ng klase ko?",
++        ):
++            with self.subTest(question=question):
++                self.assertIn("classroom_location", known_query_intents(question))
++                self.assertFalse(query_needs_history(question))
++                self.assertFalse(policy.campus_navigation_queries(question))
++                self.assertFalse(policy.campus_location_queries(question))
++                self.assertEqual(resolve_query_intent(question, QueryIntent("enrollment")), question)
++
++    def test_dropped_evidence_does_not_promote_corporate_or_doctor_names(self):
++        handbook = SimpleNamespace(
++            page_content="Academic Excellence Award: a candidate shall have no Incomplete (INC), Dropped (DR), or Failing grade in any subject.",
++            metadata={"source": "Samar-College-2024.pdf", "section_heading": "Academic Excellence Award"},
++        )
++        for text in (
++            "Samar Colleges, Inc. - Academic Scholarships\n[SECTION: Academic Scholarships]\nScholarship application forms are available at the Registrar office.",
++            "Academic Scholarship Committee: Dr. A. Santos is the chairperson.",
++            "Incomplete scholarship application forms have no grades attached.",
++        ):
++            with self.subTest(text=text):
++                incidental = SimpleNamespace(page_content=text, metadata={
++                    "source": "Scholarship_Service_2026.docx", "section_heading": "Academic Scholarship Services",
++                })
++                self.assertEqual(policy.dropped_subject_documents([incidental, handbook]), [handbook])
++                selection = policy.select_documents(
++                    [incidental, handbook], ["what do i do if i get drop on a subject?"],
++                    dates={"samar-college-2024.pdf": {"effective_date": "2024-06-01"}},
++                    uploads={"Scholarship_Service_2026.docx": "2026-11-19"}, today=date(2026, 11, 22),
++                )
++                self.assertEqual(selection.documents, [handbook])
++                self.assertFalse(selection.restricted)
++
++    def test_tes_scope_and_each_continuation_condition_survive_separate_chunks(self):
++        def passage(text, page, heading):
++            return SimpleNamespace(page_content=text, metadata={
++                "source": "Samar-College-2024.pdf", "page": page, "section_heading": heading,
++            })
++        scope = passage("TESDA Circular No. 027, Series 2022. These guidelines shall cover the selection of scholars "
++                        "for Diploma Programs under the UAQTEA-TES for FY 2022.", 39, "Scope and Coverage")
++        competency = passage("Learners who did not pass or achieve a competent rating in all technology courses "
++                             "in the previous semester;", 41, "Prioritization of UAQTEA-TES Scholars")
++        dropped = passage("Learners who have more than one dropped course (technology courses and/or academic courses "
++                          "including general education courses);", 41, "Prioritization of UAQTEA-TES Scholars")
++        self.assertEqual(policy.dropped_subject_documents([scope, competency, dropped]), [scope, competency, dropped])
++        coverage = policy.INTENT_REGISTRY["dropped_subject"].coverage
++        self.assertEqual(coverage([scope, competency, dropped]), [competency, dropped])
++        current_scope = SimpleNamespace(page_content=scope.page_content, metadata={**scope.metadata, "source": "TES_Scope_2026.docx"})
++        selection = policy.select_documents(
++            [current_scope, dropped], ["I was dropped from a subject"],
++            dates={"samar-college-2024.pdf": {"effective_date": "2024-06-01"}},
++            uploads={"TES_Scope_2026.docx": "2026-11-19"}, today=date(2026, 11, 22),
++        )
++        self.assertFalse(selection.restricted)
++        self.assertIn(dropped, selection.documents)
++
++    def test_both_optimizer_campus_labels_cannot_rewrite_specific_places(self):
++        for question in (
++            "classroom location", "my classroom", "what room is my class in",
++            "classroom location of Samar College", "library location of Samar College",
++            "where is room 101", "where is room 101 for my class?", "Where is room 101 (classroom)?",
++            "where is room101 for classes?", "room location", "lab location", "where is the laboratory",
++            "gym location", "comfort room location", "restroom location", "building location",
++            "floor location", "hall location", "where is the library", "where is the Registrar",
++            "where is the gate",
++            "classroom preparation schedule",
++        ):
++            for name in ("campus_navigation", "campus_location"):
++                with self.subTest(question=question, intent=name):
++                    self.assertEqual(resolve_query_intent(question, QueryIntent(name)), question)
++                    self.assertFalse(query_rewrite_supported(question, "I am lost on campus Samar College directions",
++                                                            preserve_topic=False))
++                    self.assertFalse(query_rewrite_supported(question, "Samar College address", preserve_topic=False))
++
++    def test_actual_lost_speakers_still_use_navigation_even_with_a_room_destination(self):
++        for question in ("I am lost on campus", "I am lost on campus looking for my classroom",
++                         "I am lost on campus near room 101", "I am lost near the library",
++                         "I am lost looking for my classroom", "What if I get lost near room 101?",
++                         "nawawara ak ha SC"):
++            with self.subTest(question=question):
++                self.assertIn("campus_navigation", known_query_intents(question))
++                self.assertNotIn("classroom_location", known_query_intents(question))
++                self.assertTrue(policy.campus_navigation_queries(question))
++                self.assertEqual(resolve_query_intent(question, QueryIntent("campus_location")), question)
++
++    def test_named_rooms_calendar_preparation_and_library_are_not_generic_classrooms(self):
++        for question in ("where is room 101", "classroom preparation schedule", "where is the library",
++                         "where is room 101 for my class?", "Where is room 101 (classroom)?",
++                         "Where is room 101 for classes?", "where is room101 for classes?",
++                         "Classroom Preparation May 18 and 25", "classroom rules", "library floors"):
++            with self.subTest(question=question):
++                self.assertFalse(policy.classroom_location_queries(question))
++                self.assertNotIn("classroom_location", known_query_intents(question))
++        self.assertEqual(policy.office_location_subject("where is room 101"), "room 101")
++        self.assertEqual(policy.office_location_subject("where is room 101 for my class?"), "room 101")
++        self.assertEqual(policy.office_location_subject("Where is room 101 (classroom)?"), "room 101")
++        self.assertEqual(policy.office_location_subject("where is room101 for classes?"), "room 101")
++        self.assertEqual(policy.office_location_subject("where is the library"), "library")
++
++    def test_room_correction_cannot_remove_personal_ownership(self):
++        for question in ("my classroom", "what room is my class in", "saan ang classroom ko?"):
++            with self.subTest(question=question):
++                self.assertFalse(query_rewrite_supported(question, "classroom location"))
++                self.assertTrue(query_rewrite_supported(question, "classroom locations", preserve_topic=False))
++        self.assertTrue(query_rewrite_supported("what room is my class in", "Where is my classroom?"))
++
++    def test_classroom_guidance_forbids_asking_user_location_and_uses_room_column(self):
++        guidance = " ".join(policy.CLASSROOM_LOCATION_GUIDANCE.split())
++        for required in (
++            "NEVER ask where the user is or their current location",
++            "Room column", "consented STUDENT PERSONAL RECORD", "Name the subject and its room",
++            "list each enrolled subject", "Blank or N/A Room values are not room assignments",
++            "room assignments come from the student's enrollment record",
++            "Registrar's Office or their college dean", "Do not demand login or a starting landmark",
++            "available documents do not list classroom locations", "Do not guess or use the college address",
++            "a library floor", "a classroom-preparation calendar entry",
++        ):
++            with self.subTest(required=required):
++                self.assertIn(required, guidance)
++
+     def test_waray_campus_location_questions_are_equivalent_and_history_independent(self):
+         variants = ("diin it sc?", "diin mabibilngan it sc", "Hain an Samar College?",
+                     "Where is Samar College located?", "What is the address of Samar Colleges, Inc.?",
+--- a/tests/test_newer_retrieval.py
++++ b/tests/test_newer_retrieval.py
+@@ -12,6 +12,7 @@
+ import datetime
+ import importlib.util
+ import io
++import json
+ import os
+ import re
+ import sys
+@@ -137,6 +138,183 @@
+ 
+ 
+ class NewerRetrievalTests(unittest.TestCase):
++    def test_dropped_subject_registry_searches_handbook_and_preserves_each_policy_section(self):
++        source = "Samar-College-2024.pdf"
++        question = "what do i do if i get drop on a subject?"
++        rows = [
++            document(source, "The maximum number of accumulated absences is six (6) for a regular semester and three (3) for summer.",
++                     "attendance", page=50, section_heading="ATTENDANCE / ABSENCES"),
++            document(source, "The acceptable final rating remarks shall be Passed, Failed, or Dropped.",
++                     "rating", page=50, section_heading="GRADING SYSTEM / Remarks"),
++            document(source, "Graduate School Academic Excellence Award and Academic Achievers Award: "
++                     "no Incomplete (INC), Dropped (DR), or Failing grade in subjects taken in Samar College.",
++                     "graduate-awards", page=26, section_heading="AWARDS FOR THE GRADUATE SCHOOL"),
++            document(source, "Graduation honors: Summa Cum Laude, Magna Cum Laude and Cum Laude. "
++                     "A candidate has no FAILED, INC or DR remarks; separate prior-school transferee conditions apply.",
++                     "college-honors", page=53, section_heading="Graduation Honors and Awards for College"),
++            document(source, "Academic Excellence Award, Academic Achievement Award and Special Citation Award for "
++                     "Commendable Academic Achievement each have no FAILED, INC or DR rating remarks in any subject. "
++                     "The Academic Excellence transferee clause separately mentions health or financial problems.",
++                     "college-awards", page=55, section_heading="Academic Awards / College"),
++            document(source, "Samar Colleges, Inc. - Scope and Coverage\n[SECTION: Scope and Coverage]\n"
++                     "TESDA Circular No. 027, Series 2022: These guidelines shall cover the selection of scholars "
++                     "for Diploma Programs under UAQTEA-TES for FY 2022.",
++                     "tes-scope", page=39, section_heading="TESDA Circular / Scope and Coverage"),
++            document(source, "TESDA FY 2022 Diploma Programs under UAQTEA-TES: additional grounds for ineligibility to continue TES "
++                     "include not passing all previous-semester technology courses and more than one dropped course "
++                     "(technology and/or academic, including general education courses).",
++                     "tes", page=41, section_heading="UAQTEA-TES / Diploma Programs"),
++            document(source, "Academic Scholarship for College: transferees with no rating remarks of INC, Failed, and 2.50 "
++                     "may qualify subject to the stated residency and other criteria.",
++                     "academic-scholarship", page=94, section_heading="School Scholarship / Academic Scholarship for College"),
++        ]
++        voluntary = document("REGISTRAR_Services_&_Information_2026.docx", "VOLUNTARY_DROP_PROCEDURE: "
++                             "Dropping/changing/adding requires a Registrar form and dean approval within 15 school days.",
++                             "voluntary", section_heading="Dropping/Changing/Adding of Subjects")
++        incidental = document("Scholarship_Service_2026.docx", "Samar Colleges, Inc. - Academic Scholarships\n"
++                              "[SECTION: Academic Scholarships]\nINCIDENTAL_SCHOLARSHIP_SERVICE: application forms "
++                              "are available from the Registrar office. Dr. A. Santos chairs the scholarship committee.",
++                              "incidental-scholarship", section_heading="Academic Scholarship Services")
++        self.dates[source.lower()] = {"filename": source, "effective_date": "2024-06-01"}
++        probes = self.policy.dropped_subject_queries(question)
++        self.assertEqual(len(probes), len(rows))
++        evidence = dict(zip(probes, rows))
++        for mode in ("true", "false"):
++            with self.subTest(source_filter=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}), \
++                    patch.dict(self.ns, {"FINAL_TOP_K": 1}):
++                hybrid = self.install([voluntary, incidental], baseline=rows)
++                hybrid.filtered = lambda query, filters: [doc for doc in hybrid.matching(query, filters)
++                                                          if doc is evidence.get(query) or doc is incidental]
++                # Only targeted handbook jobs can find the evidence, not a broad search.
++                hybrid.ensemble.invoke.side_effect = lambda query: [voluntary, incidental]
++                self.assertCountEqual(self.retrieve(question, user_question=question, top_k=1), rows)
++                self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("offline optimizer")
++                result = self.chat(question, [{"role": "assistant", "content": "STALE_VOLUNTARY_DROP_ANSWER"}])
++                self.assertCountEqual(result["citations"], [doc.metadata["chunk_id"] for doc in rows], self.output.getvalue())
++                prompt = result["messages_to_llm"][0].content
++                self.assertIn(self.policy.DROPPED_SUBJECT_GUIDANCE, prompt)
++                for row in rows:
++                    self.assertIn(row.page_content, prompt)
++                    self.assertIn(row.metadata["section_heading"], prompt)
++                for absent in ("VOLUNTARY_DROP_PROCEDURE", "INCIDENTAL_SCHOLARSHIP_SERVICE", "STALE_VOLUNTARY_DROP_ANSWER",
++                               "<campus_navigation_request>", "<campus_location_request>"):
++                    self.assertNotIn(absent, prompt)
++                self.assertEqual(result["messages_to_llm"][-1].content, question)
++                searched = {query for _, query, filters in hybrid.calls if filters == {"source": {"$eq": source}}}
++                self.assertTrue(set(probes) <= searched, searched)
++
++    def test_student_id_registry_retains_card_evidence_and_final_guidance(self):
++        loss = document(BASE, "Lost RFID must be reported to Security Management Office.", "loss",
++                        section_heading="Radio Frequency Identification (RFID)")
++        price = document(BASE, "School RFID price is Php 280.00 complete set, card Php 200.00 and lace Php 80.00.",
++                         "price", section_heading="Radio Frequency Identification (RFID)")
++        enrollment = document("Registrar_2026.docx", "ENROLLMENT_ONLY: Secure ID Information Form for new students.",
++                              "enrollment", section_heading="Enrollment Procedure")
++        self.install([enrollment], baseline=[loss, price])
++        with patch.dict(self.ns, {"FINAL_TOP_K": 1}):
++            result = self.chat("I lost my student ID", [{"role": "assistant", "content": "STALE_CARD_ANSWER"}])
++        self.assertCountEqual(result["citations"], ["loss", "price"], self.output.getvalue())
++        prompt = result["messages_to_llm"][0].content
++        self.assertIn(self.policy.STUDENT_ID_GUIDANCE, prompt)
++        self.assertIn(loss.page_content, prompt)
++        self.assertIn(price.page_content, prompt)
++        self.assertNotIn("ENROLLMENT_ONLY", prompt)
++        self.assertNotIn("STALE_CARD_ANSWER", prompt)
++        probes = {query for _, query, _ in self.hybrid.calls}
++        self.assertTrue(set(self.policy.student_id_queries("I lost my student ID")) <= probes)
++
++    def test_classroom_registry_keeps_room_record_and_guidance_without_navigation(self):
++        library = document("Library_Services_2026.docx", "LIBRARY_FLOOR_ONLY: Main Library - 2nd Floor, Admin Building. "
++                           "Samar College SCHOOL_STREET_ADDRESS_MARKER, Catbalogan City.", "library",
++                           section_heading="Library Services Hours")
++        preparation = document("Academic_calendar.docx", "CLASSROOM_PREPARATION_ONLY: May 18 & 25 Classroom Preparation.",
++                               "preparation", section_heading="CITAS Monthly Schedule / May 2026")
++        historical = document(BASE, "HISTORICAL_CLASSROOM_BUILDING: Founders Building contains five modern classrooms.",
++                              "historical", section_heading="Historical Account")
++        room_record = ("CURRENTLY ENROLLED\nCode       Subject                     Units Schedule   Room      Instructor\n"
++                       "IT 101     Introduction to Computing   3     MWF        R-101     Own Instructor\n"
++                       "GE 1       Understanding the Self      3     TTh        R-202     Other Instructor")
++        record = {"full_name": "Own Student", "enrolled_subjects": [
++            {"subject_code": "IT 101", "subject_name": "Introduction to Computing", "room": "R-101"},
++            {"subject_code": "GE 1", "subject_name": "Understanding the Self", "room": "R-202"},
++        ]}
++        for question, uid, consent in (
++            ("classroom location", None, True), ("my classroom", None, True),
++            ("classroom location of Samar College", None, True),
++            ("what room is my class in", "own-student", True),
++            ("Where is my classroom?", "own-student", False), ("my classroom", "missing-student", True),
++        ):
++            for label in ("campus_navigation", "campus_location"):
++                with self.subTest(question=question, uid=uid, consent=consent, label=label):
++                    self.install([library, preparation], baseline=[historical])
++                    self.ns["query_optimizer_model"].invoke.side_effect = None
++                    self.ns["query_optimizer_model"].invoke.return_value = SimpleNamespace(content=json.dumps({
++                        "query": question, "intent": label, "subject": "",
++                    }))
++                    fetch = Mock(return_value=record if uid == "own-student" else None)
++                    formatter = Mock(return_value=room_record)
++                    with patch.dict(self.ns, {
++                        "get_student_by_uid": fetch, "get_student_by_email": Mock(),
++                        "format_student_context": formatter,
++                        "system_prompt": "Documents:\n{retrieved_docs}\nSTUDENT PERSONAL RECORD:\n{student_context}\nHistory:\n{chat_history}",
++                    }):
++                        result = self.chat(question, [{"role": "assistant", "content": "STALE_WHERE_ARE_YOU_QUESTION"}],
++                                           uid=uid, data_consent=consent)
++                    self.assertEqual(result["citations"], [], self.output.getvalue())
++                    self.assertTrue(result["messages_to_llm"], self.output.getvalue())
++                    prompt = result["messages_to_llm"][0].content
++                    self.assertIn(self.policy.CLASSROOM_LOCATION_GUIDANCE, prompt)
++                    for absent in ("<campus_navigation_request>", "<campus_location_request>",
++                                   "LIBRARY_FLOOR_ONLY", "SCHOOL_STREET_ADDRESS_MARKER", "CLASSROOM_PREPARATION_ONLY",
++                                   "HISTORICAL_CLASSROOM_BUILDING", "STALE_WHERE_ARE_YOU_QUESTION"):
++                        self.assertNotIn(absent, prompt)
++                    if uid == "own-student" and consent:
++                        self.assertIn(room_record, prompt)
++                        formatter.assert_called_once_with(record)
++                    else:
++                        self.assertNotIn(room_record, prompt)
++                        formatter.assert_not_called()
++                    self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
++                    self.assertEqual(result["messages_to_llm"][-1].content, question)
++
++    def test_named_room_library_and_classroom_preparation_keep_their_existing_evidence(self):
++        room = document("Campus_Room_Directory_2026.docx", "Room 101 is on the Second Floor, East Building.", "room",
++                        section_heading="Room Directory")
++        library = document("Library_Services_2026.docx", "Main Library - 2nd Floor, Admin Building.", "library",
++                           section_heading="Library Services Hours")
++        preparation = document("Academic_calendar.docx", "CITAS Academic Calendar Schedule: May 18 & 25, 2026 Classroom Preparation.",
++                               "preparation", section_heading="Monthly Schedule of Activities / May 2026")
++        for question, expected in (("where is room 101", room), ("where is room 101 for my class?", room),
++                                   ("Where is room 101 (classroom)?", room), ("where is room101 for classes?", room),
++                                   ("where is the library", library),
++                                   ("classroom preparation schedule", preparation)):
++            for label in ("campus_navigation", "campus_location"):
++                with self.subTest(question=question, label=label):
++                    self.install([room, library, preparation], baseline=[])
++                    self.ns["query_optimizer_model"].invoke.side_effect = None
++                    self.ns["query_optimizer_model"].invoke.return_value = SimpleNamespace(content=json.dumps({
++                        "query": question, "intent": label, "subject": "",
++                    }))
++                    result = self.chat(question)
++                    self.assertEqual(result["citations"], [expected.metadata["chunk_id"]], self.output.getvalue())
++                    prompt = result["messages_to_llm"][0].content
++                    self.assertIn(expected.page_content, prompt)
++                    self.assertNotIn("<classroom_location_request>", prompt)
++                    self.assertNotIn("<campus_navigation_request>", prompt)
++                    self.assertNotIn("<campus_location_request>", prompt)
++                    self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
++
++    def test_lost_speaker_with_room_destination_still_gets_navigation_guidance(self):
++        self.install([], baseline=[])
++        for question in ("I am lost on campus looking for my classroom", "I am lost looking for my classroom"):
++            with self.subTest(question=question):
++                result = self.chat(question)
++                self.assertTrue(result["messages_to_llm"], self.output.getvalue())
++                prompt = result["messages_to_llm"][0].content
++                self.assertIn(self.policy.NAVIGATION_GUIDANCE, prompt)
++                self.assertNotIn("<classroom_location_request>", prompt)
++                self.assertNotIn("<campus_location_request>", prompt)
++
+     def test_enrollment_procedure_chunks_survive_a_one_document_final_top_k(self):
+         source = "REGISTRAR_Services_&_Information_2026.docx"
+         early = document(source, "Enrollment Procedure\nOld Students\nStep 1: Clearance. Steps 2-7: continuing-student actions.",

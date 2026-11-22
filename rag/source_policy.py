@@ -9,6 +9,7 @@ the answer model must still admit when selected documents omit a requested detai
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -76,6 +77,60 @@ them as a documented replacement charge. A single report-loss instruction is not
 a multi-step replacement workflow. Do not borrow fees from lost computer equipment
 or lab property. Keep source-version boundaries and clearly label older policy.
 </student_id_request>"""
+DROPPED_SUBJECT_GUIDANCE = """<dropped_subject_request>
+The user describes receiving a Dropped/DR subject remark or being dropped by an
+instructor, not choosing to drop a subject. Answer that implied request for help.
+Do not substitute voluntary dropping/changing/adding procedures, a Registrar form,
+dean approval steps, or the 15-school-day deadline.
+For a broad request, explain the supplied attendance rule (maximum 6 accumulated
+absences in a regular semester, 3 in summer) and the final rating remarks Passed,
+Failed and Dropped. Do not claim exceeding the absence limit automatically causes
+a Dropped remark; the handbook does not state that causal rule.
+Explain only documented INC, Dropped (DR) or failing-grade consequences, naming the
+specific award or program for EACH condition. Keep Graduate School Academic
+Excellence Award and Academic Achievers Award separate from collegiate graduation
+honors, Academic Excellence Award, Academic Achievement Award, Special Citation
+Award for Commendable Academic Achievement, and Academic Scholarship for College. Preserve any supplied
+transferee/health/financial exceptions; do not assert permanent or universal
+disqualification from all awards, scholarships or enrollment.
+The more-than-one-dropped-course TES ineligibility rule is specifically under
+Diploma Programs / UAQTEA-TES (TESDA FY 2022 guidelines reproduced in the handbook):
+technology and/or academic courses, including
+general education. One dropped course alone is not that condition. Do not apply
+it to every student, every TES/CHED scholarship, or an unrelated award. Keep the
+previous-semester technology-course passing/competency condition separate.
+Use only supplied policy evidence and cite it. When using Samar-College-2024.pdf,
+visibly label the policy as the 2024 handbook fallback; a year inside a citation
+tag alone is not enough, and these terms are not verified current policy.
+The documents do NOT explain how to retake, appeal or recover after a subject is
+dropped. State that verified coverage gap explicitly and refer the student to the
+Registrar's Office and their college dean for case-specific advice. Do not invent
+a remedy, deadline, reinstatement, automatic retake, or a grade-appeal procedure;
+a disciplinary appeal is not a grade-recovery policy. These request-specific gap
+and referral instructions are an exception to generic document-gap restrictions.
+For a focused question, give only the requested policy detail and relevant limits.
+</dropped_subject_request>"""
+CLASSROOM_LOCATION_GUIDANCE = """<classroom_location_request>
+This asks about classroom/room assignments or locations, NOT being lost on campus
+or the school's street address. NEVER ask where the user is or their current
+location, even when no record or classroom location evidence is supplied.
+For 'my classroom' or 'what room is my class in', use ONLY the Room column of the
+consented STUDENT PERSONAL RECORD's currently enrolled subjects. Name the subject
+and its room, keeping any supplied course code. For an unscoped personal request,
+list each enrolled subject with its Room value; for a named subject, give its row.
+Do not cite personal records, expose another student's data, or infer a room's
+building/floor from its code. Blank or N/A Room values are not room assignments.
+If no enrollment record or requested Room value is supplied, say room assignments
+come from the student's enrollment record and refer them to the Registrar's
+Office or their college dean. Do not demand login or a starting landmark.
+For general 'classroom location', use only an explicit classroom location entry
+if supplied. Otherwise say the available documents do not list classroom
+locations. Do not guess or use the college address, a library floor, a historical
+building description, or a classroom-preparation calendar entry as a classroom
+location. A general question does not request the student's personal schedule.
+The verified classroom coverage gap and school referral are permitted here despite
+generic restrictions on discussing document gaps. Keep the answer direct.
+</classroom_location_request>"""
 SOURCE_SELECTION_GUIDANCE = """<source_selection>
 Current source documents have been selected for this question. Use ONLY their
 provided content for public document facts, subject to admin-verified facts.
@@ -274,7 +329,7 @@ def student_card_mentioned(query):
 
 def campus_location_queries(query):
     """Recognize a named-school address, including Waray article 'it'."""
-    if not isinstance(query, str):
+    if not isinstance(query, str) or specific_place_mentioned(query):
         return []
     text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
     school = r"(?:samar\s+colleges?(?:\s+inc)?|sc|(?:the|your|our|this)\s+(?:school|campus))"
@@ -364,7 +419,7 @@ def registrar_location_documents(documents):
 
 _PLACE_NOUN = (
     r"office|library|clinic|canteen|cafeteria|cashier|registrar|guidance|counsel\w*|osas|gcsd|security|"
-    r"laborator\w+|lab|gym\w*|chapel|hall|building|annex|room|department|bookstore|admissions?|"
+    r"laborator\w+|labs?|gym\w*|chapel|halls?|buildings?|annex|class\s*rooms?|rooms?|floors?|department|bookstore|admissions?|"
     r"accounting|treasury|finance|research|publication|scholarship|sports|affairs|development|gender|"
     r"dental|medical|stage|quadrangle|auditorium|comfort\s+room|cr|"
     r"college\s+of\s+\w+|coed|citas|clas|cocje|scti"
@@ -376,6 +431,12 @@ _NOT_A_PLACE = {"i", "we", "you", "my", "our", "your", "his", "her", "their", "t
                 "often", "samar", "school", "campus", "sc", "college", "colleges"}
 _OFFICE_FILLER = {"the", "a", "an", "of", "for", "and", "office", "offices", "located", "situated", "found",
                   "please", "pls", "po", "ba", "man", "gud", "samar", "college", "colleges", "inc", "at", "in"}
+_NUMBERED_ROOM = r"\b(?P<kind>class\s*rooms?|rooms?)\s*(?:(?:number|no)\.?\s*)?(?P<code>(?:[a-z]{1,6}[- ]?)?\d+[a-z]?)\b"
+
+
+def specific_place_mentioned(query):
+    """A room/place noun cannot supply an unmentioned lost-speaker or school-address intent."""
+    return isinstance(query, str) and bool(re.search(rf"\b(?:{_PLACE_NOUN}|restrooms?|toilets?|gates?|entrances?|exits?)\b|{_NUMBERED_ROOM}", query, re.I))
 
 
 def office_location_subject(query):
@@ -399,6 +460,8 @@ def office_location_subject(query):
         if match:
             subject = match["s"]
             break
+    if numbered := re.search(_NUMBERED_ROOM, subject, re.I):
+        return f"{numbered.group('kind').lower()} {numbered.group('code').lower()}"
     words = [w for w in subject.split() if w not in {"the", "a", "an", "ang", "an"}]
     words = [w for w in words if w not in {"located", "situated", "found", "please", "pls", "po", "ba", "man", "gud"}]
     if not words or len(words) > 6 or words[0] in _NOT_A_PLACE or any(w in {"my", "our", "your"} for w in words):
@@ -449,12 +512,12 @@ def campus_navigation_queries(query):
         return []
     campus = re.search(r"\b(?:SC|Samar\s+College|campus|school|college|eskwelahan|eskuylahan)\b", query, re.I)
     speaker = re.search(
-        r"\b(?:i\s+(?:(?:am|got|feel)\s+)?lost|i['\u2019]m\s+lost|we\s+(?:are|got)\s+lost|"
+        r"\b(?:i\s+(?:(?:am|get|got|feel)\s+)?lost|i['\u2019]m\s+lost|we\s+(?:are|got)\s+lost|"
         r"(?:nawawara|nawara|nawawala|nawala|naliligaw)\s+(?:ak|ako|kami|kita))\b|"
         r"\blost\s+(?:on|at|in|around)\s+(?:(?:the|this)\s+)?(?:SC|Samar\s+College|campus|school|college)\b",
         query, re.I,
     )
-    return ["Samar College campus map layout directions buildings locations"] if campus and speaker else []
+    return ["Samar College campus map layout directions buildings locations"] if speaker and (campus or specific_place_mentioned(query)) else []
 
 
 def campus_navigation_documents(documents):
@@ -506,6 +569,142 @@ def student_id_documents(documents):
         if substantive and (direct_loss or (card_heading and (loss_heading or card_price))):
             selected.append(document)
     return selected
+
+
+def dropped_subject_queries(query):
+    """Received academic status, not a voluntary drop request or 'dropped off'."""
+    if not isinstance(query, str):
+        return []
+    if re.search(r"\bdrop(?:ped|ping|s)?\s+off\b|"
+                 r"\b(?:want|wish|plan|intend)\s+(?:to\s+)?drop\b|"
+                 r"\bhow\s+(?:can|could|do|to)\s+(?:(?:i|we)\s+)?(?:get|have|make)\b.{0,40}"
+                 r"\b(?:subjects?|courses?|class(?:es)?)\b.{0,20}\bdropped\b|"
+                 r"\b(?:not|never|hindi|diri)\s+(?:been\s+)?dropped\b", query, re.I):
+        return []
+    academic = re.search(r"\b(?:subjects?|courses?|class(?:es)?|grades?|marks?|remarks?|ratings?)\b", query, re.I)
+    received = re.search(
+        r"\b(?:i|we|you|students?)\s+(?:(?:might|may|will|would|could|can)\s+)?"
+        r"(?:get|got|gets|am|are|was|were|have\s+been|has\s+been|be)\s+(?:being\s+)?drop(?:ped)?\b|"
+        r"\b(?:subjects?|courses?|class(?:es)?)\b.{0,35}\b(?:is|was|were|got|has\s+been|had\s+been)\s+dropped\b|"
+        r"\bdropped\s+(?:subjects?|courses?|class(?:es)?)\b", query, re.I,
+    )
+    remark = re.search(r"\bdropped\b|\bDR\b(?!\.\s*[a-z])", query, re.I) and re.search(
+        r"\b(?:grades?|marks?|remarks?|ratings?|status|marked)\b", query, re.I,
+    )
+    instructor = re.search(
+        r"\b(?:instructor|teacher|professor|prof)\b.{0,60}\bdrop(?:ped|s|ping)?\s+"
+        r"(?:(?:me|us|students?)\b|(?:(?:my|the|a|our)\s+)?(?:subjects?|courses?|class(?:es)?)\b)|"
+        r"\bdropped\s+(?:me\s+)?by\s+(?:(?:my|the|an)\s+)?(?:instructor|teacher|professor|prof)\b",
+        query, re.I,
+    )
+    local_received = re.search(
+        r"\b(?:na|ma|gin)[ -]?drop(?:ped)?\s+(?:(?:po|man|gud)\s+)*(?:ako|ak|kami|kita)\b|"
+        r"\b(?:na|ma|gin)[ -]?drop(?:ped)?\s+(?:an|ang|it)\s+(?:(?:akon|aking|my)\s+)?"
+        r"(?:subjects?|courses?|klase)\b", query, re.I,
+    )
+    if not ((academic and received) or remark or instructor or local_received):
+        return []
+    return [
+        "attendance maximum accumulated absences six regular semester three summer",
+        "grading system acceptable final rating remarks Passed Failed Dropped",
+        "Graduate School Academic Excellence Academic Achievers incomplete INC Dropped DR failing grades",
+        "College graduation honors Summa Cum Laude Magna Cum Laude Cum Laude INC Failed DR transferees",
+        "College Academic Excellence Academic Achievement Special Citation Commendable Academic Achievement INC Failed DR transferees health financial problems",
+        "TESDA Circular 027 Series 2022 scope coverage selection scholars Diploma Programs UAQTEA TES FY 2022",
+        "Diploma Programs UAQTEA TES eligibility technology courses more than one dropped course general education",
+        "Academic Scholarship for College transferee INC Failed grades 2.50",
+    ]
+
+
+def dropped_subject_documents(documents, *, include_scope=True):
+    """Attendance, rating remarks and named benefit conditions, not voluntary-drop forms."""
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        if re.search(r"\btable of contents\b|\.{3,}\s*\d+|"
+                     r"\bdetails\s+will\s+be\s+(?:posted|provided)\b", text, re.I):
+            continue
+        # Indexed context headers are identity hints, not INC/DR grade evidence.
+        body = re.sub(r"^Samar Colleges?,\s*Inc\.(?:\s*-\s*[^\n]*)?\s*\n", "", text, flags=re.I)
+        body = re.sub(r"^\[SECTION:[^\]]*\]\s*", "", body)
+        attendance = re.search(r"\b(?:maximum|accumulated)\b.{0,120}\babsences?\b|"
+                               r"\babsences?\b.{0,120}\b(?:regular\s+semester|summer)\b", body, re.I | re.S)
+        remarks = re.search(r"\bfinal\s+rating\s+remarks?\b.{0,100}\bdropped\b", body, re.I | re.S)
+        status = re.search(r"\b(?:incomplete|dropped)\b(?!\s+(?:(?:scholarship|enrollment)\s+)?"
+                           r"(?:applications?|forms?|documents?|requirements?|requests?))|"
+                           r"\bINC\b(?!\.)|\bDR\b(?!\.\s*[a-z])|"
+                           r"\b(?:failed|failing)\s+(?:grades?|marks?|courses?)\b|\bdid\s+not\s+pass\b", body, re.I)
+        grade_context = re.search(r"\b(?:grades?|marks?|remarks?|ratings?|subjects?|courses?)\b", body, re.I)
+        condition = re.search(r"\b(?:no|not|must|shall|candidates?|qualif\w*|eligib\w*|grounds)\b|"
+                              r"\bmore\s+than\s+(?:one|1)\b", body, re.I)
+        benefit = re.search(r"\b(?:academic\s+excellence|academic\s+achiev\w*|commendable\s+academic|"
+                            r"honors?|summa|magna|cum\s+laude|scholarships?|TES|UAQTEA)\b", headings + "\n" + body, re.I)
+        tes_scope = (include_scope and re.search(r"\b(?:scope and coverage|selection of scholars|guidelines shall cover)\b", body, re.I)
+                     and re.search(r"\bDiploma Programs\b", body, re.I)
+                     and re.search(r"\b(?:UAQTEA[ -]?TES|TESDA)\b", body, re.I))
+        if attendance or remarks or (status and grade_context and condition and benefit) or tes_scope:
+            selected.append(document)
+    return selected
+
+
+def classroom_location_queries(query):
+    """Classroom assignments/locations, not named rooms or calendar preparation."""
+    if not isinstance(query, str) or campus_navigation_queries(query):
+        return []
+    if re.search(r"\b(?:preparation|prepare|preparing|calendar)\b", query, re.I) or re.search(_NUMBERED_ROOM, query, re.I):
+        return []
+    classroom = re.search(r"\bclass\s*rooms?\b", query, re.I)
+    class_room = re.search(r"\brooms?\b", query, re.I) and re.search(r"\b(?:class(?:es)?|subjects?|klase)\b", query, re.I)
+    location = re.search(r"\b(?:where|diin|hain|saan|asa|locations?|located|assigned)\b|"
+                         r"\b(?:what|which|ano)\s+(?:(?:ang|an|the)\s+)?rooms?\b", query, re.I)
+    personal = re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", query, re.I)
+    if not ((classroom and (location or personal)) or (class_room and location)):
+        return []
+    return ["classroom locations room assignments enrolled subjects enrollment record Room"]
+
+
+def classroom_location_documents(documents):
+    """Only explicit numbered classroom placement, never generic building mentions."""
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        if re.search(r"\bclassroom\s+preparation\b", text, re.I):
+            continue
+        for room in re.finditer(r"\bclass\s*rooms?\s+(?:(?:number|no)\.?\s*)?(?:[a-z]-?)?\d+\w*\b", text, re.I):
+            if re.search(r"\b(?:floor|building|annex|wing)\b", text[max(0, room.start() - 60):room.end() + 100], re.I):
+                selected.append(document)
+                break
+    return selected
+
+
+@dataclass(frozen=True)
+class PolicyIntent:
+    """A detector returns bounded search probes, or [] when the request does not match."""
+
+    queries: Callable[[str], list[str]]
+    documents: Callable[[list], list]
+    guidance: str
+    complete_context: bool = False
+    fallback_search: bool = False
+    strict_evidence: bool = False
+    coverage: Callable[[list], list] | None = None
+
+
+# Only these handlers are migrated; other policy routes retain their existing wiring.
+INTENT_REGISTRY = {
+    "student_id": PolicyIntent(student_id_queries, student_id_documents, STUDENT_ID_GUIDANCE, complete_context=True),
+    "dropped_subject": PolicyIntent(dropped_subject_queries, dropped_subject_documents, DROPPED_SUBJECT_GUIDANCE,
+                                    complete_context=True, fallback_search=True, strict_evidence=True,
+                                    coverage=lambda docs: dropped_subject_documents(docs, include_scope=False)),
+    "classroom_location": PolicyIntent(classroom_location_queries, classroom_location_documents, CLASSROOM_LOCATION_GUIDANCE,
+                                       strict_evidence=True),
+}
+
+
+def matching_policy_intents(query):
+    return {name: intent for name, intent in INTENT_REGISTRY.items() if intent.queries(query)}
 
 
 def family_discount_queries(query):
@@ -1499,8 +1698,8 @@ def _relevant(document, queries, unit=None):
     evidence = body_terms | heading_terms
     if queries and family_discount_queries(queries[0]) and not any(enrollment_queries(query) for query in queries):
         return bool(family_discount_documents([document]))
-    if queries and student_id_queries(queries[0]):
-        return bool(student_id_documents([document]))
+    if intents := matching_policy_intents(queries[0]) if queries else {}:
+        return any((intent.coverage or intent.documents)([document]) for intent in intents.values())
     if queries and campus_navigation_queries(queries[0]):
         return bool(campus_navigation_documents([document]))
     if queries and campus_location_queries(queries[0]):
@@ -1677,9 +1876,11 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
         documents = filter_documents_or_fallback(
             documents, grading_documents(documents, queries[0]), filter_name="grading", query=queries[0],
         )
-    if queries and student_id_queries(queries[0]):
-        documents = filter_documents_or_fallback(
-            documents, student_id_documents(documents), filter_name="student-ID", query=queries[0],
+    intents = matching_policy_intents(queries[0]) if queries else {}
+    if intents:
+        matching = [doc for doc in documents if any(intent.documents([doc]) for intent in intents.values())]
+        documents = matching if all(intent.strict_evidence for intent in intents.values()) else filter_documents_or_fallback(
+            documents, matching, filter_name="registered policy", query=queries[0],
         )
     # Location/navigation are EVIDENCE gates, not scoping filters. If no passage
     # actually states the address, the right outcome is "cannot confirm", not

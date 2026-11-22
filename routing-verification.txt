@@ -1,0 +1,63 @@
+SC-Assistant Routing Verification
+===============================
+
+Environment: Windows, Python 3.14.7, pytest 9.2.0.
+python3 and pip executables were unavailable; used python -X utf8 and python -m pip.
+Installed pytest with: python -m pip install pytest --break-system-packages
+No new application dependencies. No live LLM, vector index or student service calls.
+
+Requested suite:
+python -X utf8 -m pytest tests/test_query_intent.py tests/test_source_policy.py tests/test_query_optimizer.py tests/test_deans_list.py tests/test_unit_identity.py tests/test_newer_retrieval.py -q
+
+Untouched baseline, using ORIGINAL test files: 313 passed, 2 SUBFAILED.
+Baseline failing list:
+tests/test_source_policy.py::SourcePolicyTests::test_policy_evidence_filters_keep_the_candidate_pool_when_no_doc_matches
+  query='Where is Samar College located?'
+  query='I got lost at Samar College'
+
+Final expanded suite: 330 passed, the same 2 SUBFAILED; 1064 subtests passed.
+Added 17 unittest methods covering routing phrases, both optimizer campus labels,
+guidance, handbook probes/scopes, Room-column prompt data and consent, final imports,
+student-ID registry parity, numbered-room routes, and incidental Inc./Dr. evidence.
+No new failures in the final suite.
+
+Five full runs of untouched code with original tests: 313 passed + 2 baseline failures EACH.
+Five full runs of final patched code with original tests: IDENTICAL results EACH.
+Original comparison test files were checked byte-for-byte against the snapshot.
+The known concurrency barrier flake appeared once in an intermediate extra run;
+it passed all five full reruns on each version and all five isolated baseline and
+patched reruns. Runtime/concurrency code and its test were not modified.
+
+Standalone latency command, working directory tests/: python -X utf8 test_latency.py
+Baseline and final: 85 passed, 0 failed.
+tests/test_paraphrase_routing.py baseline and final: 2 passed, 91 subtests passed.
+The evaluation/ directory exists; no missing-evaluation errors occurred.
+
+Patch: routing-fixes.patch
+Generated with GNU diff -u against preserved original files, with a/ and b/ labels.
+--strip-trailing-cr avoids Windows line-ending-only differences.
+GNU patch -p1 --dry-run passed on a fresh pristine snapshot, followed by application.
+Patched-pristine tests/test_query_intent.py: 32 passed, 214 subtests passed.
+All six patched source/test files match the workspace, ignoring CRLF/LF only.
+git diff --check passed.
+
+Raw JUnit results and untouched snapshots:
+C:\Users\Rojan\AppData\Local\Temp\kilo\sc-routing-20261122\
+
+Added local forms: na-drop/nadrop/na drop ako, na-drop ak, gin-drop ak,
+ma-drop ako, na-drop ang subject ko, gin-drop an akon subject;
+saan ang classroom ko, diin an akon classroom, hain an classroom ko,
+diin it classroom, and ano ang room ng klase ko.
+Deliberately unmatched: ambiguous drop ako / na-drop ko, voluntary mag-drop,
+bare DR, nonacademic dropped objects, and dropped-off travel phrasing.
+
+Offline checks verify routing, retrieved synthetic evidence and compiled prompts,
+not actual generated answers or live vector recall. Manual app checks remain:
+  what do i do if i get drop on a subject?
+  classroom location
+Also check a consented student's personal classroom question against their Room rows.
+
+Known content limits: no documented post-drop retake/appeal/recovery procedure and
+no current classroom directory/subject-to-classroom location mapping. The school
+needs to supply the missing Registrar procedures and/or a campus rooms directory.
+No remedy or classroom location was fabricated.

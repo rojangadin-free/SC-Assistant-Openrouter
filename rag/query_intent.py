@@ -21,6 +21,8 @@ INTENT_TERMS = {
     "scholarship": "scholarship eligibility requirements",
     "calendar": "academic calendar schedule dates",
     "student_id": "lost student ID RFID identification card replacement procedure",
+    "dropped_subject": "Dropped DR subject remark attendance academic awards TES",
+    "classroom_location": "classroom location room assignments enrolled subjects",
     "campus_navigation": "I am lost on campus Samar College directions",
     "campus_location": "Samar College address",
 }
@@ -81,7 +83,8 @@ def query_needs_history(question):
     if not isinstance(question, str) or not question.strip():
         return False
     text = request_text(question)
-    if policy.campus_location_queries(text):
+    if (policy.campus_location_queries(text) or policy.dropped_subject_queries(text)
+            or policy.classroom_location_queries(text)):
         return False
     references = re.sub(r"\bthis\s+(?:school|college|semester|year|month|week)\b", "", text, flags=re.I)
     # 'IT' is also a program label. Its presence alone is not a pronoun reference.
@@ -143,7 +146,6 @@ def known_query_intents(question):
     detectors = (
         ("campus_location", policy.campus_location_queries),
         ("campus_navigation", policy.campus_navigation_queries),
-        ("student_id", policy.student_id_queries),
         ("deans_list", policy.deans_list_queries), ("grading", policy.grading_queries),
         ("curriculum", policy.curriculum_queries), ("history", policy.institution_history_queries),
         ("honors", policy.honors_queries), ("family_discount", policy.family_discount_queries),
@@ -152,14 +154,29 @@ def known_query_intents(question):
         ("program_offerings", policy.program_catalog_queries), ("leadership", policy.leadership_roster_queries),
         ("leadership", program_dean_subject), ("general", program_overview_subject),
     )
-    return {name for name, detector in detectors if detector(question)}
+    return {name for name, detector in detectors if detector(question)} | set(policy.matching_policy_intents(question))
 
 
 def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic=True):
     """Reject subject invention independently of whether the original has a known intent."""
     from rag.source_policy import _grading_level, broad_aid_queries, grading_queries, student_card_mentioned
+    from rag import source_policy as policy
 
     explicit = known_query_intents(question)
+    if (policy.specific_place_mentioned(question) and not policy.campus_navigation_queries(question)
+            and (policy.campus_navigation_queries(rewritten) or policy.campus_location_queries(rewritten))):
+        return False
+    if "dropped_subject" in explicit and not policy.dropped_subject_queries(rewritten):
+        return False
+    if (policy.dropped_subject_queries(rewritten) and "dropped_subject" not in explicit
+            and not query_needs_history(question)):
+        return False
+    if "classroom_location" in explicit and not policy.classroom_location_queries(rewritten):
+        return False
+    if (preserve_topic and "classroom_location" in explicit
+            and re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", question, re.I)
+            and not re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", rewritten, re.I)):
+        return False
     if grading_queries(question):
         if not grading_queries(rewritten):
             return False
@@ -285,9 +302,9 @@ def resolve_query_intent(question, intent=None, history=None):
             return f"{previous} complete details for all applicable categories"
         return question
     if (isinstance(intent, QueryIntent) and intent.name in {"campus_location", "campus_navigation"}
-            and policy.office_location_subject(question)):
-        # "Where is the library/clinic/cashier?" asks about ONE place. Rewriting it to
-        # the school's own address drops the place and matches any 'LOCATION' chunk.
+            and policy.specific_place_mentioned(question) and not policy.campus_navigation_queries(question)):
+        # A specific place (even a fragment or personal classroom) is not an
+        # unmentioned lost-speaker request or the institution's own address.
         return question
     resolved = resolve_family_discount_followup(question, history)
     if resolved != question:
@@ -320,7 +337,7 @@ def resolve_query_intent(question, intent=None, history=None):
     if intent.name == "curriculum":
         if not intent.subject or not policy.curriculum_program(f"{intent.subject} subjects"):
             return question
-    if intent.name == "student_id" and not policy.student_id_queries(question):
+    if intent.name in policy.INTENT_REGISTRY and not policy.INTENT_REGISTRY[intent.name].queries(question):
         return question
     unit = requested_unit(question)
     constraints = re.findall(

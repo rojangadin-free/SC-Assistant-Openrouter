@@ -12,6 +12,7 @@ import concurrent.futures
 import datetime
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
@@ -137,6 +138,183 @@ class Hybrid:
 
 
 class NewerRetrievalTests(unittest.TestCase):
+    def test_dropped_subject_registry_searches_handbook_and_preserves_each_policy_section(self):
+        source = "Samar-College-2024.pdf"
+        question = "what do i do if i get drop on a subject?"
+        rows = [
+            document(source, "The maximum number of accumulated absences is six (6) for a regular semester and three (3) for summer.",
+                     "attendance", page=50, section_heading="ATTENDANCE / ABSENCES"),
+            document(source, "The acceptable final rating remarks shall be Passed, Failed, or Dropped.",
+                     "rating", page=50, section_heading="GRADING SYSTEM / Remarks"),
+            document(source, "Graduate School Academic Excellence Award and Academic Achievers Award: "
+                     "no Incomplete (INC), Dropped (DR), or Failing grade in subjects taken in Samar College.",
+                     "graduate-awards", page=26, section_heading="AWARDS FOR THE GRADUATE SCHOOL"),
+            document(source, "Graduation honors: Summa Cum Laude, Magna Cum Laude and Cum Laude. "
+                     "A candidate has no FAILED, INC or DR remarks; separate prior-school transferee conditions apply.",
+                     "college-honors", page=53, section_heading="Graduation Honors and Awards for College"),
+            document(source, "Academic Excellence Award, Academic Achievement Award and Special Citation Award for "
+                     "Commendable Academic Achievement each have no FAILED, INC or DR rating remarks in any subject. "
+                     "The Academic Excellence transferee clause separately mentions health or financial problems.",
+                     "college-awards", page=55, section_heading="Academic Awards / College"),
+            document(source, "Samar Colleges, Inc. - Scope and Coverage\n[SECTION: Scope and Coverage]\n"
+                     "TESDA Circular No. 027, Series 2022: These guidelines shall cover the selection of scholars "
+                     "for Diploma Programs under UAQTEA-TES for FY 2022.",
+                     "tes-scope", page=39, section_heading="TESDA Circular / Scope and Coverage"),
+            document(source, "TESDA FY 2022 Diploma Programs under UAQTEA-TES: additional grounds for ineligibility to continue TES "
+                     "include not passing all previous-semester technology courses and more than one dropped course "
+                     "(technology and/or academic, including general education courses).",
+                     "tes", page=41, section_heading="UAQTEA-TES / Diploma Programs"),
+            document(source, "Academic Scholarship for College: transferees with no rating remarks of INC, Failed, and 2.50 "
+                     "may qualify subject to the stated residency and other criteria.",
+                     "academic-scholarship", page=94, section_heading="School Scholarship / Academic Scholarship for College"),
+        ]
+        voluntary = document("REGISTRAR_Services_&_Information_2026.docx", "VOLUNTARY_DROP_PROCEDURE: "
+                             "Dropping/changing/adding requires a Registrar form and dean approval within 15 school days.",
+                             "voluntary", section_heading="Dropping/Changing/Adding of Subjects")
+        incidental = document("Scholarship_Service_2026.docx", "Samar Colleges, Inc. - Academic Scholarships\n"
+                              "[SECTION: Academic Scholarships]\nINCIDENTAL_SCHOLARSHIP_SERVICE: application forms "
+                              "are available from the Registrar office. Dr. A. Santos chairs the scholarship committee.",
+                              "incidental-scholarship", section_heading="Academic Scholarship Services")
+        self.dates[source.lower()] = {"filename": source, "effective_date": "2024-06-01"}
+        probes = self.policy.dropped_subject_queries(question)
+        self.assertEqual(len(probes), len(rows))
+        evidence = dict(zip(probes, rows))
+        for mode in ("true", "false"):
+            with self.subTest(source_filter=mode), patch.dict(os.environ, {"RAG_SOURCE_FILTER_ENABLED": mode}), \
+                    patch.dict(self.ns, {"FINAL_TOP_K": 1}):
+                hybrid = self.install([voluntary, incidental], baseline=rows)
+                hybrid.filtered = lambda query, filters: [doc for doc in hybrid.matching(query, filters)
+                                                          if doc is evidence.get(query) or doc is incidental]
+                # Only targeted handbook jobs can find the evidence, not a broad search.
+                hybrid.ensemble.invoke.side_effect = lambda query: [voluntary, incidental]
+                self.assertCountEqual(self.retrieve(question, user_question=question, top_k=1), rows)
+                self.ns["query_optimizer_model"].invoke.side_effect = RuntimeError("offline optimizer")
+                result = self.chat(question, [{"role": "assistant", "content": "STALE_VOLUNTARY_DROP_ANSWER"}])
+                self.assertCountEqual(result["citations"], [doc.metadata["chunk_id"] for doc in rows], self.output.getvalue())
+                prompt = result["messages_to_llm"][0].content
+                self.assertIn(self.policy.DROPPED_SUBJECT_GUIDANCE, prompt)
+                for row in rows:
+                    self.assertIn(row.page_content, prompt)
+                    self.assertIn(row.metadata["section_heading"], prompt)
+                for absent in ("VOLUNTARY_DROP_PROCEDURE", "INCIDENTAL_SCHOLARSHIP_SERVICE", "STALE_VOLUNTARY_DROP_ANSWER",
+                               "<campus_navigation_request>", "<campus_location_request>"):
+                    self.assertNotIn(absent, prompt)
+                self.assertEqual(result["messages_to_llm"][-1].content, question)
+                searched = {query for _, query, filters in hybrid.calls if filters == {"source": {"$eq": source}}}
+                self.assertTrue(set(probes) <= searched, searched)
+
+    def test_student_id_registry_retains_card_evidence_and_final_guidance(self):
+        loss = document(BASE, "Lost RFID must be reported to Security Management Office.", "loss",
+                        section_heading="Radio Frequency Identification (RFID)")
+        price = document(BASE, "School RFID price is Php 280.00 complete set, card Php 200.00 and lace Php 80.00.",
+                         "price", section_heading="Radio Frequency Identification (RFID)")
+        enrollment = document("Registrar_2026.docx", "ENROLLMENT_ONLY: Secure ID Information Form for new students.",
+                              "enrollment", section_heading="Enrollment Procedure")
+        self.install([enrollment], baseline=[loss, price])
+        with patch.dict(self.ns, {"FINAL_TOP_K": 1}):
+            result = self.chat("I lost my student ID", [{"role": "assistant", "content": "STALE_CARD_ANSWER"}])
+        self.assertCountEqual(result["citations"], ["loss", "price"], self.output.getvalue())
+        prompt = result["messages_to_llm"][0].content
+        self.assertIn(self.policy.STUDENT_ID_GUIDANCE, prompt)
+        self.assertIn(loss.page_content, prompt)
+        self.assertIn(price.page_content, prompt)
+        self.assertNotIn("ENROLLMENT_ONLY", prompt)
+        self.assertNotIn("STALE_CARD_ANSWER", prompt)
+        probes = {query for _, query, _ in self.hybrid.calls}
+        self.assertTrue(set(self.policy.student_id_queries("I lost my student ID")) <= probes)
+
+    def test_classroom_registry_keeps_room_record_and_guidance_without_navigation(self):
+        library = document("Library_Services_2026.docx", "LIBRARY_FLOOR_ONLY: Main Library - 2nd Floor, Admin Building. "
+                           "Samar College SCHOOL_STREET_ADDRESS_MARKER, Catbalogan City.", "library",
+                           section_heading="Library Services Hours")
+        preparation = document("Academic_calendar.docx", "CLASSROOM_PREPARATION_ONLY: May 18 & 25 Classroom Preparation.",
+                               "preparation", section_heading="CITAS Monthly Schedule / May 2026")
+        historical = document(BASE, "HISTORICAL_CLASSROOM_BUILDING: Founders Building contains five modern classrooms.",
+                              "historical", section_heading="Historical Account")
+        room_record = ("CURRENTLY ENROLLED\nCode       Subject                     Units Schedule   Room      Instructor\n"
+                       "IT 101     Introduction to Computing   3     MWF        R-101     Own Instructor\n"
+                       "GE 1       Understanding the Self      3     TTh        R-202     Other Instructor")
+        record = {"full_name": "Own Student", "enrolled_subjects": [
+            {"subject_code": "IT 101", "subject_name": "Introduction to Computing", "room": "R-101"},
+            {"subject_code": "GE 1", "subject_name": "Understanding the Self", "room": "R-202"},
+        ]}
+        for question, uid, consent in (
+            ("classroom location", None, True), ("my classroom", None, True),
+            ("classroom location of Samar College", None, True),
+            ("what room is my class in", "own-student", True),
+            ("Where is my classroom?", "own-student", False), ("my classroom", "missing-student", True),
+        ):
+            for label in ("campus_navigation", "campus_location"):
+                with self.subTest(question=question, uid=uid, consent=consent, label=label):
+                    self.install([library, preparation], baseline=[historical])
+                    self.ns["query_optimizer_model"].invoke.side_effect = None
+                    self.ns["query_optimizer_model"].invoke.return_value = SimpleNamespace(content=json.dumps({
+                        "query": question, "intent": label, "subject": "",
+                    }))
+                    fetch = Mock(return_value=record if uid == "own-student" else None)
+                    formatter = Mock(return_value=room_record)
+                    with patch.dict(self.ns, {
+                        "get_student_by_uid": fetch, "get_student_by_email": Mock(),
+                        "format_student_context": formatter,
+                        "system_prompt": "Documents:\n{retrieved_docs}\nSTUDENT PERSONAL RECORD:\n{student_context}\nHistory:\n{chat_history}",
+                    }):
+                        result = self.chat(question, [{"role": "assistant", "content": "STALE_WHERE_ARE_YOU_QUESTION"}],
+                                           uid=uid, data_consent=consent)
+                    self.assertEqual(result["citations"], [], self.output.getvalue())
+                    self.assertTrue(result["messages_to_llm"], self.output.getvalue())
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertIn(self.policy.CLASSROOM_LOCATION_GUIDANCE, prompt)
+                    for absent in ("<campus_navigation_request>", "<campus_location_request>",
+                                   "LIBRARY_FLOOR_ONLY", "SCHOOL_STREET_ADDRESS_MARKER", "CLASSROOM_PREPARATION_ONLY",
+                                   "HISTORICAL_CLASSROOM_BUILDING", "STALE_WHERE_ARE_YOU_QUESTION"):
+                        self.assertNotIn(absent, prompt)
+                    if uid == "own-student" and consent:
+                        self.assertIn(room_record, prompt)
+                        formatter.assert_called_once_with(record)
+                    else:
+                        self.assertNotIn(room_record, prompt)
+                        formatter.assert_not_called()
+                    self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
+                    self.assertEqual(result["messages_to_llm"][-1].content, question)
+
+    def test_named_room_library_and_classroom_preparation_keep_their_existing_evidence(self):
+        room = document("Campus_Room_Directory_2026.docx", "Room 101 is on the Second Floor, East Building.", "room",
+                        section_heading="Room Directory")
+        library = document("Library_Services_2026.docx", "Main Library - 2nd Floor, Admin Building.", "library",
+                           section_heading="Library Services Hours")
+        preparation = document("Academic_calendar.docx", "CITAS Academic Calendar Schedule: May 18 & 25, 2026 Classroom Preparation.",
+                               "preparation", section_heading="Monthly Schedule of Activities / May 2026")
+        for question, expected in (("where is room 101", room), ("where is room 101 for my class?", room),
+                                   ("Where is room 101 (classroom)?", room), ("where is room101 for classes?", room),
+                                   ("where is the library", library),
+                                   ("classroom preparation schedule", preparation)):
+            for label in ("campus_navigation", "campus_location"):
+                with self.subTest(question=question, label=label):
+                    self.install([room, library, preparation], baseline=[])
+                    self.ns["query_optimizer_model"].invoke.side_effect = None
+                    self.ns["query_optimizer_model"].invoke.return_value = SimpleNamespace(content=json.dumps({
+                        "query": question, "intent": label, "subject": "",
+                    }))
+                    result = self.chat(question)
+                    self.assertEqual(result["citations"], [expected.metadata["chunk_id"]], self.output.getvalue())
+                    prompt = result["messages_to_llm"][0].content
+                    self.assertIn(expected.page_content, prompt)
+                    self.assertNotIn("<classroom_location_request>", prompt)
+                    self.assertNotIn("<campus_navigation_request>", prompt)
+                    self.assertNotIn("<campus_location_request>", prompt)
+                    self.assertEqual(self.retrieval.call_args.kwargs["user_question"], question)
+
+    def test_lost_speaker_with_room_destination_still_gets_navigation_guidance(self):
+        self.install([], baseline=[])
+        for question in ("I am lost on campus looking for my classroom", "I am lost looking for my classroom"):
+            with self.subTest(question=question):
+                result = self.chat(question)
+                self.assertTrue(result["messages_to_llm"], self.output.getvalue())
+                prompt = result["messages_to_llm"][0].content
+                self.assertIn(self.policy.NAVIGATION_GUIDANCE, prompt)
+                self.assertNotIn("<classroom_location_request>", prompt)
+                self.assertNotIn("<campus_location_request>", prompt)
+
     def test_enrollment_procedure_chunks_survive_a_one_document_final_top_k(self):
         source = "REGISTRAR_Services_&_Information_2026.docx"
         early = document(source, "Enrollment Procedure\nOld Students\nStep 1: Clearance. Steps 2-7: continuing-student actions.",
