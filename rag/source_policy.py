@@ -629,7 +629,16 @@ def dropped_subject_queries(query):
         r"\b(?:na|ma|gin)[ -]?drop(?:ped)?\s+(?:an|ang|it)\s+(?:(?:akon|aking|my)\s+)?"
         r"(?:subjects?|courses?|klase)\b", query, re.I,
     )
-    if not ((academic and received) or remark or instructor or local_received):
+    # A school assistant hears a bare "what do I do if I got dropped?" as the academic status.
+    # "dropped" must end the clause so "I got dropped from the team" still does not match.
+    bare_received = re.search(
+        r"\b(?:i|we)\s+(?:(?:might|may|will|would|could|can)\s+)?"
+        r"(?:get|got|gets|am|are|was|were|have\s+been|has\s+been|be)\s+(?:being\s+)?drop(?:ped)?"
+        r"(?=\s*(?:[?.!,;]|$)|\s+(?:po|ba|na|now|already|today|then|what|will|can|do|how|should|would|am|is)\b)|"
+        r"\b(?:i['\u2019]m|im)\s+dropped(?=\s*(?:[?.!,;]|$)|\s+(?:po|ba|na|now|already|today|then|what|will|can|do|how|should|would)\b)",
+        query, re.I,
+    )
+    if not ((academic and received) or bare_received or remark or instructor or local_received):
         return []
     return [
         "attendance maximum accumulated absences six regular semester three summer",

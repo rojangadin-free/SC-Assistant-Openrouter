@@ -172,6 +172,8 @@ class QueryIntentTests(unittest.TestCase):
             "na-drop ako", "nadrop ako sa subject", "na drop ako sa subject ko",
             "na-drop ak", "gin-drop ak ha subject", "ma-drop ako sa subject",
             "na-drop ang subject ko", "gin-drop an akon subject",
+            "what do i do if i got dropped?", "What do I do if I get dropped?", "i got dropped",
+            "what happens if i am dropped?", "I'm dropped, what now", "if I get dropped will I fail",
         )
         probes = policy.dropped_subject_queries(variants[0])
         self.assertTrue(any("attendance" in probe for probe in probes))
@@ -199,6 +201,8 @@ class QueryIntentTests(unittest.TestCase):
             "Dr. Santos assigned my grade", "What is Dr. Reyes's grading policy?",
             "gusto ko mag-drop ng subject", "mag-drop ako", "na-drop ko ang subject",
             "drop ako", "DR", None, 42, "",
+            "I got dropped off at school", "what if I got dropped from the group chat", "I drop", "do I want to get dropped",
+            "the call got dropped", "I was dropped by my team",
         )
         for question in variants:
             with self.subTest(question=question):
