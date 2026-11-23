@@ -46,14 +46,12 @@ from src.helper import (
 )
 
 from aws.s3 import upload_file_to_s3
+from config import VECTOR_BACKEND, LOCAL_INDEX_DIR, PINECONE_API_KEY
 from rag.unit_identity import unit_context_alias
 
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-if not PINECONE_API_KEY:
-    raise RuntimeError("PINECONE_API_KEY not set in environment.")
 
 BM25_VALUES_FILE = "bm25_values.json"
 
@@ -1161,9 +1159,10 @@ def build_index(
     if embeddings is None:
         raise ValueError("Embeddings required")
         
-    dim = get_embedding_dimension(embeddings)
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    ensure_index_exists(pc, index_name, dimension=dim)
+    if VECTOR_BACKEND == "pinecone":
+        dim = get_embedding_dimension(embeddings)
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        ensure_index_exists(pc, index_name, dimension=dim)
     
     raw_docs: List[Document] = []
     
@@ -1199,9 +1198,18 @@ def build_index(
     logger.info(f"Total chunks after dedup: {len(final_chunks)}")
     
     logger.info(f"Training BM25 on {len(final_chunks)} chunks...")
-    bm25 = BM25Encoder().default()
+    # Fitting replaces the default corpus statistics; local builds need no download.
+    bm25 = BM25Encoder() if VECTOR_BACKEND == "local" else BM25Encoder().default()
     bm25.fit([d.page_content for d in final_chunks])
-    bm25.dump(BM25_VALUES_FILE)
+    if VECTOR_BACKEND == "local":
+        from rag.local_index import LocalIndex
+
+        logger.info(f"Building local index at {LOCAL_INDEX_DIR}...")
+        # Serialize the legacy encoder publication with the generation commit too.
+        LocalIndex.build(LOCAL_INDEX_DIR, final_chunks, embeddings, bm25,
+                         bm25_path=BM25_VALUES_FILE)
+    else:
+        bm25.dump(BM25_VALUES_FILE)
     logger.info(f"BM25 saved to {BM25_VALUES_FILE}")
 
     # Right after BM25, because they answer two halves of the same question:
@@ -1209,6 +1217,10 @@ def build_index(
     # vocabulary IS — which is what lets a mistyped question be repaired into a
     # term BM25 can actually score. See rag/spelling.py.
     _learn_spelling_terms(final_chunks)
+
+    if VECTOR_BACKEND == "local":
+        logger.info("Index build complete.")
+        return
 
 
     logger.info(f"Upserting {len(final_chunks)} chunks...")
@@ -1290,7 +1302,20 @@ def append_file_to_index(
     if not final_chunks:
         raise ValueError("No searchable passages remained after extraction. Nothing was indexed.")
 
-    # Validate extraction locally before creating or modifying a remote index.
+    # Validate extraction before creating or modifying an index.
+    if VECTOR_BACKEND == "local":
+        from rag.local_index import LocalIndex
+
+        index = LocalIndex(LOCAL_INDEX_DIR, embeddings)
+        # One file is one atomic generation; upsert uses its existing BM25 snapshot.
+        _tick("indexing", 0, 1)
+        index.upsert(final_chunks)
+        _tick("indexing", 1, 1)
+        _record_effective_date(filename, raw_docs)
+        _learn_spelling_terms(final_chunks)
+        logger.info(f"Appended {len(final_chunks)} chunks from {filename}")
+        return len(final_chunks)
+
     dim = get_embedding_dimension(embeddings)
     pc = Pinecone(api_key=PINECONE_API_KEY)
     ensure_index_exists(pc, index_name, dimension=dim)
@@ -1327,6 +1352,7 @@ def append_file_to_index(
 
     _record_effective_date(filename, raw_docs)
     _learn_spelling_terms(final_chunks)
+
     logger.info(f"Appended {len(final_chunks)} chunks from {filename}")
     return len(final_chunks)
 

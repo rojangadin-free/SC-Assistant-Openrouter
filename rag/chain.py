@@ -8,9 +8,6 @@ from config import OPENROUTER_API_KEY, CHAT_MODEL_NAME
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Dict, Optional
-from pinecone import Pinecone
-
-from langchain_community.retrievers import PineconeHybridSearchRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 from pinecone_text.sparse import BM25Encoder
 
@@ -54,7 +51,7 @@ from rag.progress import emit as emit_phase
 
 from config import (
     INDEX_NAME, FALLBACK_MODEL_NAME, SUMMARIZER_MODEL_NAME,
-    PINECONE_API_KEY
+    PINECONE_API_KEY, VECTOR_BACKEND, LOCAL_INDEX_DIR
 )
 
 # Student records
@@ -62,12 +59,22 @@ from aws.students import get_student_by_uid, get_student_by_email, format_studen
 
 # ====== Setup ======
 embeddings = CachedQueryEmbeddings(get_local_embeddings())
-pinecone = Pinecone(api_key=PINECONE_API_KEY)
-index = pinecone.Index(INDEX_NAME)
+if VECTOR_BACKEND == "pinecone":
+    from pinecone import Pinecone
+    from langchain_community.retrievers import PineconeHybridSearchRetriever
+    pinecone = Pinecone(api_key=PINECONE_API_KEY)
+    index = pinecone.Index(INDEX_NAME)
+    HybridSearchRetriever = PineconeHybridSearchRetriever
+else:
+    from rag.local_index import LocalIndex, LocalHybridSearchRetriever
+    index = LocalIndex(LOCAL_INDEX_DIR, embeddings)
+    HybridSearchRetriever = LocalHybridSearchRetriever
 
 # --- Retrievers ---
 bm25_path = "bm25_values.json"
-if os.path.exists(bm25_path):
+if VECTOR_BACKEND == "local":
+    bm25 = index.snapshot().encoder
+elif os.path.exists(bm25_path):
     bm25 = BM25Encoder().load(bm25_path)
 else:
     print("WARNING: bm25_values.json not found. Using default BM25.")
@@ -77,7 +84,7 @@ else:
 # pages, so a shallow pool silently drops the one page that actually answers.
 RETRIEVER_TOP_K = 30
 
-sparse_retriever = PineconeHybridSearchRetriever(
+sparse_retriever = HybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,
@@ -85,7 +92,7 @@ sparse_retriever = PineconeHybridSearchRetriever(
     alpha=0.0,
 )
 
-dense_retriever = PineconeHybridSearchRetriever(
+dense_retriever = HybridSearchRetriever(
     embeddings=embeddings,
     sparse_encoder=bm25,
     index=index,

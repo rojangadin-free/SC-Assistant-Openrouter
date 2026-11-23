@@ -129,6 +129,20 @@ jobs:
             "$IMAGE_URI" tools/deploy_student_database.py check \
             --destination /var/lib/sc-assistant/dummy_students.sqlite3 \
             --pool-id "$COGNITO_USER_POOL_ID" --require-root
+      - name: Validate persistent local index
+        env:
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}:latest
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            --mount type=bind,source=/var/lib/sc-assistant,target=/var/lib/sc-assistant \
+            -e VECTOR_BACKEND=local \
+            -e LOCAL_INDEX_DIR=/var/lib/sc-assistant/local_index \
+            -e STORE_BACKEND=file \
+            -e HF_HUB_OFFLINE=1 \
+            -e TRANSFORMERS_OFFLINE=1 \
+            "$IMAGE_URI" \
+            -c 'from config import LOCAL_INDEX_DIR; from src.helper import get_local_embeddings; from rag.local_index import LocalIndex; index = LocalIndex(LOCAL_INDEX_DIR, get_local_embeddings()); print("Local index loaded:", len(index.snapshot().documents), "chunks")'
 
       - name: Run New Docker Container
         env:
@@ -149,6 +163,8 @@ jobs:
             --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
             -p 8080:8080 \
             --mount type=bind,source=/var/lib/sc-assistant,target=/var/lib/sc-assistant \
+            -e VECTOR_BACKEND=local \
+            -e LOCAL_INDEX_DIR=/var/lib/sc-assistant/local_index \
             -e STUDENT_RECORDS_BACKEND=sqlite_demo \
             -e DUMMY_STUDENT_DB_PATH=/var/lib/sc-assistant/dummy_students.sqlite3 \
             -e WEB_INDEXING_ENABLED=true \

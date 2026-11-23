@@ -12,6 +12,10 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 S3_BUCKET_NAME = "sc-assistant-bucket3"
 
 # Vector Store Configuration
+VECTOR_BACKEND = os.getenv("VECTOR_BACKEND", "local").strip().lower()
+if VECTOR_BACKEND not in {"local", "pinecone"}:
+    raise ValueError("VECTOR_BACKEND must be 'local' or 'pinecone'.")
+LOCAL_INDEX_DIR = os.getenv("LOCAL_INDEX_DIR", os.path.join(BASE_DIR, "local_index"))
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = "rag-database-2026"
 
@@ -70,5 +74,5 @@ QUERY_CORRECTION_ENABLED = False
 os.environ.setdefault("QUERY_CORRECTION_ENABLED", "true" if QUERY_CORRECTION_ENABLED else "false")
 
 
-if not PINECONE_API_KEY:
+if VECTOR_BACKEND == "pinecone" and not PINECONE_API_KEY:
     raise ValueError("PINECONE_API_KEY is not set. Please check your .env file.")

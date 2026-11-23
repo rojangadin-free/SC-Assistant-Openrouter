@@ -45,7 +45,11 @@ ENV NLTK_DATA=/usr/local/share/nltk_data
 COPY download_model.py .
 RUN python3 download_model.py
 
+# Local artifacts must be built before this COPY, or mounted at runtime.
+# The image downloads models above; it does not ingest documents during build.
 COPY . /app
+ENV VECTOR_BACKEND=local \
+    LOCAL_INDEX_DIR=/app/local_index
 
 # Fail the build if any declared dependency is actually missing. Without this, a
 # package that is imported but not listed ships a green pipeline and a container
@@ -53,13 +57,13 @@ COPY . /app
 # nothing connects the two.
 #
 # This imports the LIBRARIES, not the app. Importing sc_assistant would be a
-# stronger check but cannot run here: rag/chain.py opens a Pinecone client at
-# module level and config.py raises without PINECONE_API_KEY, which is a runtime
-# secret and is deliberately not available at build time. A build-time check that
+# stronger check but cannot run here: startup requires a complete local index
+# (or Pinecone credentials in cloud mode), plus runtime configuration that is
+# deliberately not available at build time. A build-time check that
 # needs production credentials is a check that gets deleted the first time it
 # fails, so this stays at the dependency level, which is the bug class that broke
 # this deploy.
-RUN python3 -c "import flask, gunicorn, langchain, langchain_core, langchain_community, langchain_classic, langchain_openai, langchain_pinecone, langchain_huggingface, langgraph, pinecone, pinecone_text, nltk, sentence_transformers, lxml, fitz, pdfplumber, docx, PIL, boto3, jose, cryptography, dotenv; print('all declared dependencies import OK')"
+RUN python3 -c "import flask, gunicorn, langchain, langchain_core, langchain_community, langchain_classic, langchain_openai, langchain_pinecone, langchain_huggingface, langgraph, pinecone, pinecone_text, numpy, scipy, nltk, sentence_transformers, lxml, fitz, pdfplumber, docx, PIL, boto3, jose, cryptography, dotenv; print('all declared dependencies import OK')"
 
 
 # Thread pinning. torch otherwise starts one compute thread per core in EVERY

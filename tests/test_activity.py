@@ -576,6 +576,8 @@ _fake_config.FLASK_SECRET_KEY = "offline-activity-test-secret"
 _fake_config.COGNITO_USER_POOL_ID = "offline-pool"
 _fake_config.INDEX_NAME = "offline-index"
 _fake_config.PINECONE_API_KEY = "offline-key"
+_fake_config.VECTOR_BACKEND = "pinecone"
+_fake_config.LOCAL_INDEX_DIR = "offline-unused-index"
 sys.modules["config"] = _fake_config
 
 _fake_reranker = types.ModuleType("rag.reranker")

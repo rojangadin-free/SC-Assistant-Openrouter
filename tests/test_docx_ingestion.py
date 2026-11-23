@@ -202,6 +202,7 @@ class IngestionTestCase(unittest.TestCase):
             "process_pdf": Mock(return_value=[]),
             "get_loader": Mock(return_value=None),
             "PINECONE_API_KEY": "offline-placeholder",
+            "VECTOR_BACKEND": "pinecone",
             "BM25_VALUES_FILE": str(self.tmp / "absent-bm25.json"),
             "Pinecone": Mock(return_value=self.pc),
             "ensure_index_exists": Mock(name="ensure_index"),

@@ -19,7 +19,7 @@ from rag.runtime import env_int
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "cohere/rerank-5-pro"
+DEFAULT_MODEL = "cohere/rerank-5-fast"
 MODEL_NAME = os.getenv("OPENROUTER_RERANKER_MODEL_NAME", DEFAULT_MODEL).strip()
 ENDPOINT = "https://openrouter.ai/api/v1/rerank"
 TIMEOUT_SECONDS = env_int("OPENROUTER_RERANKER_TIMEOUT_SECONDS", 6, maximum=30)

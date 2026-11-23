@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 from pinecone import Pinecone
 
 
-from config import INDEX_NAME, PINECONE_API_KEY, COGNITO_USER_POOL_ID
+from config import INDEX_NAME, PINECONE_API_KEY, COGNITO_USER_POOL_ID, VECTOR_BACKEND, LOCAL_INDEX_DIR
 from aws.cognito import cognito_client, normalize_signup_email
 from aws.dynamodb import (
     save_file_metadata, delete_file_from_db, files_table
@@ -204,9 +204,14 @@ def delete_file(filename):
     if not session.get("user") or not is_admin():
         return jsonify({"success": False, "message": "Unauthorized"}), 403
     try:
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        index = pc.Index(INDEX_NAME)
-        index.delete(filter={"source": {"$eq": filename}})
+        if VECTOR_BACKEND == "local":
+            from rag.local_index import LocalIndex
+
+            LocalIndex(LOCAL_INDEX_DIR, embeddings).delete_by_source(filename)
+        else:
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            index = pc.Index(INDEX_NAME)
+            index.delete(filter={"source": {"$eq": filename}})
         delete_file_from_db(filename)
         delete_file_from_s3(filename)
         return jsonify({"success": True, "message": f"Deleted {filename} and its vectors"})

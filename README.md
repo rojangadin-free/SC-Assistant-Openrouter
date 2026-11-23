@@ -5,7 +5,7 @@ plain language — "how do I apply for a scholarship?", "sino ang dean ng educat
 and the assistant answers from the school's own handbooks and bulletins rather than
 from the model's general knowledge.
 
-Built with Flask, Pinecone (hybrid dense + sparse retrieval), a cross-encoder
+Built with Flask, local NumPy/SciPy + BM25 retrieval (or optional Pinecone), a cross-encoder
 reranker, and AWS (Cognito, DynamoDB, S3).
 
 ---
@@ -64,7 +64,7 @@ fixture is evidence of live backend capacity or Cognito configuration.
 
 ```
 run.py                  start the dev server
-store_index.py          (re)build the Pinecone index from data/
+store_index.py          (re)build the selected vector index from data/
 run_tests.py            run every test suite in one command
 config.py               env vars, model names, index name
 
@@ -119,9 +119,13 @@ Create a `.env` file in the repo root:
 
 ```ini
 # --- required ---
-PINECONE_API_KEY=xxxxxxxx
 OPENROUTER_API_KEY=xxxxxxxx
 FLASK_SECRET_KEY=xxxxxxxx
+
+# --- vector retrieval (local by default) ---
+VECTOR_BACKEND=local           # or pinecone
+# LOCAL_INDEX_DIR=/absolute/path/local_index  # default: repo/local_index
+# PINECONE_API_KEY=xxxxxxxx     # required only for VECTOR_BACKEND=pinecone
 
 # --- required for login (AWS Cognito) ---
 AWS_REGION=us-east-1
@@ -136,14 +140,17 @@ AGENTROUTER_API_KEY=xxxxxxxx   # second LLM gateway; see "Two providers" below
 STORE_BACKEND=file             # or `dynamodb` for multi-container deployments
 ```
 
-`config.py` raises immediately if `PINECONE_API_KEY` is missing, so a misconfigured
-`.env` fails at startup rather than on the first question.
+`VECTOR_BACKEND` accepts `local` (default) or `pinecone`. `LOCAL_INDEX_DIR` resolves
+to an absolute path, defaulting to `local_index/` under this repository. Pinecone
+mode requires `PINECONE_API_KEY`; local mode does not initialize a Pinecone client.
+This changes vector storage only: LLM gateways, Cognito, DynamoDB document metadata,
+and S3 document/image storage keep their existing configuration and behavior.
 
 Then fetch the models, build the index, and start the app:
 
 ```bash
 python download_model.py  # embedding + reranker weights into the local cache (run once per machine)
-python store_index.py     # embeds data/*.pdf into Pinecone (run once, and after any PDF change)
+python store_index.py     # full rebuild from data/ using VECTOR_BACKEND (run before app startup)
 python run.py             # http://localhost:8080
 ```
 
@@ -169,6 +176,144 @@ ordering actually buys and why the worker count moves with this flag.
 
 
 
+
+### Local Vector Index
+
+Local retrieval uses exact NumPy dot products for dense vectors, a SciPy CSR sparse
+index, and the same `pinecone-text` BM25 encoder for sparse vectors. Embeddings remain
+`sentence-transformers/all-MiniLM-L6-v2`. Chunk text, chunk IDs, source/section/page
+metadata, query probes, routing, source policy, prompts, and chunking are unchanged.
+No hosted vector database is required in local mode.
+
+Run `python store_index.py` from the repository root before starting the app. A full
+build reads `data/`, fits BM25 on the complete chunk corpus as before, and atomically
+publishes a complete local generation. The root `bm25_values.json` is published
+atomically only after the local artifacts are ready. Immutable generations include
+their own BM25 snapshot so readers do not mix encoders and vectors across rebuilds.
+A missing or incompatible index fails startup with a rebuild instruction; the app
+does not silently create an empty index or fall back to Pinecone. Switching from
+Pinecone requires an explicit build from original source documents or the read-only
+migration below; there is no automatic hosted-vector download at app startup.
+
+`local_index/manifest.json` records the embedding model, dimension, chunk count,
+build time, content hash, artifact hashes, and active generation. That generation
+contains `vectors.npy`, `chunks.jsonl`, `sparse.npz`, and `bm25.json` under
+`local_index/generations/<generation>/`. Publication uses temporary files and
+`os.replace`; the manifest is committed last. Workers check the manifest at most
+once per second and swap a validated snapshot under a lock. Searches already in
+flight retain their immutable snapshot. Old generations are retained for safety;
+remove unused generations only while all workers are stopped.
+
+Admin uploads append/upsert by `chunk_id` under a cross-process write lock, preserving
+existing rows and using the current generation's BM25 encoder without refitting.
+Deleting a document removes rows with that exact source filename from the selected
+backend. Changed passages under an existing filename do not automatically remove
+old chunk IDs: delete and re-upload for replacement, or perform a full rebuild from
+the desired `data/` corpus. Local indexing progress reports one atomic file update
+rather than Pinecone's remote upsert batches.
+
+Keep the entire index directory private and persistent, including its manifest,
+generation artifacts, and lock files. All workers on one host must share the same
+directory. Independent hosts with copied directories are not replicated; provisioning
+and synchronizing them is an operator responsibility. This feature does not add S3
+artifact download, upload, or synchronization. Existing source-document S3 storage
+is separate and unchanged.
+
+Workers need permission to create/open the publication lock files, even if admin
+index writes are disabled. Use a writable index directory. A full local generation
+and the legacy root `bm25_values.json` cannot be committed as one filesystem rename:
+if that legacy publication fails after the generation commits, the error explicitly
+states that local retrieval is coherent and that the root encoder must be refreshed
+before Pinecone rollback.
+
+If deploying more than one EC2 instance, each instance needs the same complete
+index files. Synchronize immutable generations through S3 before publishing the
+matching manifest on each host, or use a shared volume. This is documentation,
+not an implemented replication protocol. Index writers must not run independently
+on replicated copies without an external coordination mechanism.
+
+### Docker Artifacts
+
+The Dockerfile defaults to `VECTOR_BACKEND=local` and
+`LOCAL_INDEX_DIR=/app/local_index`. It downloads model weights but does not ingest
+documents during `docker build`. Prepare the index **before `COPY . /app`** by
+building it on the host before building the image, or supply a complete directory
+through a runtime volume. An image without baked artifacts can build successfully
+but will not start in local mode until a valid volume is mounted.
+
+Bake artifacts (run from the repo root, with `VECTOR_BACKEND=local` and the default
+host index directory):
+
+```bash
+python download_model.py
+python store_index.py
+docker build -t sc-assistant .
+docker run --env-file .env -e VECTOR_BACKEND=local -e LOCAL_INDEX_DIR=/app/local_index -p 8080:8080 sc-assistant
+```
+
+Alternatively, mount an already built directory. This Linux example uses an
+absolute host path; substitute the actual host directory on Windows:
+
+```bash
+docker run --env-file .env -e VECTOR_BACKEND=local -e LOCAL_INDEX_DIR=/app/local_index --mount type=bind,source=/absolute/host/local_index,target=/app/local_index -p 8080:8080 sc-assistant
+```
+
+Use a writable mount for admin uploads/deletes and persist it across container
+replacement. A baked directory without a persistent volume loses runtime index
+changes when the container is replaced. Do not put a host-only absolute path into
+the container's `LOCAL_INDEX_DIR`. For hosted retrieval, explicitly override
+`VECTOR_BACKEND=pinecone` and provide its API key; local artifacts are then unused.
+
+### Backend Parity And Latency
+
+For an existing deployed Pinecone corpus, preserve its exact stored vectors, sparse
+weights, text, and metadata using the read-only migration. Set `PINECONE_API_KEY`
+and retain the matching deployed `bm25_values.json`; pause indexing during export:
+
+```bash
+python tools/export_local_index.py --output local_index
+```
+
+This copies the default Pinecone namespace into local artifacts without remote
+writes, re-embedding, or BM25 refitting. The supplied encoder must match the deployed
+retriever. A mismatched encoder or a concurrent remote change can invalidate parity;
+run the comparison below before switching traffic.
+
+Build both backends from the same unchanged source corpus with the same embeddings
+and BM25 fitting when not using the exact-vector export. Keep the local generation and Pinecone contents unchanged while
+capturing reports. Use a separate process for each backend:
+
+```bash
+python tools/compare_vector_backends.py --backend pinecone --output pinecone-report.json --iterations 30
+python tools/compare_vector_backends.py --backend local --output local-report.json --iterations 30
+python tools/compare_vector_backends.py --compare pinecone-report.json local-report.json --output comparison.json
+```
+
+The tool exercises retrieval without chat generation or the query-optimizer LLM,
+with reranking off. Reports compare actual returned chunks/source-policy results,
+not fabricated timing estimates. Upload chronology is explicitly omitted (`uploads={}`)
+to avoid AWS reads, so these reports do not prove live DynamoDB chronology parity.
+Cold samples clear the query-embedding cache, not the loaded model/process; startup
+and first-call timing are reported separately. Treat measured latency and any
+parity differences as results for that corpus/host, not a general speedup guarantee.
+
+For a before measurement on a pristine checkout, add
+`--repo-root /absolute/path/pristine` to the Pinecone capture command. The default
+30 samples per cache mode can take a long time over the network; `--iterations 5`
+is a quicker check with a smaller sample size. An intentionally empty result after
+source-policy selection is compared as an empty result, not treated as a failed
+retrieval. Raw score differences and ranking changes are retained in the report.
+Retrieval timings exclude LLM generation and do not establish an end-to-end speedup.
+
+After offline tests, perform these live checks with the real deployment:
+
+1. Build or export the index, start the app, and ask "does samar college allow partial payment?", "what do i do if i got dropped?", and "classroom location", plus several document-backed questions.
+2. Upload a document from the admin page, confirm its job/status and freshness/gap reporting, then delete it and confirm its chunks disappear.
+3. Restart one Gunicorn worker and confirm it loads the current generation; update a document while other workers run and confirm they reload it.
+
+Native-text indexing needs no Pinecone access or hosted BM25-default download.
+Existing optional PDF/image OCR and document-storage integrations are unchanged;
+scanned documents can still use their existing vision-service credentials.
 
 ### DOCX tables and re-indexing
 
@@ -403,6 +548,8 @@ Data-quality and retrieval-debugging scripts. All are run from the repo root.
 | `probe_candidates.py` | Inspects the recall stage only — what the retriever found |
 | `probe_retrieval.py` | Runs the real retrieval + rerank pipeline without calling the chat LLM |
 | `eval_retrieval.py` | Regression test for retrieval stability |
+| `compare_vector_backends.py` | Captures separate local/Pinecone parity and latency reports, then compares them |
+| `export_local_index.py` | Read-only migration of the exact deployed Pinecone vectors/chunks into local artifacts |
 | `make_pwa_icons.py` | Regenerates the installed-app icons from the school logo |
 | `create_stores_table.py` | Creates the DynamoDB table behind `rag/store.py` and copies local JSON in |
 | `create_reports_table.py` | Creates the DynamoDB table for reports |
@@ -681,7 +828,7 @@ table; the default stays `file` so tests and local development need no cloud acc
 
 ## Tech stack
 
-Python · Flask · LangChain · Pinecone (hybrid dense + BM25) · cross-encoder reranker ·
+Python · Flask · LangChain · NumPy/SciPy + BM25 / optional Pinecone · cross-encoder reranker ·
 OpenRouter / AgentRouter · AWS Cognito, DynamoDB, S3 · Docker · GitHub Actions
 
 ---
