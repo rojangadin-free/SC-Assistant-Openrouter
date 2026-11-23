@@ -1909,7 +1909,7 @@ def create_graph():
                 "chronological account of the documented events, not a short overview. "
                 "Do not append follow-up offers, login reminders, or inventories of unrequested missing details. "
                 "Never discuss retrieved documents, document access, retrieval limitations, or claim you lack a document. "
-                "Active dropped-subject, classroom-location and payment-terms guidance may state their verified coverage gaps and school referrals; "
+                "Active dropped-subject and classroom-location guidance may state their verified coverage gaps and school referrals; "
                 "those request-specific instructions take precedence over the generic document-gap restriction. "
                 "If an explicitly requested fact cannot be established, say only that you cannot confirm that fact; "
                 "do not guess. Do not volunteer an inability to confirm facts the user did not ask for.\n</answer_scope>"

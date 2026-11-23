@@ -23,7 +23,6 @@ INTENT_TERMS = {
     "student_id": "lost student ID RFID identification card replacement procedure",
     "dropped_subject": "Dropped DR subject remark attendance academic awards TES",
     "classroom_location": "classroom location room assignments enrolled subjects",
-    "payment_terms": "installment partial payment plan down payment tuition fees payment terms",
     "campus_navigation": "I am lost on campus Samar College directions",
     "campus_location": "Samar College address",
 }
@@ -173,8 +172,6 @@ def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic
             and not query_needs_history(question)):
         return False
     if "classroom_location" in explicit and not policy.classroom_location_queries(rewritten):
-        return False
-    if "payment_terms" in explicit and not policy.payment_terms_queries(rewritten):
         return False
     if (preserve_topic and "classroom_location" in explicit
             and re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", question, re.I)
@@ -352,14 +349,9 @@ def resolve_query_intent(question, intent=None, history=None):
     level = policy._grading_level(question)
     if not level and re.search(r"\b(?:undergrad(?:uate)?s?|college|collegiate|tertiary)\b", question, re.I):
         level = "undergraduate"
-    search_text = " ".join(dict.fromkeys(part for part in (
+    # Route by semantic topic plus explicit scope, while retaining the complete
+    # corrected question separately for retrieval and generation. Free-form
+    # request verbs must not accidentally disable the selected topic handler.
+    return " ".join(dict.fromkeys(part for part in (
         intent.subject, level, INTENT_TERMS[intent.name], unit.name if unit else "", *constraints,
     ) if part))
-    if policy._terms(question) - policy._terms(search_text):
-        # Supplement uncovered details; a label must never erase their meaning.
-        hints = " ".join(part for part in (intent.subject, level, INTENT_TERMS[intent.name])
-                         if part and (part == intent.subject and intent.name == "curriculum"
-                                      or not re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.I)))
-        # The original already carries its unit identity and all constraints.
-        return f"{question} {hints}".strip()
-    return search_text
