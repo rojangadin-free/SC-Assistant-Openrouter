@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from itertools import zip_longest
 
@@ -131,6 +131,33 @@ location. A general question does not request the student's personal schedule.
 The verified classroom coverage gap and school referral are permitted here despite
 generic restrictions on discussing document gaps. Keep the answer direct.
 </classroom_location_request>"""
+PAYMENT_TERMS_GUIDANCE = """<payment_terms_request>
+The user asks about a school payment arrangement, not tuition prices or financial
+aid eligibility. Use only supplied evidence that explicitly states a school
+payment plan. Merely retrieving something about fees does not establish a policy.
+Scholarships (including full or partial scholarship/tuition coverage), family or
+tuition discounts and their Full Payment table header, government study loans
+(Study-Now-Pay-Later / SNPLP), and refund/cancellation rules are NOT payment
+arrangements. A Tuition and Other Fees Focal Person is a contact, not a policy.
+Do not infer permission OR prohibition of partial payment or installments from
+any of those passages, a personal balance, or a student's previous payments.
+If no supplied passage explicitly states a school payment plan, say: 'I can't
+confirm that from the available documents. The documents do not state whether
+partial payment or installments are allowed.' Do not answer yes or no, including
+'yes, but', 'usually allowed', 'not allowed', or an implied permission/prohibition.
+Refer the user to the Cashier/Finance and their college's Tuition and Other Fees
+Focal Person listed in Samar_Colleges_OSAS_Extracted-v2_2026.docx, citing the supplied
+contact passage when present, then STOP. Do not invent a person's name or contact
+details, or append scholarships, loans, discounts or enrollment procedures.
+Do not state or imply the amount, schedule or percentage of any payment, even if
+an unrelated passage contains numbers. No tuition amount establishes a payment plan.
+If the user explicitly asks about the refund timing rule, quote the supplied rule
+accurately, identify its refund/cancellation-liability scope and document year,
+and never call it an installment rule or a general payment schedule. The whole-term
+tuition liability on the third week is not evidence allowing or forbidding installments.
+These request-specific uncertainty and referral instructions take precedence over
+generic restrictions on discussing document gaps. Answer only the requested detail.
+</payment_terms_request>"""
 SOURCE_SELECTION_GUIDANCE = """<source_selection>
 Current source documents have been selected for this question. Use ONLY their
 provided content for public document facts, subject to admin-verified facts.
@@ -679,17 +706,88 @@ def classroom_location_documents(documents):
     return selected
 
 
+def payment_terms_queries(query):
+    """Payment arrangements, not named study loans or scholarship coverage."""
+    if not isinstance(query, str):
+        return []
+    text = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+    if re.search(r"\bstudy\s+now\s+pay\s+later\b|\bsnplp\b", text):
+        return []
+    if not re.search(r"\b(?:partial\s+payments?|instal(?:l)?ments?|"
+                     r"payments?\s+(?:plans?|schemes?|terms)|down\s*payments?|"
+                     r"pay\s+(?:in\s+parts|in\s+(?:two|three|2|3)(?:\s+or\s+(?:two|three|2|3))?\s+"
+                     r"(?:separate\s+)?payments?|later)|hulugan)\b", text):
+        return []
+    return [
+        "installment partial payment plan down payment tuition fees payment terms",
+        "tuition and other fees payment schedule cashier",
+        "Tuition and Other Fees Focal Person OSAS Cashier Finance contact",
+    ]
+
+
+def payment_terms_documents(documents, *, policy_only=False, query=""):
+    """Contacts/refund liability support context, not payment-plan permission."""
+    selected = []
+    for document in documents:
+        text = getattr(document, "page_content", "") or ""
+        metadata = getattr(document, "metadata", None) or {}
+        headings = " ".join(str(metadata.get(key) or "") for key in _HEADINGS)
+        body = re.sub(r"^Samar Colleges?,\s*Inc\.(?:\s*-\s*[^\n]*)?\s*\n", "", text, flags=re.I)
+        body = re.sub(r"^\[SECTION:[^\]]*\]\s*", "", body)
+        body = " ".join(body.split())
+        cancellation = re.search(r"\bthe student shall pay the entire tuition\b.{0,150}"
+                                 r"\bthird week after the start of regular classes\b", body, re.I | re.S)
+        lookalike = re.search(r"\b(?:scholarships?|discounts?|snplp|refunds?|cancellations?)\b|"
+                              r"\bstudy[ -]+now[ -]+pay[ -]+later\b", headings + "\n" + body, re.I)
+        uncertainty = re.search(r"\b(?:no|not|cannot|can't)\b.{0,60}"
+                                r"\b(?:information|statements?|states?|specified|specify|documented|confirm)\b", body, re.I)
+        arrangement = (r"(?:partial\s+payments?|instal(?:l)?ments?(?:\s+payments?)?|"
+                       r"payments?\s+(?:plans?|schemes?|terms)|down\s*payments?|"
+                       r"in\s+parts|in\s+(?:two|three|2|3)\s+payments?|later)")
+        rule_pattern = (
+            rf"\b(?:students?|learners?)\s+(?:(?:may|can|shall|must)(?:\s+not)?|cannot|"
+            rf"are\s+(?:not\s+)?(?:allowed|permitted)\s+to)\s+pay\b.{{0,80}}\b{arrangement}\b|"
+            rf"\b{arrangement}\s+(?:(?:is|are)|(?:may|can)(?:\s+not)?\s+be)\s+(?:not\s+)?"
+            rf"(?:allowed|permitted|accepted|offered|available|required|prohibited)\b|"
+            rf"\b(?:school|colleges?|Samar\s+Colleges?|cashier|finance)\s+"
+            rf"(?:allow\w*|permit\w*|accept\w*|offer\w*|prohibit\w*)\b.{{0,80}}\b{arrangement}\b|"
+            rf"\b(?:tuition|fees?)\b.{{0,20}}\b(?:may|can|must|shall)\s+(?:not\s+)?be\s+"
+            rf"(?:paid|payable)\b.{{0,80}}\b{arrangement}\b"
+        )
+        policy = False
+        if (not lookalike and not cancellation and not uncertainty and payment_terms_queries(body)
+                and re.search(r"\b(?:tuition|fees?|cashier|finance)\b", headings + "\n" + body, re.I)):
+            for clause in re.split(r"(?<=[.!?;])\s+", body):
+                rule = re.search(rule_pattern, clause, re.I)
+                if rule and "?" not in clause and not re.search(
+                    r"\b(?:ask|contact|consult|inquir\w*|questions?|whether)\b", clause[:rule.start()], re.I,
+                ):
+                    policy = True
+                    break
+        contact = re.search(r"\bTuition\s+and\s+Other\s+Fees\s+Focal\s+Person\b", body, re.I)
+        excluded_refund = re.search(
+            r"\b(?:without|except|excluding|ignore|disregard|skip)\b.{0,50}\b(?:refund\w*|cancel\w*)\b|"
+            r"\b(?:not|don't|do not)\s+(?:ask\w*|discuss\w*|include|need|want|talk\w*|interested\s+in|about)"
+            r"\b.{0,50}\b(?:refund\w*|cancel\w*)\b", query, re.I,
+        )
+        requested_refund = cancellation and not excluded_refund and re.search(r"\b(?:refund\w*|cancel\w*)\b", query, re.I)
+        if policy or (not policy_only and (contact or requested_refund)):
+            selected.append(document)
+    return selected
+
+
 @dataclass(frozen=True)
 class PolicyIntent:
     """A detector returns bounded search probes, or [] when the request does not match."""
 
     queries: Callable[[str], list[str]]
-    documents: Callable[[list], list]
+    documents: Callable[..., list]
     guidance: str
     complete_context: bool = False
     fallback_search: bool = False
     strict_evidence: bool = False
     coverage: Callable[[list], list] | None = None
+    query_scoped: bool = False
 
 
 # Only these handlers are migrated; other policy routes retain their existing wiring.
@@ -700,11 +798,16 @@ INTENT_REGISTRY = {
                                     coverage=lambda docs: dropped_subject_documents(docs, include_scope=False)),
     "classroom_location": PolicyIntent(classroom_location_queries, classroom_location_documents, CLASSROOM_LOCATION_GUIDANCE,
                                        strict_evidence=True),
+    "payment_terms": PolicyIntent(payment_terms_queries, payment_terms_documents, PAYMENT_TERMS_GUIDANCE,
+                                  complete_context=True, strict_evidence=True, query_scoped=True,
+                                  coverage=lambda docs: payment_terms_documents(docs, policy_only=True)),
 }
 
 
 def matching_policy_intents(query):
-    return {name: intent for name, intent in INTENT_REGISTRY.items() if intent.queries(query)}
+    return {name: replace(intent, documents=lambda docs, intent=intent: intent.documents(docs, query=query))
+            if intent.query_scoped else intent
+            for name, intent in INTENT_REGISTRY.items() if intent.queries(query)}
 
 
 def family_discount_queries(query):
@@ -1018,7 +1121,7 @@ def leadership_roster_queries(query):
     words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
     allowed = {"who", "what", "are", "is", "the", "all", "our", "current", "currently", "list", "names", "name",
                "show", "give", "tell", "me", "us", "please", "deans", "college", "colleges", "academic", "departments",
-               "school", "officials", "and", "of", "at", "in", "samar", "inc"}
+               "school", "officials", "and", "of", "at", "in", "samar", "inc", "runs", "units"}
     if "deans" not in words or not words <= allowed or requested_unit(query):
         return []
     return ["college deans named roster organizational structure Colleges Academic Units"]

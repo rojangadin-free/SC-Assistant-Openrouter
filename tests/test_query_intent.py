@@ -15,6 +15,152 @@ from rag.query_intent import QueryIntent, decode_optimizer_output, known_query_i
 
 
 class QueryIntentTests(unittest.TestCase):
+    def test_payment_terms_detector_recognizes_each_arrangement_phrase(self):
+        for question in (
+            "does samar college allow partial payment?", "partial payment", "partial payments",
+            "installment", "installments", "instalment", "instalments", "can I pay in installments?",
+            "payment plan", "payment scheme", "payment terms", "payment plans", "payment schemes",
+            "down payment", "downpayment", "down-payment", "Can I pay in parts?",
+            "Can I pay in two payments?", "Can I pay in three payments?", "Can I pay in two or three payments?",
+            "Can I pay in 2 payments?", "Can I pay in 3 separate payments?", "Can I pay later?", "pay later",
+            "hulugan", "Pwede ba hulugan ang tuition?",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(policy.payment_terms_queries(question))
+                self.assertIn("payment_terms", known_query_intents(question))
+                self.assertIn("payment_terms", policy.matching_policy_intents(question))
+
+    def test_payment_terms_detector_excludes_prices_aid_refunds_and_named_study_loans(self):
+        for question in (
+            "how much is the tuition", "sibling discount", "family discount", "scholarship requirements",
+            "full or partial scholarship", "athletes' full or partial tuition fees", "Family discount Full Payment",
+            "refund of entrance fee", "what is Study Now Pay Later?", "Study-Now-Pay-Later Plan (SNPLP)",
+            "SNPLP requirements", "how do I enroll", "when do classes start", "",
+        ):
+            with self.subTest(question=question):
+                self.assertFalse(policy.payment_terms_queries(question))
+                self.assertNotIn("payment_terms", known_query_intents(question))
+                self.assertEqual(resolve_query_intent(question, QueryIntent("payment_terms")), question)
+        for question in (None, 42):
+            self.assertFalse(policy.payment_terms_queries(question))
+
+    def test_payment_questions_keep_partial_payment_for_every_conflicting_label(self):
+        question = "does samar college allow partial payment?"
+        for label in ("fees", "scholarship", "financial_aid", "enrollment"):
+            with self.subTest(label=label):
+                resolved = resolve_query_intent(question, QueryIntent(label))
+                self.assertEqual(resolved, question)
+                self.assertIn("partial payment", resolved)
+
+    def test_labels_supplement_uncovered_words_even_without_a_deterministic_intent(self):
+        question = "does samar college allow partial payment?"
+        # Exercise the structural fallback, not merely the new detector's early return.
+        with patch("rag.query_intent.known_query_intents", return_value=set()):
+            for label in ("fees", "scholarship", "financial_aid", "enrollment"):
+                with self.subTest(label=label):
+                    resolved = resolve_query_intent(question, QueryIntent(label))
+                    self.assertTrue(resolved.startswith(question + " "), resolved)
+                    self.assertIn("partial payment", resolved)
+                    self.assertIn("undergraduate", resolved)
+        question = "Are staggered tuition contributions possible?"
+        self.assertFalse(known_query_intents(question))
+        resolved = resolve_query_intent(question, QueryIntent("fees"))
+        self.assertTrue(resolved.startswith(question + " "), resolved)
+        self.assertIn("tuition fees", resolved)
+
+    def test_covered_short_fee_topics_keep_the_existing_exact_rewrite(self):
+        self.assertEqual(resolve_query_intent("tuition fees", QueryIntent("fees")), "tuition fees")
+        self.assertEqual(resolve_query_intent("college tuition fees", QueryIntent("fees")), "undergraduate tuition fees")
+
+    def test_supplements_do_not_duplicate_a_named_unit_identity(self):
+        from rag.unit_identity import requested_unit
+
+        for question in ("How much is tuition for the Graduate School?",
+                         "How much is tuition for the College of Education?"):
+            with self.subTest(question=question):
+                unit = requested_unit(question)
+                self.assertIsNotNone(unit)
+                resolved = resolve_query_intent(question, QueryIntent("fees"))
+                self.assertTrue(resolved.startswith(question + " "), resolved)
+                self.assertIsNotNone(requested_unit(resolved), resolved)
+                self.assertEqual(requested_unit(resolved).name, unit.name, resolved)
+
+    def test_payment_rewrites_cannot_replace_arrangements_with_aid_or_enrollment(self):
+        for question in ("does samar college allow partial payment?", "can I pay in installments?", "hulugan"):
+            for rewritten in ("undergraduate tuition fees", "scholarship eligibility requirements",
+                              "available tuition discounts scholarships grants financial aid", "enrollment procedure registration documents steps"):
+                with self.subTest(question=question, rewritten=rewritten):
+                    self.assertFalse(query_rewrite_supported(question, rewritten, preserve_topic=False))
+        self.assertTrue(query_rewrite_supported("Pwede ba hulugan ang tuition?", "tuition installment payment terms", preserve_topic=False))
+
+    def test_payment_guidance_requires_uncertainty_and_scoped_contact_referrals(self):
+        guidance = " ".join(policy.PAYMENT_TERMS_GUIDANCE.split())
+        for required in (
+            "Use only supplied evidence", "explicitly states a school payment plan",
+            "Scholarships", "tuition discounts", "Full Payment table header", "government study loans",
+            "Study-Now-Pay-Later / SNPLP", "refund/cancellation rules are NOT payment arrangements",
+            "Do not infer permission OR prohibition", "I can't confirm that from the available documents",
+            "documents do not state whether partial payment or installments are allowed",
+            "Do not answer yes or no", "Cashier/Finance", "Tuition and Other Fees Focal Person",
+            "Samar_Colleges_OSAS_Extracted-v2_2026.docx", "then STOP",
+            "Do not state or imply the amount, schedule or percentage of any payment",
+            "refund timing rule, quote the supplied rule accurately", "never call it an installment rule",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guidance)
+
+    def test_payment_evidence_separates_policy_contacts_and_requested_refund_liability(self):
+        def passage(text, heading="", source="Samar-College-2024.pdf"):
+            return SimpleNamespace(page_content=text, metadata={"source": source, "section_heading": heading})
+        lookalikes = [
+            passage("Government Study Loan Program: Study-Now-Pay-Later Plan (SNPLP).", "Government Funded Scholarship Grants"),
+            passage("Entrance scholarship is good for one semester; full or partial scholarship requires academic scholarship eligibility.", "Entrance Scholarship"),
+            passage("Athletes may enjoy full or partial tuition fees and tuition fee discounts.", "Sports Scholarship"),
+            passage("Number of Family Members | Full Payment | 20% | 15% | 10%\n2 | | | |", "Members of the Family Nucleus"),
+            passage("Tuition fee schedule: amounts by unit.", "Tuition Fees", "Synthetic_Fee_Schedule_2026.docx"),
+            passage("The school has not specified whether tuition installment payment plans are allowed.", "Fees"),
+        ]
+        refund = passage("Upon cancellation of registration, the student shall pay the entire tuition and other school fees "
+                         "for the whole term on the third week after the start of regular classes;", "Refund and Other Charges")
+        contact = passage("Tuition and Other Fees Focal Person\nJORLIE N. LAPARA, CPA", "Institutional Student Programs and Services",
+                          "Samar_Colleges_OSAS_Extracted-v2_2026.docx")
+        pool = [*lookalikes, refund, contact]
+        self.assertEqual(policy.payment_terms_documents(pool), [contact])
+        self.assertEqual(policy.payment_terms_documents(pool, policy_only=True), [])
+        payment = policy.matching_policy_intents("can I pay in installments?")["payment_terms"]
+        self.assertEqual(payment.documents(pool), [contact])
+        self.assertEqual(payment.coverage(pool), [])
+        compound = policy.matching_policy_intents("Can I pay in installments, and what is the refund timing rule?")["payment_terms"]
+        self.assertEqual(compound.documents(pool), [refund, contact])
+        for statement in ("Students may pay tuition in installments.", "Tuition installment payments are not permitted."):
+            explicit = passage(statement, "School Fees Payment Terms", "Synthetic_Payment_Policy.docx")
+            self.assertEqual(policy.payment_terms_documents([explicit], policy_only=True), [explicit])
+
+    def test_payment_referrals_and_questions_do_not_establish_a_policy(self):
+        for text in (
+            "For questions about tuition installment payment terms, you may contact the Cashier.",
+            "Ask Finance whether partial payment is permitted.",
+            "Can students pay tuition in installments? Contact Finance for confirmation.",
+            "Payment plans for tuition have not been announced; students must contact Finance.",
+        ):
+            with self.subTest(text=text):
+                document = SimpleNamespace(page_content=text, metadata={"source": "Synthetic_Fees_Referral_2026.docx"})
+                self.assertEqual(policy.payment_terms_documents([document], policy_only=True), [])
+
+    def test_requested_refund_context_respects_exclusions_not_policy_negation(self):
+        refund = SimpleNamespace(page_content="The student shall pay the entire tuition and other school fees for the whole term "
+                                 "on the third week after the start of regular classes;", metadata={"source": "Samar-College-2024.pdf"})
+        for question in (
+            "Can I pay in installments? I am not asking about refunds.",
+            "Can I pay in installments without cancellation or refunds?",
+            "Can I pay in installments, excluding refunds?",
+            "Can I pay in installments? Ignore cancellation rules.",
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(policy.matching_policy_intents(question)["payment_terms"].documents([refund]), [])
+        question = "Can I pay in installments and why is there no refund after two weeks?"
+        self.assertEqual(policy.matching_policy_intents(question)["payment_terms"].documents([refund]), [refund])
+
     def test_received_dropped_subject_status_keeps_its_public_policy_intent(self):
         variants = (
             "what do i do if i get drop on a subject?",
@@ -63,12 +209,13 @@ class QueryIntentTests(unittest.TestCase):
                     if question:
                         self.assertFalse(query_rewrite_supported(question, "Dropped subject DR remark", preserve_topic=False))
 
-    def test_registry_migrates_only_the_two_new_intents_and_student_id(self):
-        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location"})
+    def test_registry_keeps_the_previous_handlers_and_adds_payment_terms(self):
+        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location", "payment_terms"})
         for name, question, guidance in (
             ("student_id", "I lost my ID", policy.STUDENT_ID_GUIDANCE),
             ("dropped_subject", "I was dropped from a subject", policy.DROPPED_SUBJECT_GUIDANCE),
             ("classroom_location", "classroom location", policy.CLASSROOM_LOCATION_GUIDANCE),
+            ("payment_terms", "Can I pay in installments?", policy.PAYMENT_TERMS_GUIDANCE),
         ):
             with self.subTest(name=name):
                 self.assertEqual(set(policy.matching_policy_intents(question)), {name})
@@ -357,6 +504,8 @@ class QueryIntentTests(unittest.TestCase):
                 resolved = resolve_query_intent(question, metadata)
                 self.assertNotEqual(resolved, question)
                 self.assertTrue(detector(resolved), resolved)
+                if metadata.name == "leadership":
+                    self.assertTrue(resolved.startswith(question + " "), resolved)
 
     def test_known_requests_override_conflicting_model_classification(self):
         for question in ("grading undergraduate", "GS grading system", "IT subjects", "crim subjects",
