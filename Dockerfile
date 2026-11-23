@@ -36,8 +36,9 @@ RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 # BM25 tokenizer data for pinecone-text. nltk is now a declared dependency
 # rather than a transitive accident, so this can be relied on.
 RUN python3 -m nltk.downloader -d /usr/local/share/nltk_data \
-        punkt punkt_tab averaged_perceptron_tagger_eng
+        punkt punkt_tab stopwords averaged_perceptron_tagger_eng
 ENV NLTK_DATA=/usr/local/share/nltk_data
+RUN python3 -c "import nltk; nltk.data.find('corpora/stopwords'); nltk.data.find('tokenizers/punkt_tab'); from pinecone_text.sparse import BM25Encoder; BM25Encoder(); print('BM25 tokenizer resources available offline')"
 
 # Bake the embedding + reranker models into the image. Downloading them at
 # startup instead would make the first request after every deploy slow enough to

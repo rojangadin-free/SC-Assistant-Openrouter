@@ -127,6 +127,13 @@ class LocalIndexTests(unittest.TestCase):
                 self.assertAlmostEqual(float(snapshot.sparse[row, snapshot.vocabulary[coordinate]]),
                                        value, places=6)
 
+    def test_reload_and_sparse_search_work_without_downloads_or_network(self):
+        with patch("nltk.download", side_effect=AssertionError("Unexpected NLTK download")), \
+             patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
+            index = self.reopen(reload_interval=0)
+            result = index.search("ZXQCODE", alpha=0, top_k=1)
+        self.assertEqual(self.ids(result), ["acronym"])
+
     def test_metadata_strips_context_preserves_every_other_field_and_adds_score(self):
         original = copy.deepcopy(self.documents[0].metadata)
         result, = self.index.search("ZXQCODE", filter={"chunk_id": {"$eq": "acronym"}})
