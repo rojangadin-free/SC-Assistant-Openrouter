@@ -1947,6 +1947,10 @@ def create_graph():
                     "End after the supported bullets. No concluding note, missing-detail disclaimer, "
                     "current-inventory caveat, or follow-up offer.\n</standalone_topic_overview>"
                 )
+            from rag.source_policy import verbatim_statement_guidance
+
+            if verbatim := verbatim_statement_guidance(request_text, topic):
+                final_system_prompt += "\n\n" + verbatim
             # Keep the latest user's language authoritative after the potentially
             # multilingual history/context, for both primary and fallback models.
             if reply_language_source and reply_language_source != user_text:

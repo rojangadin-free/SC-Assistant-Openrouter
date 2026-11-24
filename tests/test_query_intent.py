@@ -214,12 +214,13 @@ class QueryIntentTests(unittest.TestCase):
                         self.assertFalse(query_rewrite_supported(question, "Dropped subject DR remark", preserve_topic=False))
 
     def test_registry_keeps_the_previous_handlers_and_adds_payment_terms(self):
-        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location", "payment_terms"})
+        self.assertEqual(set(policy.INTENT_REGISTRY), {"student_id", "dropped_subject", "classroom_location", "payment_terms", "contact_info"})
         for name, question, guidance in (
             ("student_id", "I lost my ID", policy.STUDENT_ID_GUIDANCE),
             ("dropped_subject", "I was dropped from a subject", policy.DROPPED_SUBJECT_GUIDANCE),
             ("classroom_location", "classroom location", policy.CLASSROOM_LOCATION_GUIDANCE),
             ("payment_terms", "Can I pay in installments?", policy.PAYMENT_TERMS_GUIDANCE),
+            ("contact_info", "how do i contact them?", policy.CONTACT_INFO_GUIDANCE),
         ):
             with self.subTest(name=name):
                 self.assertEqual(set(policy.matching_policy_intents(question)), {name})

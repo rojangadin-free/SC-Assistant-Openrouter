@@ -18,6 +18,7 @@ from itertools import zip_longest
 from rag.freshness import date_from_filename, doc_key
 from rag.unit_identity import (
     document_matches_unit,
+    document_mentions_unit,
     document_unit_names,
     requested_unit,
     same_unit,
@@ -799,6 +800,98 @@ class PolicyIntent:
     query_scoped: bool = False
 
 
+CONTACT_INFO_GUIDANCE = """<contact_request>
+The user asks how to reach the school (phone, email, website, social page or address); a pronoun such as
+'them' means the school. Use only the supplied passages. List every documented institution-level channel,
+each with its citation: telephone/fax numbers, email address, website, official Facebook page or group
+links, and the postal address. Name the edition year for anything taken from the 2024 handbook. Label a
+channel that belongs to one unit (for example Senior High School) with that unit and keep it separate; never
+present it as the whole school's. If any supplied passage lists an email address, never say that an email
+address cannot be confirmed; say only that no further channel is documented. Do not invent a number, email,
+office hours or the person to ask, and do not ask which office they mean. End after the list.
+</contact_request>"""
+
+VERBATIM_STATEMENT_GUIDANCE = """<verbatim_statements>
+The Vision, Mission and Objectives are fixed wording. Whenever the answer includes one of them, reproduce the
+complete statement exactly as written in the source: every sentence and phrase, in the source's order, inside
+quotation marks, with its citation. Never shorten, paraphrase, merge or drop clauses, and never label an
+abridged version as the Mission or Vision. This overrides any instruction to be brief or concise. If there is not
+room for the full statement, leave that statement out instead of abridging it. Other facts, such as history,
+may still be summarized.
+</verbatim_statements>"""
+
+_CONTACT_EXCLUDED = re.compile(
+    r"\b(?:registrar|cashier|library|librarian|clinic|health|medical|nurse|doctor|dentist|guidance|counsel\w*|crisis|"
+    r"helpline|hotline|deans?|president|principal|teachers?|instructors?|professors?|advis[eo]rs?|osas|"
+    r"student\s+affairs|office|department|college\s+of|citas|clas|coed|cocje|scti|graduate\s+school|senior\s+high|"
+    r"shs|junior\s+high|jhs|grade\s+school|admissions?|scholarships?|finance|accounting|treasurer|"
+    r"human\s+resources|hr)\b", re.I)
+_CONTACT_VERB = re.compile(
+    r"\b(?:contact|reach|call|e-?mail|message|get\s+in\s+touch\s+with|get\s+hold\s+of|communicate\s+with)\s+"
+    r"(?:them|you|us|the\s+school|the\s+college|the\s+institution|samar\s+colleges?(?:\s+inc)?|sc)\b", re.I)
+_CONTACT_BARE = re.compile(r"\bcontact\s+(?:info(?:rmation)?|details?|numbers?|us)\b", re.I)
+_CONTACT_NOUN = re.compile(
+    r"\b(?:contact\s+(?:no\.?|channels?)|(?:phone|telephone|mobile|landline|fax)\s+(?:numbers?|no\.?)|"
+    r"e-?mail\s+address(?:es)?|(?:official|school|college|their|your|general|main)\s+e-?mail|"
+    r"samar\s+colleges?(?:\s+inc)?\s+e-?mail|web\s*site|facebook(?:\s+page)?|fb\s+page)\b", re.I)
+_CONTACT_SUBJECT = re.compile(
+    r"\b(?:samar\s+colleges?(?:\s+inc)?|sc|the\s+(?:school|college|campus|institution)|your|their|them|you|us)\b", re.I)
+
+
+def contact_info_queries(query):
+    """How to reach the school itself, not a named office, unit or person."""
+    if not isinstance(query, str) or _CONTACT_EXCLUDED.search(query):
+        return []
+    if not (_CONTACT_VERB.search(query) or _CONTACT_BARE.search(query)
+            or (_CONTACT_NOUN.search(query) and _CONTACT_SUBJECT.search(query))):
+        return []
+    return ["Samar Colleges Inc email address telephone fax number contact information",
+            "Samar Colleges Inc website Facebook page contact"]
+
+
+_CONTACT_CHANNEL = re.compile(
+    r"[\w.+-]+@[\w-]+\.[\w.]+|\bwww\.[\w-]+\.\w+|facebook\.com|\bfb\s+page\b|\bfacebook\s+page\b|"
+    r"\bcontact\s+information\b|"
+    r"\b(?:tel(?:ephone)?|fax|phone|landline|mobile)\b[^\n]{0,30}\(?\+?\d[\d\s()-]{6,}", re.I)
+_CONTACT_OFFICE_ONLY = re.compile(r"\bcrisis\s+helpline\b|\bhealth\s+services?\b|\bmedical\s+&", re.I)
+
+
+def contact_info_documents(documents):
+    """Passages that give an actual channel; office-only hotlines are not the school's general contact."""
+    return [document for document in documents
+            if _CONTACT_CHANNEL.search(getattr(document, "page_content", "") or "")
+            and not _CONTACT_OFFICE_ONLY.search(getattr(document, "page_content", "") or "")]
+
+
+_CONTACT_SCHOOLWIDE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+|\bwww\.[\w-]+\.\w+", re.I)
+_CONTACT_UNIT_SPECIFIC = re.compile(
+    r"senior\s*high|\bshs\b|junior\s*high|\bjhs\b|grade\s+school|\bscti\b|technolog\w*\s+institute|"
+    r"health\s+services?|crisis\s+helpline", re.I)
+
+
+def contact_info_coverage(documents):
+    """A current source covers a contact question only with a school-wide email or website.
+
+    A phone line or one unit's details do not: counting them would drop the older handbook, which is
+    the only place that lists the school's email, website and Facebook pages."""
+    selected = []
+    for document in documents:
+        metadata = getattr(document, "metadata", None) or {}
+        text = getattr(document, "page_content", "") or ""
+        source = str(metadata.get("source") or "").replace("_", " ").replace("-", " ")
+        if (_CONTACT_SCHOOLWIDE.search(text) and not _CONTACT_UNIT_SPECIFIC.search(source + " " + text)
+                and not _CONTACT_OFFICE_ONLY.search(text)):
+            selected.append(document)
+    return selected
+
+
+def verbatim_statement_guidance(query, topic=""):
+    """Vision/Mission wording must never be abridged, including inside a short overview."""
+    if topic or re.search(r"\b(?:mission|vision|objectives?|core\s+values?)\b", query or "", re.I):
+        return VERBATIM_STATEMENT_GUIDANCE
+    return ""
+
+
 # Only these handlers are migrated; other policy routes retain their existing wiring.
 INTENT_REGISTRY = {
     "student_id": PolicyIntent(student_id_queries, student_id_documents, STUDENT_ID_GUIDANCE, complete_context=True),
@@ -810,6 +903,9 @@ INTENT_REGISTRY = {
     "payment_terms": PolicyIntent(payment_terms_queries, payment_terms_documents, PAYMENT_TERMS_GUIDANCE,
                                   complete_context=True, strict_evidence=True, query_scoped=True,
                                   coverage=lambda docs: payment_terms_documents(docs, policy_only=True)),
+    "contact_info": PolicyIntent(contact_info_queries, contact_info_documents, CONTACT_INFO_GUIDANCE,
+                                 complete_context=True, fallback_search=True, strict_evidence=True,
+                                 coverage=contact_info_coverage),
 }
 
 
@@ -1109,6 +1205,16 @@ def leadership_guidance(query):
     if not named_role or not (terse_role or re.search(r"\b(?:who|names?|list)\b", query or "", re.IGNORECASE)):
         return ""
     guidance = LEADERSHIP_GUIDANCE
+    if re.search(r"\b(?:deans?|heads?|chairs?|principals?)\s+(?:of|for|at)\s+(?:the\s+)?"
+                 r"(?:scti|samar\s+colleges?\s+technolog\w+\s+institute)\b", query or "", re.IGNORECASE):
+        guidance += (
+            "\n<scti_head_title>\nSCTI (Samar College Technological Institute) is not a college with a dean; "
+            "the documents say it is headed by a Director. Answer the user's question about who led or leads SCTI "
+            "from the supplied Director/Head entries and history passages, saying briefly that the post is titled "
+            "Director. Do not refuse because no 'Dean of SCTI' is named, and do not give a college dean's name as "
+            "the SCTI head. For a predecessor question, name only who the passages say headed SCTI and do not "
+            "invent dates or succession that they do not state.\n</scti_head_title>"
+        )
     if leadership_roster_queries(query):
         guidance += (
             "\n<dean_list_request>\nList every explicitly named dean/OIC dean in the supplied organizational roster, "
@@ -1917,6 +2023,11 @@ def _relevant(document, queries, unit=None):
     return False
 
 
+_PREDECESSOR_CUE = re.compile(
+    r"\b(?:before|prior\s+to|previous(?:ly)?|former(?:ly)?|predecessors?|preceded|succeeded|successors?|"
+    r"used\s+to\s+be|originally|founders?|founding|first\s+(?:dean|director|head|chair|president))\b", re.IGNORECASE)
+
+
 def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fallback_sources=None,
                      enforce_sources=True):
     """Keep explicit scope; optionally restrict sources without inventing effective dates."""
@@ -2037,6 +2148,9 @@ def select_documents(docs, queries, *, dates, uploads, limit=15, today=None, fal
     if unit:
         matching = [doc for doc in documents if document_matches_unit(doc, unit)
                     or (enrollment and _shared_enrollment(doc))]
+        if matching and _PREDECESSOR_CUE.search(queries[0]):
+            # A predecessor/founder answer sits in a history passage whose heading is not the unit's.
+            matching = [doc for doc in documents if doc in matching or document_mentions_unit(doc, unit)]
         named = len(unit.name.split()) > 1 or bool(unit_query_variants(queries[0]))
         conflicting_units = unit.explicit and any(
             document_unit_names(doc) for doc in documents

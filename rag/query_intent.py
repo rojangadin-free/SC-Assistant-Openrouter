@@ -24,6 +24,7 @@ INTENT_TERMS = {
     "dropped_subject": "Dropped DR subject remark attendance academic awards TES",
     "classroom_location": "classroom location room assignments enrolled subjects",
     "payment_terms": "installment partial payment plan down payment tuition fees payment terms",
+    "contact_info": "Samar Colleges Inc email telephone fax website Facebook contact information",
     "campus_navigation": "I am lost on campus Samar College directions",
     "campus_location": "Samar College address",
 }
@@ -175,6 +176,8 @@ def query_rewrite_supported(question, rewritten, history=None, *, preserve_topic
     if "classroom_location" in explicit and not policy.classroom_location_queries(rewritten):
         return False
     if "payment_terms" in explicit and not policy.payment_terms_queries(rewritten):
+        return False
+    if "contact_info" in explicit and not policy.contact_info_queries(rewritten):
         return False
     if (preserve_topic and "classroom_location" in explicit
             and re.search(r"\b(?:my|our|own|akon|aking|ko|amin|namin)\b", question, re.I)

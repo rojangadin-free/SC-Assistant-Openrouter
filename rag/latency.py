@@ -49,9 +49,9 @@ def _has_anaphora(query: str) -> bool:
 def overview_topic(question: str) -> str:
     """Recognize short standalone topics, not scoped questions or references."""
     from rag.unit_identity import requested_unit
-    from rag.source_policy import institution_history_queries, student_id_queries, campus_navigation_queries, campus_location_queries
+    from rag.source_policy import institution_history_queries, student_id_queries, campus_navigation_queries, campus_location_queries, contact_info_queries
 
-    if institution_history_queries(question) or student_id_queries(question) or campus_navigation_queries(question) or campus_location_queries(question):
+    if institution_history_queries(question) or student_id_queries(question) or campus_navigation_queries(question) or campus_location_queries(question) or contact_info_queries(question):
         return ""
     text = request_text(question or "")
     text = re.sub(r"^(?:tell me about|information (?:on|about)|info (?:on|about)|about)\s+", "", text, flags=re.I)

@@ -262,6 +262,17 @@ def unit_context_alias(text):
     return None
 
 
+def document_mentions_unit(document, request):
+    """Body-text mention of the unit's name or initialism (document_matches_unit needs a named section)."""
+    text = getattr(document, "page_content", "") or ""
+    code = request.name.casefold()
+    names = [code]
+    alias = _UNIT_ALIASES.get(code)
+    if alias:
+        names.append(alias)
+    return any(re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE) for name in names if name)
+
+
 def document_matches_unit(document, request):
     """Use named sections/rows, not word overlap or an incidental mention."""
     names = document_unit_names(document)

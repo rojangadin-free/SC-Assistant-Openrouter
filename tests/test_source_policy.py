@@ -10,16 +10,21 @@ from unittest.mock import Mock, patch
 import _bootstrap  # noqa: F401
 
 from rag.source_policy import (
+    CONTACT_INFO_GUIDANCE,
+    INTENT_REGISTRY,
+    VERBATIM_STATEMENT_GUIDANCE,
     catalog_source_names,
     department_catalog_queries,
     enrollment_queries,
     enrollment_documents,
     family_discount_queries,
     leadership_guidance,
+    matching_policy_intents,
     newer_source_names,
     program_catalog_queries,
     select_program_affiliation,
     select_documents,
+    verbatim_statement_guidance,
 )
 
 BASE = "Samar-College-2024.pdf"
@@ -1610,6 +1615,176 @@ class UploadChronologyTests(unittest.TestCase):
                                    "LastEvaluatedKey": {"filename": UPDATE}}, RuntimeError("unavailable")]
         with self.assertRaises(RuntimeError):
             namespace["get_file_upload_dates"]()
+
+
+class SctiHeadQuestionTests(unittest.TestCase):
+    """SCTI is headed by a Director; "dean of SCTI before ..." must still reach the history passage."""
+
+    ORG = "Samar_Colleges_Inc_Organizational_Structure_v2_2026.docx"
+    HISTORY_TEXT = (
+        "Samar Colleges, Inc. - THE HISTORICAL ACCOUNT OF SAMAR COLLEGE\n[SECTION: THE HISTORICAL ACCOUNT OF SAMAR COLLEGE]\n"
+        "It was called Samar College Technological Institute (SCTI) headed by Dr. Robert R. Flora and was "
+        "formally approved and given the permit to operate by the TESDA last July 2019."
+    )
+    ORG_TEXT = (
+        "Samar College Technological Institute (SCTI) - JOHANNA C. FLORA, MSIT \u2014 SCTI - HEAD / AC MANAGER\n"
+        "[SECTION: JOHANNA C. FLORA, MSIT \u2014 SCTI - HEAD / AC MANAGER]\nJOHANNA C. FLORA, MSIT"
+    )
+    BODY_ONLY_TEXT = (
+        "Samar Colleges, Inc. - GENERAL ADMISSION NOTES\n[SECTION: GENERAL ADMISSION NOTES]\n"
+        "Applicants may also ask about SCTI short courses at the registrar."
+    )
+
+    def pool(self):
+        return [
+            document(BASE, self.HISTORY_TEXT, section="THE HISTORICAL ACCOUNT OF SAMAR COLLEGE"),
+            document(self.ORG, self.ORG_TEXT, section="JOHANNA C. FLORA, MSIT \u2014 SCTI - HEAD / AC MANAGER"),
+            document(BASE, self.BODY_ONLY_TEXT, section="GENERAL ADMISSION NOTES"),
+        ]
+
+    def selected(self, question):
+        return select_documents(self.pool(), [question], dates=DATES, today=TODAY, uploads=UPLOADS).documents
+
+    def test_predecessor_questions_keep_the_history_passage_whatever_the_title_used(self):
+        for question in ("who is the dean of scti before maam flora", "who is the head of scti before maam flora",
+                         "who was the previous dean of scti", "who is the former head of scti"):
+            with self.subTest(question=question):
+                texts = " ".join(doc.page_content for doc in self.selected(question))
+                self.assertIn("headed by Dr. Robert R. Flora", texts)
+                self.assertIn("SCTI - HEAD", texts)
+
+    def test_the_unit_filter_stays_strict_without_a_predecessor_cue(self):
+        texts = " ".join(doc.page_content for doc in self.selected("who is the dean of scti"))
+        self.assertNotIn("headed by Dr. Robert R. Flora", texts)
+        self.assertNotIn("short courses", texts)
+
+    def test_title_note_only_for_a_dean_head_or_chair_of_scti(self):
+        for question in ("who is the dean of scti before maam flora", "who is the head of SCTI", "dean of samar college technological institute"):
+            with self.subTest(question=question):
+                self.assertIn("<scti_head_title>", leadership_guidance(question))
+        for question in ("who is the director of scti before maam flora", "who is the dean of citas", "who is the dean of coed"):
+            with self.subTest(question=question):
+                self.assertNotIn("<scti_head_title>", leadership_guidance(question))
+
+    def test_title_note_forbids_refusing_and_borrowing_a_colleges_dean(self):
+        note = " ".join(leadership_guidance("who is the dean of scti before maam flora").split())
+        self.assertIn("headed by a Director", note)
+        self.assertIn("Do not refuse because no 'Dean of SCTI' is named", note)
+        self.assertIn("do not invent dates or succession", note)
+
+
+class ContactInfoAndVerbatimTests(unittest.TestCase):
+    """"How do I contact them?" must find the email the handbook lists; Vision/Mission are never abridged."""
+
+    HANDBOOK_EMAIL = (
+        "Samar Colleges, Inc. - General College Information\n[SECTION: General College Information]\n"
+        "Websites:\nwww.samarcollege.edu.ph\nFB Page:\nSamar Colleges, Inc. \u2013 Office of Student Affairs (OSAS)\n"
+        "SC Guidance 2018\nEmail Address:\nSamarcollegesinc@gmail.com"
+    )
+    LETTERHEAD = ("Samar College Technological Institute (SCTI) - General College Information\n| | SCTI PROGRAM OFFERED "
+                  "SAMAR COLLEGES, INC. Mabini Avenue, Catbalogan City Samar Tel/Fax No. : (055) 251-3021, 543-8381 |")
+    SHS = "Enrollment & Contact Information\nPhone: 0955-543-8383\nEmail: sc.seniorhighschool@gmail.com\nFacebook Page: SC_Senior High School"
+    HELPLINE = "SC-OGC Crisis Helpline\nGlobe/TM : 0965-537-5623\nSmart/TNT/Sun: 0930-970-9910\nLandline No.: 0530-0565"
+    HEALTH = "Health Services\nTelephone no. +63995 507 8908\nLandline no. (055) 543 8594\nfb/Messenger acct. Samar Colleges, Inc. \u2013 Medical &"
+    UNRELATED = "Enrollment requires the admission slip and the report card."
+
+    ASKS = ("how do i contact them?", "how do I contact Samar College", "how can i reach the school", "samar college email",
+            "samar college contact number", "what is the school's email address", "contact information", "can I call them?",
+            "samar colleges inc phone number", "how do i get in touch with samar college", "what is their website")
+    NOT_ASKS = ("how do i contact the registrar", "can you email me my schedule", "contact the guidance counselor",
+                "how do i contact the dean of citas", "senior high school contact number", "where can i find samar college?",
+                "what is the email of my teacher", "how do i contact the crisis helpline", "mission", "samar college")
+
+    def test_contact_questions_route_to_the_contact_intent(self):
+        for question in self.ASKS:
+            with self.subTest(question=question):
+                self.assertIn("contact_info", matching_policy_intents(question))
+                self.assertTrue(INTENT_REGISTRY["contact_info"].queries(question))
+
+    def test_office_unit_and_person_contacts_and_other_questions_keep_their_routes(self):
+        for question in self.NOT_ASKS:
+            with self.subTest(question=question):
+                self.assertNotIn("contact_info", matching_policy_intents(question))
+
+    def test_the_search_probes_use_the_words_the_documents_use_not_the_word_contact(self):
+        probes = " ".join(INTENT_REGISTRY["contact_info"].queries("how do i contact them?")).lower()
+        for word in ("email", "telephone", "fax", "website", "facebook"):
+            self.assertIn(word, probes)
+
+    def test_the_older_handbook_is_searched_and_only_contact_passages_are_kept(self):
+        intent = INTENT_REGISTRY["contact_info"]
+        self.assertTrue(intent.fallback_search and intent.strict_evidence and intent.complete_context)
+        pool = [document(BASE, text) for text in (self.HANDBOOK_EMAIL, self.LETTERHEAD, self.SHS, self.HELPLINE,
+                                                  self.HEALTH, self.UNRELATED)]
+        kept = " ".join(doc.page_content for doc in intent.documents(pool))
+        for channel in ("Samarcollegesinc@gmail.com", "www.samarcollege.edu.ph", "251-3021", "sc.seniorhighschool@gmail.com"):
+            self.assertIn(channel, kept)
+        for other in ("Crisis Helpline", "Health Services", "admission slip"):
+            self.assertNotIn(other, kept)
+
+    CURRENT = {"SCTI_Program.docx": "2026-11-13T02:39:28+00:00",
+               "samar_colleges_senior_high_school_program_2026.docx": "2026-11-13T02:39:29+00:00"}
+
+    def test_only_a_schoolwide_email_or_website_counts_as_current_coverage(self):
+        from rag.source_policy import contact_info_coverage
+        covered = {name: bool(contact_info_coverage([document(source, text)]))
+                   for name, source, text in (
+                       ("handbook", BASE, self.HANDBOOK_EMAIL), ("letterhead", "SCTI_Program.docx", self.LETTERHEAD),
+                       ("shs", "samar_colleges_senior_high_school_program_2026.docx", self.SHS),
+                       ("helpline", BASE, self.HELPLINE), ("health", BASE, self.HEALTH))}
+        self.assertEqual(covered, {"handbook": True, "letterhead": False, "shs": False, "helpline": False, "health": False})
+
+    def test_current_phone_and_unit_pages_do_not_hide_the_handbooks_schoolwide_email(self):
+        # Live symptom: with the source filter on, the SCTI phone and the SHS page counted as "current
+        # coverage", so the 2024 handbook (the only school-wide email/website) was dropped.
+        question = "how do i contact them?"
+        pool = [document(BASE, self.HANDBOOK_EMAIL), document("SCTI_Program.docx", self.LETTERHEAD),
+                document("samar_colleges_senior_high_school_program_2026.docx", self.SHS)]
+        selected = select_documents(pool, [question], dates=DATES, today=TODAY, uploads=self.CURRENT,
+                                    enforce_sources=True).documents
+        kept = " ".join(doc.page_content for doc in INTENT_REGISTRY["contact_info"].documents(selected))
+        for channel in ("Samarcollegesinc@gmail.com", "www.samarcollege.edu.ph", "251-3021", "sc.seniorhighschool@gmail.com"):
+            self.assertIn(channel, kept)
+
+    def test_a_current_schoolwide_email_still_takes_over_from_the_older_handbook(self):
+        current = "Samar Colleges, Inc. - Contact Information\nEmail: info@samarcollege.edu.ph\nTel: (055) 251-3021"
+        uploads = {**self.CURRENT, "Contact_Us_2026.docx": "2026-11-14T02:39:28+00:00"}
+        pool = [document(BASE, self.HANDBOOK_EMAIL), document("Contact_Us_2026.docx", current)]
+        selected = select_documents(pool, ["how do i contact them?"], dates=DATES, today=TODAY, uploads=uploads,
+                                    enforce_sources=True).documents
+        texts = " ".join(doc.page_content for doc in selected)
+        self.assertIn("info@samarcollege.edu.ph", texts)
+        self.assertNotIn("Samarcollegesinc@gmail.com", texts)
+
+    def test_guidance_never_says_an_email_cannot_be_confirmed_when_one_is_supplied(self):
+        text = " ".join(CONTACT_INFO_GUIDANCE.split())
+        self.assertIn("never say that an email address cannot be confirmed", text)
+        self.assertIn("Label a channel that belongs to one unit", text)
+        self.assertIn("2024 handbook", text)
+
+    def test_a_rewrite_may_name_the_school_but_may_not_drop_the_contact_meaning(self):
+        from rag.query_intent import query_rewrite_supported
+        question = "how do i contact them?"
+        self.assertTrue(query_rewrite_supported(question, "How do I contact Samar Colleges, Inc.?"))
+        self.assertFalse(query_rewrite_supported(question, "Samar College overview"))
+        self.assertFalse(query_rewrite_supported(question, "list academic deans"))
+
+    def test_a_contact_question_is_not_treated_as_a_bare_topic_overview(self):
+        from rag.latency import overview_topic
+        self.assertEqual(overview_topic("samar college email"), "")
+        self.assertEqual(overview_topic("how do i contact them?"), "")
+        self.assertEqual(overview_topic("samar college"), "samar college")
+
+    def test_vision_and_mission_are_quoted_in_full_for_overviews_and_direct_questions(self):
+        for query, topic in (("samar college", "samar college"), ("mission", ""), ("what is the vision of samar college", ""),
+                             ("tell me the objectives", "")):
+            with self.subTest(query=query):
+                self.assertEqual(verbatim_statement_guidance(query, topic), VERBATIM_STATEMENT_GUIDANCE)
+        self.assertEqual(verbatim_statement_guidance("how do i enroll", ""), "")
+        text = " ".join(VERBATIM_STATEMENT_GUIDANCE.split())
+        for rule in ("complete statement exactly as written", "Never shorten, paraphrase, merge or drop clauses",
+                     "never label an abridged version", "overrides any instruction to be brief"):
+            self.assertIn(rule, text)
 
 
 if __name__ == "__main__":
